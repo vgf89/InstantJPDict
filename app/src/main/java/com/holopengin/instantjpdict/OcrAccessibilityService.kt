@@ -42,6 +42,7 @@ class OcrAccessibilityService : AccessibilityService() {
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     
     private val boxViews = mutableListOf<View>()
+    private val textViews = mutableListOf<TextView>()
     private var lastLandscapeGravity = Gravity.END
     private var lastPortraitGravity = Gravity.BOTTOM
 
@@ -267,6 +268,7 @@ class OcrAccessibilityService : AccessibilityService() {
 
     private fun drawResults(rootLayout: FrameLayout, results: List<LineResult>) {
         boxViews.clear()
+        textViews.clear()
 
         // Flatten results for easy index lookup
         val allChars = results.flatMap { line -> 
@@ -321,10 +323,12 @@ class OcrAccessibilityService : AccessibilityService() {
                     includeFontPadding = false
                     isClickable = false
                 }
+                textView.tag = currentIdx
                 charContainer.addView(textView, FrameLayout.LayoutParams(box.width(), FrameLayout.LayoutParams.MATCH_PARENT))
+                textViews.add(textView)
 
                 val boxView = View(this).apply {
-                    background = borderDrawable.constantState?.newDrawable()
+                    background = null // Entirely transparent
                     isClickable = true
                 }
                 // Center the clickable box vertically in the container to match character position
@@ -336,9 +340,11 @@ class OcrAccessibilityService : AccessibilityService() {
 
                 boxView.setOnClickListener {
                     // Reset all highlights
-                    boxViews.forEach { it.background = borderDrawable.constantState?.newDrawable() }
-                    // Highlight selected
-                    boxView.background = highlightDrawable
+                    resetHighlights()
+                    
+                    // Immediate feedback for the first character
+                    textView.setTextColor(android.graphics.Color.YELLOW)
+                    textView.typeface = android.graphics.Typeface.DEFAULT_BOLD
 
                     val endIdx = minOf(currentIdx + 20, allChars.size)
                     val followingText = allChars.subList(currentIdx, endIdx).joinToString("")
@@ -394,11 +400,12 @@ class OcrAccessibilityService : AccessibilityService() {
                         val uniqueMatches = allMatches.distinctBy { it.first }
                         if (uniqueMatches.isNotEmpty()) {
                             withContext(Dispatchers.Main) {
-                                // Highlight the entire matched sequence
+                                // Highlight the entire matched sequence in text
                                 for (i in 0 until maxMatchedLen) {
                                     val targetIdx = currentIdx + i
-                                    if (targetIdx < boxViews.size) {
-                                        boxViews[targetIdx].background = highlightDrawable.constantState?.newDrawable()
+                                    if (targetIdx < textViews.size) {
+                                        textViews[targetIdx].setTextColor(android.graphics.Color.YELLOW)
+                                        textViews[targetIdx].typeface = android.graphics.Typeface.DEFAULT_BOLD
                                     }
                                 }
                                 showResultsUi(rootLayout, uniqueMatches, box)
@@ -406,7 +413,8 @@ class OcrAccessibilityService : AccessibilityService() {
                         } else {
                             // Fallback highlight if no dictionary match but was tapped
                             withContext(Dispatchers.Main) {
-                                boxView.background = highlightDrawable
+                                textViews[currentIdx].setTextColor(android.graphics.Color.YELLOW)
+                                textViews[currentIdx].typeface = android.graphics.Typeface.DEFAULT_BOLD
                             }
                         }
                     }
@@ -417,7 +425,10 @@ class OcrAccessibilityService : AccessibilityService() {
     }
 
     private fun resetHighlights() {
-        boxViews.forEach { it.background = borderDrawable.constantState?.newDrawable() }
+        textViews.forEach { 
+            it.setTextColor(android.graphics.Color.RED)
+            it.typeface = android.graphics.Typeface.DEFAULT
+        }
     }
 
     private fun showResultsUi(rootLayout: FrameLayout, matches: List<Pair<String, List<com.holopengin.instantjpdict.data.DictionaryEntry>>>, tappedBox: Rect) {
@@ -575,6 +586,7 @@ class OcrAccessibilityService : AccessibilityService() {
             screenshotOverlay = null
         }
         boxViews.clear()
+        textViews.clear()
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
