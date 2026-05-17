@@ -406,27 +406,6 @@ class OcrAccessibilityService : AccessibilityService() {
             setOnClickListener { }
         }
 
-        val header = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-
-        header.addView(TextView(this).apply {
-            text = "Dictionary Results"
-            setTextColor(android.graphics.Color.WHITE)
-            textSize = 20f
-            typeface = android.graphics.Typeface.DEFAULT_BOLD
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-        })
-
-        header.addView(Button(this).apply {
-            text = "X"
-            setOnClickListener { rootLayout.removeView(container) }
-            layoutParams = LinearLayout.LayoutParams(120, 120)
-        })
-
-        container.addView(header)
-
         val scrollView = ScrollView(this).apply {
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
         }
