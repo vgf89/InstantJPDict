@@ -3,6 +3,8 @@ package com.holopengin.instantjpdict
 import android.accessibilityservice.AccessibilityService
 import android.graphics.Bitmap
 import android.graphics.PixelFormat
+import android.graphics.Rect
+import android.graphics.drawable.GradientDrawable
 import android.view.Display
 import android.view.Gravity
 import android.view.MotionEvent
@@ -12,7 +14,9 @@ import android.view.accessibility.AccessibilityEvent
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.ProgressBar
+import android.widget.TextView
 import android.widget.Toast
+import android.util.Log
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -21,6 +25,12 @@ class OcrAccessibilityService : AccessibilityService() {
     private var windowManager: WindowManager? = null
     private var floatingView: View? = null
     private var screenshotOverlay: View? = null
+    private lateinit var ocrEngine: MeikiOcrEngine
+
+    override fun onCreate() {
+        super.onCreate()
+        ocrEngine = MeikiOcrEngine(this)
+    }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -105,6 +115,7 @@ class OcrAccessibilityService : AccessibilityService() {
                 }
 
                 override fun onFailure(errorCode: Int) {
+                    Log.e("OcrAccessibilityService", "Screenshot capture failed with error code: $errorCode")
                     Toast.makeText(this@OcrAccessibilityService, "Screenshot failed: $errorCode", Toast.LENGTH_SHORT).show()
                 }
             })
@@ -141,6 +152,22 @@ class OcrAccessibilityService : AccessibilityService() {
         }
         rootLayout.addView(imageView)
 
+        val debugTextView = TextView(this).apply {
+            setTextColor(android.graphics.Color.YELLOW)
+            setBackgroundColor(android.graphics.Color.argb(200, 0, 0, 0))
+            setPadding(40, 20, 40, 20)
+            textSize = 16f
+            text = "Initializing OCR..."
+        }
+        val debugParams = FrameLayout.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT
+        ).apply {
+            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+            bottomMargin = 100
+        }
+        rootLayout.addView(debugTextView, debugParams)
+
         val progressBar = ProgressBar(this).apply {
             isIndeterminate = true
         }
@@ -154,6 +181,55 @@ class OcrAccessibilityService : AccessibilityService() {
 
         screenshotOverlay = rootLayout
         windowManager?.addView(screenshotOverlay, params)
+
+        // Run OCR in background
+        Thread {
+            try {
+                if (ocrEngine.isReady()) {
+                    rootLayout.post { debugTextView.text = "Running detection..." }
+                    val boxes = ocrEngine.detect(bitmap)
+                    rootLayout.post {
+                        debugTextView.text = "Found ${boxes.size} boxes"
+                        debugTextView.bringToFront()
+                        progressBar.visibility = View.GONE
+                        drawBoxes(rootLayout, boxes)
+                    }
+                } else {
+                    rootLayout.post {
+                        debugTextView.text = "Error: OCR Engine not ready"
+                        progressBar.visibility = View.GONE
+                    }
+                }
+            } catch (e: Exception) {
+                val errorMsg = e.message ?: e.toString()
+                Log.e("OcrAccessibilityService", "OCR Inference Error", e)
+                rootLayout.post {
+                    debugTextView.text = "Error: $errorMsg"
+                    debugTextView.bringToFront()
+                    progressBar.visibility = View.GONE
+                    Toast.makeText(this, "OCR Error: $errorMsg", Toast.LENGTH_LONG).show()
+                }
+            }
+        }.start()
+    }
+
+    private fun drawBoxes(rootLayout: FrameLayout, boxes: List<Rect>) {
+        val borderDrawable = GradientDrawable().apply {
+            setStroke(2, android.graphics.Color.CYAN)
+            setColor(android.graphics.Color.argb(50, 0, 255, 255))
+            cornerRadius = 4f
+        }
+
+        for (box in boxes) {
+            val boxView = View(this).apply {
+                background = borderDrawable.constantState?.newDrawable()
+            }
+            val params = FrameLayout.LayoutParams(box.width(), box.height()).apply {
+                leftMargin = box.left
+                topMargin = box.top
+            }
+            rootLayout.addView(boxView, params)
+        }
     }
 
     private fun hideScreenshotOverlay() {
@@ -171,5 +247,6 @@ class OcrAccessibilityService : AccessibilityService() {
         super.onDestroy()
         floatingView?.let { windowManager?.removeView(it) }
         hideScreenshotOverlay()
+        ocrEngine.close()
     }
 }
