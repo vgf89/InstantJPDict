@@ -299,27 +299,47 @@ class OcrAccessibilityService : AccessibilityService() {
                     // Highlight selected
                     boxView.background = highlightDrawable
                     
-                    // Extract following text
-                    val followingText = allChars.subList(currentIdx, allChars.size).joinToString("")
-                    Log.i("OcrAccessibilityService", "Tapped '$char'. Following sequence: $followingText")
+                    // Extract following text (capped at 20 chars for performance)
+                    val endIdx = minOf(currentIdx + 20, allChars.size)
+                    val followingText = allChars.subList(currentIdx, endIdx).joinToString("")
                     
-                    // Dictionary lookup for the single character
+                    Log.i("OcrAccessibilityService", "Tapped '$char'. Searching sequence: $followingText")
+                    
                     serviceScope.launch {
-                        val results = withContext(Dispatchers.IO) {
-                            AppDatabase.getDatabase(applicationContext).dictionaryDao().findByText(char)
+                        val db = AppDatabase.getDatabase(applicationContext)
+                        var foundEntries: List<com.holopengin.instantjpdict.data.DictionaryEntry> = emptyList()
+                        var matchedText = ""
+
+                        // Greedy Search Loop: Longest string to shortest
+                        for (len in followingText.length downTo 1) {
+                            val queryText = followingText.substring(0, len)
+                            
+                            val results = withContext(Dispatchers.IO) {
+                                db.dictionaryDao().findByText(queryText)
+                            }
+
+                            if (results.isNotEmpty()) {
+                                foundEntries = results
+                                matchedText = queryText
+                                break
+                            }
+                            
+                            // TODO: Insert Deinflection logic here
+                            // val deinflections = deinflector.deinflect(queryText)
+                            // ... query roots ...
                         }
                         
-                        if (results.isNotEmpty()) {
-                            Log.i("OcrAccessibilityService", "Dictionary results for '$char':")
-                            results.forEach { entry ->
+                        if (foundEntries.isNotEmpty()) {
+                            Log.i("OcrAccessibilityService", "MATCH FOUND for '$matchedText':")
+                            foundEntries.forEach { entry ->
                                 Log.i("OcrAccessibilityService", "  - [${entry.reading}] ${entry.definitions}")
                             }
                         } else {
-                            Log.i("OcrAccessibilityService", "No dictionary results found for '$char'")
+                            Log.i("OcrAccessibilityService", "No dictionary results found for any part of '$followingText'")
                         }
                     }
                     
-                    Toast.makeText(this, "Lookup for '$char' started", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "Lookup started...", Toast.LENGTH_SHORT).show()
                 }
             }
         }
