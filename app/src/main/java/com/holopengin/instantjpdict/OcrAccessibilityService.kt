@@ -3,6 +3,7 @@ package com.holopengin.instantjpdict
 import android.accessibilityservice.AccessibilityService
 import android.graphics.Bitmap
 import android.graphics.PixelFormat
+import android.graphics.Rect
 import android.graphics.drawable.GradientDrawable
 import android.view.Display
 import android.view.Gravity
@@ -39,6 +40,9 @@ class OcrAccessibilityService : AccessibilityService() {
     private lateinit var deinflector: Deinflector
     private val gson = Gson()
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    
+    private var lastLandscapeGravity = Gravity.END
+    private var lastPortraitGravity = Gravity.BOTTOM
 
     override fun onCreate() {
         super.onCreate()
@@ -366,7 +370,7 @@ class OcrAccessibilityService : AccessibilityService() {
                         if (uniqueMatches.isNotEmpty()) {
                             Log.i("OcrAccessibilityService", "FOUND ${uniqueMatches.size} UNIQUE MATCHES:")
                             withContext(Dispatchers.Main) {
-                                showResultsUi(rootLayout, uniqueMatches)
+                                showResultsUi(rootLayout, uniqueMatches, box)
                             }
                             uniqueMatches.forEach { (term, entries) ->
                                 Log.i("OcrAccessibilityService", "  MATCH: '$term' (${entries.size} entries)")
@@ -385,7 +389,7 @@ class OcrAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun showResultsUi(rootLayout: FrameLayout, matches: List<Pair<String, List<com.holopengin.instantjpdict.data.DictionaryEntry>>>) {
+    private fun showResultsUi(rootLayout: FrameLayout, matches: List<Pair<String, List<com.holopengin.instantjpdict.data.DictionaryEntry>>>, tappedBox: Rect) {
         // Remove existing result view if any
         rootLayout.findViewWithTag<View>("results_panel")?.let { rootLayout.removeView(it) }
 
@@ -479,11 +483,47 @@ class OcrAccessibilityService : AccessibilityService() {
         scrollView.addView(scrollContent)
         container.addView(scrollView)
 
-        val params = FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.MATCH_PARENT,
-            (rootLayout.height * 0.4).toInt()
-        ).apply {
-            gravity = Gravity.BOTTOM
+        val isLandscape = rootLayout.width > rootLayout.height
+        val params = if (isLandscape) {
+            val panelWidth = (rootLayout.width * 0.4).toInt()
+            
+            // Overlap check for current side
+            val overlaps = if (lastLandscapeGravity == Gravity.END) {
+                tappedBox.right > rootLayout.width - panelWidth
+            } else {
+                tappedBox.left < panelWidth
+            }
+            
+            if (overlaps) {
+                lastLandscapeGravity = if (lastLandscapeGravity == Gravity.END) Gravity.START else Gravity.END
+            }
+
+            FrameLayout.LayoutParams(
+                panelWidth,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            ).apply {
+                gravity = lastLandscapeGravity
+            }
+        } else {
+            val panelHeight = (rootLayout.height * 0.4).toInt()
+            
+            // Overlap check for current side
+            val overlaps = if (lastPortraitGravity == Gravity.BOTTOM) {
+                tappedBox.bottom > rootLayout.height - panelHeight
+            } else {
+                tappedBox.top < panelHeight
+            }
+            
+            if (overlaps) {
+                lastPortraitGravity = if (lastPortraitGravity == Gravity.BOTTOM) Gravity.TOP else Gravity.BOTTOM
+            }
+
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                panelHeight
+            ).apply {
+                gravity = lastPortraitGravity
+            }
         }
 
         rootLayout.addView(container, params)
