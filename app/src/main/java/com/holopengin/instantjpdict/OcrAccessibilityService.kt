@@ -193,12 +193,24 @@ class OcrAccessibilityService : AccessibilityService() {
             try {
                 if (ocrEngine.isReady()) {
                     rootLayout.post { debugTextView.text = "Running detection..." }
-                    val boxes = ocrEngine.detect(bitmap)
+                    val lineBoxes = ocrEngine.detect(bitmap)
+                    
+                    rootLayout.post { debugTextView.text = "Found ${lineBoxes.size} lines. Recognizing..." }
+                    val results = ocrEngine.recognize(bitmap, lineBoxes)
+                    
                     rootLayout.post {
-                        debugTextView.text = "Found ${boxes.size} boxes"
+                        debugTextView.text = "Done. Found ${results.sumOf { it.charBoxes.size }} characters."
                         debugTextView.bringToFront()
                         progressBar.visibility = View.GONE
-                        drawBoxes(rootLayout, boxes)
+                        
+                        // Draw character boxes
+                        val allCharBoxes = results.flatMap { it.charBoxes }
+                        drawBoxes(rootLayout, allCharBoxes)
+                        
+                        // Log results
+                        results.forEach { line ->
+                            Log.i("OcrAccessibilityService", "Recognized: ${line.text}")
+                        }
                     }
                 } else {
                     rootLayout.post {
