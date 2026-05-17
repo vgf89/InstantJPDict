@@ -186,6 +186,7 @@ class MeikiOcrEngine(private val context: Context) {
                     val x2 = (min(rx2, effectiveW) / effectiveW) * crop.width + cropX
                     val y2 = (ry2 / 32f) * crop.height + cropY
 
+                    Log.d("MeikiOcrEngine", "Char Box: [$x1, $y1, $x2, $y2] size: ${x2-x1}x${y2-y1}")
                     Rect(x1.toInt(), y1.toInt(), x2.toInt(), y2.toInt())
                 }
 

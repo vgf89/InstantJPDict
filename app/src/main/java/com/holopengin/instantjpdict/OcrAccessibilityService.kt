@@ -244,15 +244,18 @@ class OcrAccessibilityService : AccessibilityService() {
                     gravity = Gravity.CENTER
                     background = borderDrawable.constantState?.newDrawable()
                     typeface = android.graphics.Typeface.DEFAULT_BOLD
-                    // Scale text size to the box height
+                    // Scale text size to exactly the box height
                     setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, box.height().toFloat())
                     setPadding(0, 0, 0, 0)
                     includeFontPadding = false
                 }
 
-                val params = FrameLayout.LayoutParams(box.width(), box.height()).apply {
+                // Make the view significantly taller than the box to prevent clipping,
+                // and shift it up so the text centers where the box is.
+                val extraHeight = (box.height() * 0.8).toInt()
+                val params = FrameLayout.LayoutParams(box.width(), box.height() + extraHeight).apply {
                     leftMargin = box.left
-                    topMargin = box.top
+                    topMargin = box.top - (extraHeight / 2)
                 }
                 rootLayout.addView(textView, params)
             }
