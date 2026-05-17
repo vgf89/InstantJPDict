@@ -17,6 +17,8 @@ import android.widget.TextView
 import android.widget.Toast
 import android.util.Log
 import com.holopengin.instantjpdict.data.AppDatabase
+import com.holopengin.instantjpdict.util.Deinflector
+import com.holopengin.instantjpdict.util.JapaneseUtil
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -31,11 +33,13 @@ class OcrAccessibilityService : AccessibilityService() {
     private var floatingView: View? = null
     private var screenshotOverlay: View? = null
     private lateinit var ocrEngine: MeikiOcrEngine
+    private lateinit var deinflector: Deinflector
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
     override fun onCreate() {
         super.onCreate()
         ocrEngine = MeikiOcrEngine(this)
+        deinflector = Deinflector(this)
     }
 
     override fun onServiceConnected() {
@@ -312,21 +316,56 @@ class OcrAccessibilityService : AccessibilityService() {
 
                         // Greedy Search Loop: Longest string to shortest
                         for (len in followingText.length downTo 1) {
-                            val queryText = followingText.substring(0, len)
+                            val queryTextRaw = followingText.substring(0, len)
                             
-                            val results = withContext(Dispatchers.IO) {
-                                db.dictionaryDao().findByText(queryText)
+                            // Normalization Pass
+                            val queryText = JapaneseUtil.normalize(queryTextRaw)
+                            val queryTextHiragana = JapaneseUtil.katakanaToHiragana(queryText)
+                            val queryTextCollapsed = JapaneseUtil.collapseEmphatic(queryText)
+
+                            // Try variants: normalized, hiragana-only, and collapsed emphatic sequences
+                            val variants = listOf(queryText, queryTextHiragana, queryTextCollapsed).distinct()
+                            
+                            var innerResults: List<com.holopengin.instantjpdict.data.DictionaryEntry> = emptyList()
+                            
+                            for (variant in variants) {
+                                val dbResults = withContext(Dispatchers.IO) {
+                                    db.dictionaryDao().findByText(variant)
+                                }
+                                if (dbResults.isNotEmpty()) {
+                                    innerResults = dbResults
+                                    matchedText = variant
+                                    break
+                                }
                             }
 
-                            if (results.isNotEmpty()) {
-                                foundEntries = results
-                                matchedText = queryText
+                            if (innerResults.isNotEmpty()) {
+                                foundEntries = innerResults
                                 break
                             }
                             
-                            // TODO: Insert Deinflection logic here
-                            // val deinflections = deinflector.deinflect(queryText)
-                            // ... query roots ...
+                            // Deinflection Pass
+                            val deinflections = deinflector.deinflect(queryText)
+                            var foundDeinflection = false
+                            for (deinflection in deinflections) {
+                                val isOriginal = deinflection.term == queryText
+                                if (isOriginal) continue // Already checked above
+                                
+                                val dbResults = withContext(Dispatchers.IO) {
+                                    db.dictionaryDao().findByText(deinflection.term)
+                                }
+                                
+                                if (dbResults.isNotEmpty()) {
+                                    // Match found! 
+                                    // Note: In high-end Yomitan implementations, we'd also check
+                                    // if deinflection.rules (bitmask) intersects with the dict tags.
+                                    foundEntries = dbResults.sortedByDescending { it.popularity }
+                                    matchedText = deinflection.term
+                                    foundDeinflection = true
+                                    break
+                                }
+                            }
+                            if (foundDeinflection) break
                         }
                         
                         if (foundEntries.isNotEmpty()) {
@@ -339,7 +378,7 @@ class OcrAccessibilityService : AccessibilityService() {
                         }
                     }
                     
-                    Toast.makeText(this, "Lookup started...", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@OcrAccessibilityService, "Lookup started...", Toast.LENGTH_SHORT).show()
                 }
             }
         }
