@@ -48,7 +48,6 @@ class OcrAccessibilityService : AccessibilityService() {
     private val borderDrawable by lazy {
         GradientDrawable().apply {
             setStroke(2, android.graphics.Color.CYAN)
-            setColor(android.graphics.Color.argb(76, 0, 255, 255))
             cornerRadius = 4f
         }
     }
@@ -56,7 +55,6 @@ class OcrAccessibilityService : AccessibilityService() {
     private val highlightDrawable by lazy {
         GradientDrawable().apply {
             setStroke(4, android.graphics.Color.YELLOW)
-            setColor(android.graphics.Color.argb(120, 255, 255, 0))
             cornerRadius = 4f
         }
     }
@@ -316,9 +314,8 @@ class OcrAccessibilityService : AccessibilityService() {
                 val textView = TextView(this).apply {
                     text = char
                     setTextColor(android.graphics.Color.RED)
-                    alpha = 0.7f
                     gravity = Gravity.CENTER
-                    typeface = android.graphics.Typeface.DEFAULT_BOLD
+                    typeface = android.graphics.Typeface.DEFAULT
                     setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, box.height().toFloat())
                     setPadding(0, 0, 0, 0)
                     includeFontPadding = false
