@@ -41,8 +41,25 @@ class OcrAccessibilityService : AccessibilityService() {
     private val gson = Gson()
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     
+    private val boxViews = mutableListOf<View>()
     private var lastLandscapeGravity = Gravity.END
     private var lastPortraitGravity = Gravity.BOTTOM
+
+    private val borderDrawable by lazy {
+        GradientDrawable().apply {
+            setStroke(2, android.graphics.Color.CYAN)
+            setColor(android.graphics.Color.argb(76, 0, 255, 255))
+            cornerRadius = 4f
+        }
+    }
+
+    private val highlightDrawable by lazy {
+        GradientDrawable().apply {
+            setStroke(4, android.graphics.Color.YELLOW)
+            setColor(android.graphics.Color.argb(120, 255, 255, 0))
+            cornerRadius = 4f
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -165,6 +182,7 @@ class OcrAccessibilityService : AccessibilityService() {
                 val resultsPanel = findViewWithTag<View>("results_panel")
                 if (resultsPanel != null) {
                     removeView(resultsPanel)
+                    resetHighlights()
                 } else {
                     hideScreenshotOverlay()
                 }
@@ -250,17 +268,7 @@ class OcrAccessibilityService : AccessibilityService() {
     }
 
     private fun drawResults(rootLayout: FrameLayout, results: List<LineResult>) {
-        val borderDrawable = GradientDrawable().apply {
-            setStroke(2, android.graphics.Color.CYAN)
-            setColor(android.graphics.Color.argb(76, 0, 255, 255))
-            cornerRadius = 4f
-        }
-
-        val highlightDrawable = GradientDrawable().apply {
-            setStroke(4, android.graphics.Color.YELLOW)
-            setColor(android.graphics.Color.argb(120, 255, 255, 0))
-            cornerRadius = 4f
-        }
+        boxViews.clear()
 
         // Flatten results for easy index lookup
         val allChars = results.flatMap { line -> 
@@ -278,7 +286,6 @@ class OcrAccessibilityService : AccessibilityService() {
         rootLayout.addView(clicksLayer, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         
         var charIndex = 0
-        val boxViews = mutableListOf<View>()
         val margin = 50 // Safe zone margin
 
         for (line in results) {
@@ -335,13 +342,14 @@ class OcrAccessibilityService : AccessibilityService() {
                     boxViews.forEach { it.background = borderDrawable.constantState?.newDrawable() }
                     // Highlight selected
                     boxView.background = highlightDrawable
-                    
+
                     val endIdx = minOf(currentIdx + 20, allChars.size)
                     val followingText = allChars.subList(currentIdx, endIdx).joinToString("")
                     
                     serviceScope.launch {
                         val db = AppDatabase.getDatabase(applicationContext)
                         val allMatches = mutableListOf<Pair<String, List<com.holopengin.instantjpdict.data.DictionaryEntry>>>()
+                        var maxMatchedLen = 0
 
                         for (len in followingText.length downTo 1) {
                             val queryTextRaw = followingText.substring(0, len)
@@ -350,12 +358,14 @@ class OcrAccessibilityService : AccessibilityService() {
                             val queryTextCollapsed = JapaneseUtil.collapseEmphatic(queryText)
                             val variants = listOf(queryText, queryTextHiragana, queryTextCollapsed).distinct()
                             
+                            var foundInThisLen = false
                             for (variant in variants) {
                                 val dbResults = withContext(Dispatchers.IO) {
                                     db.dictionaryDao().findByText(variant)
                                 }
                                 if (dbResults.isNotEmpty()) {
                                     allMatches.add(variant to dbResults.sortedByDescending { it.popularity })
+                                    foundInThisLen = true
                                 }
                             }
                             
@@ -375,14 +385,31 @@ class OcrAccessibilityService : AccessibilityService() {
 
                                 if (validResults.isNotEmpty()) {
                                     allMatches.add(deinflection.term to validResults.sortedByDescending { it.popularity })
+                                    foundInThisLen = true
                                 }
+                            }
+
+                            if (foundInThisLen && maxMatchedLen == 0) {
+                                maxMatchedLen = len
                             }
                         }
                         
                         val uniqueMatches = allMatches.distinctBy { it.first }
                         if (uniqueMatches.isNotEmpty()) {
                             withContext(Dispatchers.Main) {
+                                // Highlight the entire matched sequence
+                                for (i in 0 until maxMatchedLen) {
+                                    val targetIdx = currentIdx + i
+                                    if (targetIdx < boxViews.size) {
+                                        boxViews[targetIdx].background = highlightDrawable.constantState?.newDrawable()
+                                    }
+                                }
                                 showResultsUi(rootLayout, uniqueMatches, box)
+                            }
+                        } else {
+                            // Fallback highlight if no dictionary match but was tapped
+                            withContext(Dispatchers.Main) {
+                                boxView.background = highlightDrawable
                             }
                         }
                     }
@@ -390,6 +417,10 @@ class OcrAccessibilityService : AccessibilityService() {
                 }
             }
         }
+    }
+
+    private fun resetHighlights() {
+        boxViews.forEach { it.background = borderDrawable.constantState?.newDrawable() }
     }
 
     private fun showResultsUi(rootLayout: FrameLayout, matches: List<Pair<String, List<com.holopengin.instantjpdict.data.DictionaryEntry>>>, tappedBox: Rect) {
@@ -546,6 +577,7 @@ class OcrAccessibilityService : AccessibilityService() {
             windowManager?.removeView(it)
             screenshotOverlay = null
         }
+        boxViews.clear()
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
