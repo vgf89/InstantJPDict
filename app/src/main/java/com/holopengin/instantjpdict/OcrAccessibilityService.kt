@@ -232,20 +232,38 @@ class OcrAccessibilityService : AccessibilityService() {
             cornerRadius = 4f
         }
 
+        val highlightDrawable = GradientDrawable().apply {
+            setStroke(4, android.graphics.Color.YELLOW)
+            setColor(android.graphics.Color.argb(120, 255, 255, 0))
+            cornerRadius = 4f
+        }
+
+        // Flatten results for easy index lookup
+        val allChars = results.flatMap { line -> 
+            line.text.indices.map { i -> line.text[i] } 
+        }
+        
+        var charIndex = 0
+        val boxViews = mutableListOf<View>()
+
         for (line in results) {
             for (i in line.charBoxes.indices) {
                 val box = line.charBoxes[i]
                 val char = line.text.getOrNull(i)?.toString() ?: ""
+                val currentIdx = charIndex++
                 
                 // 1. Draw the actual OCR box (cyan border)
                 val boxView = View(this).apply {
                     background = borderDrawable.constantState?.newDrawable()
+                    isClickable = true
+                    isFocusable = true
                 }
                 val boxParams = FrameLayout.LayoutParams(box.width(), box.height()).apply {
                     leftMargin = box.left
                     topMargin = box.top
                 }
                 rootLayout.addView(boxView, boxParams)
+                boxViews.add(boxView)
 
                 // 2. Draw the text (scaled and potentially overflowing to prevent clipping)
                 val textView = TextView(this).apply {
@@ -257,6 +275,8 @@ class OcrAccessibilityService : AccessibilityService() {
                     setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, box.height().toFloat())
                     setPadding(0, 0, 0, 0)
                     includeFontPadding = false
+                    // Let clicks pass through to the boxView below
+                    isClickable = false
                 }
 
                 val extraHeight = (box.height() * 0.8).toInt()
@@ -265,6 +285,18 @@ class OcrAccessibilityService : AccessibilityService() {
                     topMargin = box.top - (extraHeight / 2)
                 }
                 rootLayout.addView(textView, textParams)
+
+                boxView.setOnClickListener {
+                    // Reset all highlights
+                    boxViews.forEach { it.background = borderDrawable.constantState?.newDrawable() }
+                    // Highlight selected
+                    boxView.background = highlightDrawable
+                    
+                    // Extract following text
+                    val followingText = allChars.subList(currentIdx, allChars.size).joinToString("")
+                    Log.i("OcrAccessibilityService", "Tapped '$char'. Following sequence: $followingText")
+                    Toast.makeText(this, "Sequence starting with '$char' logged", Toast.LENGTH_SHORT).show()
+                }
             }
         }
     }
