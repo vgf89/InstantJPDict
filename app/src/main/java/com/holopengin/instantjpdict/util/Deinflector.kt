@@ -9,14 +9,14 @@ import java.io.InputStreamReader
 data class DeinflectionRule(
     val kanaIn: String,
     val kanaOut: String,
-    val rulesIn: Int,
-    val rulesOut: Int
+    val rulesIn: List<String>,
+    val rulesOut: List<String>
 )
 
 data class DeinflectionResult(
     val term: String,
     val reasons: List<String>,
-    val rules: Int // Bitmask of PoS tags
+    val type: List<String>
 )
 
 class Deinflector(context: Context) {
@@ -27,12 +27,12 @@ class Deinflector(context: Context) {
         try {
             val inputStream = context.assets.open("deinflect.json")
             val reader = InputStreamReader(inputStream)
-            // Yomitan deinflect.json is an array of rule groups
-            val type = object : TypeToken<List<DeinflectionGroup>>() {}.type
-            val groups: List<DeinflectionGroup> = Gson().fromJson(reader, type)
+            // The file is a Map<String, List<DeinflectionRule>>
+            val type = object : TypeToken<Map<String, List<DeinflectionRule>>>() {}.type
+            val rawRules: Map<String, List<DeinflectionRule>> = Gson().fromJson(reader, type)
             
-            groups.forEach { group ->
-                loadedRules.addAll(group.rules)
+            rawRules.forEach { (_, ruleList) ->
+                loadedRules.addAll(ruleList)
             }
             Log.d("Deinflector", "Loaded ${loadedRules.size} rules from deinflect.json")
         } catch (e: Exception) {
@@ -41,15 +41,10 @@ class Deinflector(context: Context) {
         rules = loadedRules
     }
 
-    private data class DeinflectionGroup(
-        val name: String,
-        val rules: List<DeinflectionRule>
-    )
-
     fun deinflect(text: String): List<DeinflectionResult> {
         val results = mutableListOf<DeinflectionResult>()
-        // Initial state: 0 means no specific PoS requirement yet
-        results.add(DeinflectionResult(text, emptyList(), 0))
+        // Initial state: empty types means it's the original word
+        results.add(DeinflectionResult(text, emptyList(), emptyList()))
 
         var i = 0
         while (i < results.size) {
@@ -57,19 +52,21 @@ class Deinflector(context: Context) {
             
             for (rule in rules) {
                 if (current.term.endsWith(rule.kanaIn)) {
-                    // Bitwise check: if current.rules is 0, it's the start (can match any rule)
-                    // Otherwise, the current rule's output must satisfy the required input
-                    val canApply = current.rules == 0 || (current.rules and rule.rulesOut) != 0
+                    // Check if current.type (what the word IS) matches rule.rulesOut (what the rule EXPECTS)
+                    // At the start, current.type is empty, so we allow anything.
+                    // Subsequent steps require the types to intersect.
+                    val canApply = current.type.isEmpty() || rule.rulesOut.any { it in current.type }
                     
                     if (canApply) {
                         val root = current.term.substring(0, current.term.length - rule.kanaIn.length) + rule.kanaOut
                         val newResult = DeinflectionResult(
                             term = root,
                             reasons = current.reasons + listOf(rule.kanaIn),
-                            rules = rule.rulesIn
+                            type = rule.rulesIn
                         )
                         
-                        if (!results.any { it.term == newResult.term && it.rules == newResult.rules }) {
+                        // Prevent duplicates and cycles
+                        if (!results.any { it.term == newResult.term && it.type == newResult.type }) {
                             results.add(newResult)
                         }
                     }

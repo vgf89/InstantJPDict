@@ -336,6 +336,8 @@ class OcrAccessibilityService : AccessibilityService() {
                                     innerResults = dbResults
                                     matchedText = variant
                                     break
+                                } else {
+                                    Log.v("OcrAccessibilityService", "  No match for variant: $variant")
                                 }
                             }
 
@@ -347,22 +349,36 @@ class OcrAccessibilityService : AccessibilityService() {
                             // Deinflection Pass
                             val deinflections = deinflector.deinflect(queryText)
                             var foundDeinflection = false
+                            
+                            Log.v("OcrAccessibilityService", "  Deinflector generated ${deinflections.size} candidates for $queryText")
+                            deinflections.forEach { Log.v("OcrAccessibilityService", "    - Candidate: ${it.term} (reasons: ${it.reasons}, tags: ${it.type})") }
+                            
                             for (deinflection in deinflections) {
                                 val isOriginal = deinflection.term == queryText
-                                if (isOriginal) continue // Already checked above
+                                if (isOriginal) continue 
                                 
                                 val dbResults = withContext(Dispatchers.IO) {
                                     db.dictionaryDao().findByText(deinflection.term)
                                 }
                                 
                                 if (dbResults.isNotEmpty()) {
-                                    // Match found! 
-                                    // Note: In high-end Yomitan implementations, we'd also check
-                                    // if deinflection.rules (bitmask) intersects with the dict tags.
-                                    foundEntries = dbResults.sortedByDescending { it.popularity }
-                                    matchedText = deinflection.term
-                                    foundDeinflection = true
-                                    break
+                                    Log.v("OcrAccessibilityService", "    Found ${deinflection.term} in DB. Tags: ${dbResults.map { it.rules }}")
+                                    
+                                    // Filter based on rules (PoS tags)
+                                    val validResults = dbResults.filter { entry ->
+                                        val entryTags = entry.rules.split(" ")
+                                        deinflection.type.isEmpty() || deinflection.type.any { it in entryTags }
+                                    }
+
+                                    if (validResults.isNotEmpty()) {
+                                        Log.i("OcrAccessibilityService", "  Deinflection HIT: ${queryText} -> ${deinflection.term} (tags: ${deinflection.type})")
+                                        foundEntries = validResults.sortedByDescending { it.popularity }
+                                        matchedText = deinflection.term
+                                        foundDeinflection = true
+                                        break
+                                    } else {
+                                        Log.v("OcrAccessibilityService", "    PoS tags mismatch for ${deinflection.term}. Entry: ${dbResults[0].rules}, Needed: ${deinflection.type}")
+                                    }
                                 }
                             }
                             if (foundDeinflection) break
