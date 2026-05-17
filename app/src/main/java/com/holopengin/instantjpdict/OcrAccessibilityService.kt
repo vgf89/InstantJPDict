@@ -162,7 +162,12 @@ class OcrAccessibilityService : AccessibilityService() {
 
         val rootLayout = FrameLayout(this).apply {
             setOnClickListener {
-                hideScreenshotOverlay()
+                val resultsPanel = findViewWithTag<View>("results_panel")
+                if (resultsPanel != null) {
+                    removeView(resultsPanel)
+                } else {
+                    hideScreenshotOverlay()
+                }
             }
         }
 
@@ -261,9 +266,20 @@ class OcrAccessibilityService : AccessibilityService() {
         val allChars = results.flatMap { line -> 
             line.text.indices.map { i -> line.text[i] } 
         }
+
+        // --- LAYERED ARCHITECTURE ---
+        // 1. Bottom layer: Margins that block the overlay from closing but do nothing else.
+        // 2. Top layer: The actual characters and their click listeners.
+        
+        val marginsLayer = FrameLayout(this)
+        val clicksLayer = FrameLayout(this)
+        
+        rootLayout.addView(marginsLayer, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        rootLayout.addView(clicksLayer, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         
         var charIndex = 0
         val boxViews = mutableListOf<View>()
+        val margin = 50 // Safe zone margin
 
         for (line in results) {
             for (i in line.charBoxes.indices) {
@@ -271,20 +287,25 @@ class OcrAccessibilityService : AccessibilityService() {
                 val char = line.text.getOrNull(i)?.toString() ?: ""
                 val currentIdx = charIndex++
                 
-                // 1. Draw the actual OCR box (cyan border)
-                val boxView = View(this).apply {
-                    background = borderDrawable.constantState?.newDrawable()
+                // Add margin to the background layer
+                val marginBlocker = View(this).apply {
                     isClickable = true
-                    isFocusable = true
+                    setOnClickListener { } // Block clicks from reaching rootLayout
                 }
-                val boxParams = FrameLayout.LayoutParams(box.width(), box.height()).apply {
-                    leftMargin = box.left
-                    topMargin = box.top
+                val marginParams = FrameLayout.LayoutParams(box.width() + 2 * margin, box.height() + 2 * margin).apply {
+                    leftMargin = box.left - margin
+                    topMargin = box.top - margin
                 }
-                rootLayout.addView(boxView, boxParams)
-                boxViews.add(boxView)
+                marginsLayer.addView(marginBlocker, marginParams)
 
-                // 2. Draw the text (scaled and potentially overflowing to prevent clipping)
+                // Add character interaction to the foreground layer
+                val charContainer = FrameLayout(this)
+                val charParams = FrameLayout.LayoutParams(box.width(), box.height() + (box.height() * 0.8).toInt()).apply {
+                    leftMargin = box.left
+                    topMargin = box.top - (box.height() * 0.4).toInt()
+                }
+                clicksLayer.addView(charContainer, charParams)
+
                 val textView = TextView(this).apply {
                     text = char
                     setTextColor(android.graphics.Color.RED)
@@ -294,16 +315,20 @@ class OcrAccessibilityService : AccessibilityService() {
                     setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, box.height().toFloat())
                     setPadding(0, 0, 0, 0)
                     includeFontPadding = false
-                    // Let clicks pass through to the boxView below
                     isClickable = false
                 }
+                charContainer.addView(textView, FrameLayout.LayoutParams(box.width(), FrameLayout.LayoutParams.MATCH_PARENT))
 
-                val extraHeight = (box.height() * 0.8).toInt()
-                val textParams = FrameLayout.LayoutParams(box.width(), box.height() + extraHeight).apply {
-                    leftMargin = box.left
-                    topMargin = box.top - (extraHeight / 2)
+                val boxView = View(this).apply {
+                    background = borderDrawable.constantState?.newDrawable()
+                    isClickable = true
                 }
-                rootLayout.addView(textView, textParams)
+                // Center the clickable box vertically in the container to match character position
+                val boxViewParams = FrameLayout.LayoutParams(box.width(), box.height()).apply {
+                    gravity = Gravity.CENTER
+                }
+                charContainer.addView(boxView, boxViewParams)
+                boxViews.add(boxView)
 
                 boxView.setOnClickListener {
                     // Reset all highlights
@@ -311,26 +336,18 @@ class OcrAccessibilityService : AccessibilityService() {
                     // Highlight selected
                     boxView.background = highlightDrawable
                     
-                    // Extract following text (capped at 20 chars for performance)
                     val endIdx = minOf(currentIdx + 20, allChars.size)
                     val followingText = allChars.subList(currentIdx, endIdx).joinToString("")
-                    
-                    Log.i("OcrAccessibilityService", "Tapped '$char'. Searching sequence: $followingText")
                     
                     serviceScope.launch {
                         val db = AppDatabase.getDatabase(applicationContext)
                         val allMatches = mutableListOf<Pair<String, List<com.holopengin.instantjpdict.data.DictionaryEntry>>>()
 
-                        // Greedy Search Loop: Longest string to shortest
                         for (len in followingText.length downTo 1) {
                             val queryTextRaw = followingText.substring(0, len)
-                            
-                            // Normalization Pass
                             val queryText = JapaneseUtil.normalize(queryTextRaw)
                             val queryTextHiragana = JapaneseUtil.katakanaToHiragana(queryText)
                             val queryTextCollapsed = JapaneseUtil.collapseEmphatic(queryText)
-
-                            // Try variants: normalized, hiragana-only, and collapsed emphatic sequences
                             val variants = listOf(queryText, queryTextHiragana, queryTextCollapsed).distinct()
                             
                             for (variant in variants) {
@@ -342,16 +359,13 @@ class OcrAccessibilityService : AccessibilityService() {
                                 }
                             }
                             
-                            // Deinflection Pass
                             val deinflections = deinflector.deinflect(queryText)
                             for (deinflection in deinflections) {
                                 if (deinflection.term == queryText) continue 
-                                
                                 val dbResults = withContext(Dispatchers.IO) {
                                     db.dictionaryDao().findByText(deinflection.term)
                                 }
                                 
-                                // Filter based on rules (PoS tags)
                                 val validResults = dbResults.filter { entry ->
                                     val entryTags = entry.rules.split(" ")
                                     deinflection.type.isEmpty() || 
@@ -365,24 +379,13 @@ class OcrAccessibilityService : AccessibilityService() {
                             }
                         }
                         
-                        // Display all unique matches found
                         val uniqueMatches = allMatches.distinctBy { it.first }
                         if (uniqueMatches.isNotEmpty()) {
-                            Log.i("OcrAccessibilityService", "FOUND ${uniqueMatches.size} UNIQUE MATCHES:")
                             withContext(Dispatchers.Main) {
                                 showResultsUi(rootLayout, uniqueMatches, box)
                             }
-                            uniqueMatches.forEach { (term, entries) ->
-                                Log.i("OcrAccessibilityService", "  MATCH: '$term' (${entries.size} entries)")
-                                entries.forEach { entry ->
-                                    Log.i("OcrAccessibilityService", "    - [${entry.reading}] ${entry.definitions}")
-                                }
-                            }
-                        } else {
-                            Log.i("OcrAccessibilityService", "No dictionary results found for any part of '$followingText'")
                         }
                     }
-                    
                     Toast.makeText(this@OcrAccessibilityService, "Lookup started...", Toast.LENGTH_SHORT).show()
                 }
             }
@@ -399,6 +402,8 @@ class OcrAccessibilityService : AccessibilityService() {
             setBackgroundColor(android.graphics.Color.argb(235, 30, 30, 30))
             setPadding(40, 40, 40, 40)
             elevation = 20f
+            // Consume clicks so they don't reach rootLayout and close the overlay
+            setOnClickListener { }
         }
 
         val header = LinearLayout(this).apply {
