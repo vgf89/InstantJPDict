@@ -32,7 +32,7 @@ class MeikiOcrEngine(private val context: Context) {
         try {
             detectSession = env.createSession(loadModel("meiki.text.detect.v0.1.960x544.onnx"))
             recognizeSession = env.createSession(loadModel("meiki.text.rec.v0.960x32.onnx"))
-            Log.d("MeikiOcrEngine", "Models loaded. Detect inputs: ${detectSession?.inputNames}, Rec inputs: ${recognizeSession?.inputNames}")
+            Log.d("MeikiOcrEngine", "Models loaded successfully")
         } catch (e: Exception) {
             Log.e("MeikiOcrEngine", "Failed to load models", e)
         }
@@ -103,6 +103,7 @@ class MeikiOcrEngine(private val context: Context) {
                 if (cropW <= 0 || cropH <= 0) continue
 
                 val crop = Bitmap.createBitmap(bitmap, cropX, cropY, cropW, cropH)
+                
                 val scaleFactor = 32f / crop.height
                 val targetW = min(960, (crop.width * scaleFactor).toInt())
                 val resizedLine = Bitmap.createScaledBitmap(crop, targetW, 32, true)
@@ -119,10 +120,9 @@ class MeikiOcrEngine(private val context: Context) {
                 val imageInputName = session.inputNames.find { it.contains("image") || it.contains("input") } ?: session.inputNames.iterator().next()
                 inputs[imageInputName] = inputTensor
 
-                if (session.inputNames.contains("orig_target_sizes")) {
-                    val sizeData = LongBuffer.wrap(longArrayOf(crop.width.toLong(), crop.height.toLong()))
-                    inputs["orig_target_sizes"] = OnnxTensor.createTensor(env, sizeData, longArrayOf(1, 2))
-                }
+                // FIX: provide orig_target_sizes [960, 32] as required by the model architecture
+                val sizeData = LongBuffer.wrap(longArrayOf(REC_WIDTH.toLong(), REC_HEIGHT.toLong()))
+                inputs["orig_target_sizes"] = OnnxTensor.createTensor(env, sizeData, longArrayOf(1, 2))
 
                 val output = session.run(inputs)
 
@@ -131,19 +131,15 @@ class MeikiOcrEngine(private val context: Context) {
                 val boxesResult = output.get(outputNames.find { it.contains("boxes") } ?: outputNames[1])
                 val scoresResult = output.get(outputNames.find { it.contains("scores") } ?: outputNames[2])
 
-                // Flexible casting for labels (Int vs Long)
                 val labelsVal = labelsResult.get().value
                 val labelsArr: LongArray = when (labelsVal) {
                     is Array<*> -> {
-                        when (val first = labelsVal[0]) {
-                            is LongArray -> first
-                            is IntArray -> first.map { it.toLong() }.toLongArray()
-                            else -> throw Exception("Unexpected labels inner type: ${first?.javaClass}")
-                        }
+                        val first = labelsVal[0]
+                        if (first is LongArray) first else (first as IntArray).map { it.toLong() }.toLongArray()
                     }
                     is LongArray -> labelsVal
                     is IntArray -> labelsVal.map { it.toLong() }.toLongArray()
-                    else -> throw Exception("Unexpected labels type: ${labelsVal?.javaClass}")
+                    else -> throw Exception("Unknown labels type")
                 }
 
                 val boxesArr = (boxesResult.get().value as Array<*>)[0] as Array<FloatArray>
@@ -156,7 +152,7 @@ class MeikiOcrEngine(private val context: Context) {
                             CharCandidate(
                                 char = labelsArr[i].toInt().toChar(),
                                 score = scoresArr[i],
-                                box = boxesArr[i]
+                                box = boxesArr[i] // [x1, y1, x2, y2]
                             )
                         )
                     }
@@ -176,13 +172,20 @@ class MeikiOcrEngine(private val context: Context) {
                 }
 
                 filtered.sortBy { it.box[0] }
-                val text = filtered.map { it.char }.joinToString("")
+                val text = filtered.joinToString("") { it.char.toString() }
                 
                 val charBoxes = filtered.map { cand ->
-                    val x1 = cand.box[0] + cropX
-                    val y1 = cand.box[1] + cropY
-                    val x2 = cand.box[2] + cropX
-                    val y2 = cand.box[3] + cropY
+                    val rx1 = cand.box[0]
+                    val ry1 = cand.box[1]
+                    val rx2 = cand.box[2]
+                    val ry2 = cand.box[3]
+                    
+                    val effectiveW = targetW.toFloat()
+                    val x1 = (min(rx1, effectiveW) / effectiveW) * crop.width + cropX
+                    val y1 = (ry1 / 32f) * crop.height + cropY
+                    val x2 = (min(rx2, effectiveW) / effectiveW) * crop.width + cropX
+                    val y2 = (ry2 / 32f) * crop.height + cropY
+
                     Rect(x1.toInt(), y1.toInt(), x2.toInt(), y2.toInt())
                 }
 
