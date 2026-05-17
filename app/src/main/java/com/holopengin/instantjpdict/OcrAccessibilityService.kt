@@ -365,10 +365,12 @@ class OcrAccessibilityService : AccessibilityService() {
                                     Log.v("OcrAccessibilityService", "    Found ${deinflection.term} in DB. Tags: ${dbResults.map { it.rules }}")
                                     
                                     // Filter based on rules (PoS tags)
-                                    val validResults = dbResults.filter { entry ->
-                                        val entryTags = entry.rules.split(" ")
-                                        deinflection.type.isEmpty() || deinflection.type.any { it in entryTags }
-                                    }
+                                val validResults = dbResults.filter { entry ->
+                                    val entryTags = entry.rules.split(" ")
+                                    deinflection.type.isEmpty() || 
+                                    deinflection.type.any { it in entryTags } ||
+                                    (entryTags.any { it.startsWith("v") } && deinflection.type.any { it.startsWith("v") })
+                                }
 
                                     if (validResults.isNotEmpty()) {
                                         Log.i("OcrAccessibilityService", "  Deinflection HIT: ${queryText} -> ${deinflection.term} (tags: ${deinflection.type})")

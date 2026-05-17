@@ -27,14 +27,13 @@ class Deinflector(context: Context) {
         try {
             val inputStream = context.assets.open("deinflect.json")
             val reader = InputStreamReader(inputStream)
-            // The file is a Map<String, List<DeinflectionRule>>
             val type = object : TypeToken<Map<String, List<DeinflectionRule>>>() {}.type
             val rawRules: Map<String, List<DeinflectionRule>> = Gson().fromJson(reader, type)
             
             rawRules.forEach { (_, ruleList) ->
                 loadedRules.addAll(ruleList)
             }
-            Log.d("Deinflector", "Loaded ${loadedRules.size} rules from deinflect.json")
+            Log.d("Deinflector", "Loaded ${loadedRules.size} rules")
         } catch (e: Exception) {
             Log.e("Deinflector", "Failed to load deinflect.json", e)
         }
@@ -43,30 +42,31 @@ class Deinflector(context: Context) {
 
     fun deinflect(text: String): List<DeinflectionResult> {
         val results = mutableListOf<DeinflectionResult>()
-        // Initial state: empty types means it's the original word
         results.add(DeinflectionResult(text, emptyList(), emptyList()))
 
         var i = 0
         while (i < results.size) {
             val current = results[i]
-            
+            if (current.term.length < 2) {
+                i++
+                continue
+            }
+
             for (rule in rules) {
                 if (current.term.endsWith(rule.kanaIn)) {
-                    // Check if current.type (what the word IS) matches rule.rulesOut (what the rule EXPECTS)
-                    // At the start, current.type is empty, so we allow anything.
-                    // Subsequent steps require the types to intersect.
-                    val canApply = current.type.isEmpty() || rule.rulesOut.any { it in current.type }
+                    // For maximum recall, we allow the rule if it produced a valid root
+                    // even if the intermediate PoS tags don't perfectly align.
+                    // This is especially helpful with contracted forms like -chau.
+                    val root = current.term.substring(0, current.term.length - rule.kanaIn.length) + rule.kanaOut
                     
-                    if (canApply) {
-                        val root = current.term.substring(0, current.term.length - rule.kanaIn.length) + rule.kanaOut
+                    if (root.isNotEmpty()) {
                         val newResult = DeinflectionResult(
                             term = root,
                             reasons = current.reasons + listOf(rule.kanaIn),
-                            type = rule.rulesIn
+                            type = rule.rulesOut // These are the tags the DB entry should have
                         )
                         
-                        // Prevent duplicates and cycles
-                        if (!results.any { it.term == newResult.term && it.type == newResult.type }) {
+                        if (!results.any { it.term == newResult.term }) {
                             results.add(newResult)
                         }
                     }
