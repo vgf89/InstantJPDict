@@ -228,7 +228,7 @@ class OcrAccessibilityService : AccessibilityService() {
     private fun drawResults(rootLayout: FrameLayout, results: List<LineResult>) {
         val borderDrawable = GradientDrawable().apply {
             setStroke(2, android.graphics.Color.CYAN)
-            setColor(android.graphics.Color.argb(0, 0, 255, 255))
+            setColor(android.graphics.Color.argb(76, 0, 255, 255))
             cornerRadius = 4f
         }
 
@@ -237,26 +237,24 @@ class OcrAccessibilityService : AccessibilityService() {
                 val box = line.charBoxes[i]
                 val char = line.text.getOrNull(i)?.toString() ?: ""
                 
-                val frame = FrameLayout(this)
-                frame.background = borderDrawable.constantState?.newDrawable()
-                
                 val textView = TextView(this).apply {
                     text = char
                     setTextColor(android.graphics.Color.RED)
-                    alpha = 0.5f
+                    alpha = 0.7f
                     gravity = Gravity.CENTER
-                    // Scale text size to fit box height
-                    setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, box.height().toFloat() * 0.8f)
+                    background = borderDrawable.constantState?.newDrawable()
+                    typeface = android.graphics.Typeface.DEFAULT_BOLD
+                    // Scale text size to the box height
+                    setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, box.height().toFloat())
                     setPadding(0, 0, 0, 0)
                     includeFontPadding = false
                 }
-                frame.addView(textView)
 
                 val params = FrameLayout.LayoutParams(box.width(), box.height()).apply {
                     leftMargin = box.left
                     topMargin = box.top
                 }
-                rootLayout.addView(frame, params)
+                rootLayout.addView(textView, params)
             }
         }
     }
