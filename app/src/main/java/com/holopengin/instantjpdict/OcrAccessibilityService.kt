@@ -230,7 +230,7 @@ class OcrAccessibilityService : AccessibilityService() {
     private fun drawBoxes(rootLayout: FrameLayout, boxes: List<Rect>) {
         val borderDrawable = GradientDrawable().apply {
             setStroke(2, android.graphics.Color.CYAN)
-            setColor(android.graphics.Color.argb(76, 0, 255, 255))
+            setColor(android.graphics.Color.argb(0, 0, 0, 0))
             cornerRadius = 4f
         }
 
