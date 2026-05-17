@@ -74,13 +74,9 @@ class DictionaryImporter(private val context: Context) {
             val rules = reader.nextString()
             val popularity = reader.nextInt()
             
-            val definitionsList = mutableListOf<String>()
-            reader.beginArray()
-            while (reader.hasNext()) {
-                val def = gson.fromJson<Any>(reader, Any::class.java)
-                definitionsList.add(gson.toJson(def))
-            }
-            reader.endArray()
+            // Definitions is an array at index 5
+            val definitions = gson.fromJson<Any>(reader, Any::class.java)
+            val definitionsJson = gson.toJson(definitions)
             
             reader.nextInt() // sequence
             reader.skipValue() // more tags
@@ -89,7 +85,7 @@ class DictionaryImporter(private val context: Context) {
             return DictionaryEntry(
                 kanji = kanji,
                 reading = reading,
-                definitions = gson.toJson(definitionsList),
+                definitions = definitionsJson,
                 rules = rules,
                 popularity = popularity
             )
