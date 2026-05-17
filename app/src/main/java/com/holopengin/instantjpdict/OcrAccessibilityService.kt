@@ -237,27 +237,34 @@ class OcrAccessibilityService : AccessibilityService() {
                 val box = line.charBoxes[i]
                 val char = line.text.getOrNull(i)?.toString() ?: ""
                 
+                // 1. Draw the actual OCR box (cyan border)
+                val boxView = View(this).apply {
+                    background = borderDrawable.constantState?.newDrawable()
+                }
+                val boxParams = FrameLayout.LayoutParams(box.width(), box.height()).apply {
+                    leftMargin = box.left
+                    topMargin = box.top
+                }
+                rootLayout.addView(boxView, boxParams)
+
+                // 2. Draw the text (scaled and potentially overflowing to prevent clipping)
                 val textView = TextView(this).apply {
                     text = char
                     setTextColor(android.graphics.Color.RED)
                     alpha = 0.7f
                     gravity = Gravity.CENTER
-                    background = borderDrawable.constantState?.newDrawable()
                     typeface = android.graphics.Typeface.DEFAULT_BOLD
-                    // Scale text size to exactly the box height
                     setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, box.height().toFloat())
                     setPadding(0, 0, 0, 0)
                     includeFontPadding = false
                 }
 
-                // Make the view significantly taller than the box to prevent clipping,
-                // and shift it up so the text centers where the box is.
                 val extraHeight = (box.height() * 0.8).toInt()
-                val params = FrameLayout.LayoutParams(box.width(), box.height() + extraHeight).apply {
+                val textParams = FrameLayout.LayoutParams(box.width(), box.height() + extraHeight).apply {
                     leftMargin = box.left
                     topMargin = box.top - (extraHeight / 2)
                 }
-                rootLayout.addView(textView, params)
+                rootLayout.addView(textView, textParams)
             }
         }
     }
