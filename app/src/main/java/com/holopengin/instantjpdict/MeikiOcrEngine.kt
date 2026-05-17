@@ -87,7 +87,9 @@ class MeikiOcrEngine(private val context: Context) {
             results.close()
             resized.recycle()
         }
-        return detectedBoxes
+        // Sort detected lines by their Y-coordinate (top-to-bottom)
+        // If they were "backwards", the model likely returned them bottom-to-top.
+        return detectedBoxes.sortedBy { it.top }
     }
 
     fun recognize(bitmap: Bitmap, lineBoxes: List<Rect>): List<LineResult> {
