@@ -92,9 +92,13 @@ class OcrAccessibilityService : AccessibilityService() {
         })
 
         button.setOnClickListener {
-            triggerCapture { bitmap ->
-                showScreenshotOverlay(bitmap)
-            }
+            floatingView?.visibility = View.GONE
+            // Give the system a moment to hide the view before taking the screenshot
+            it.postDelayed({
+                triggerCapture { bitmap ->
+                    showScreenshotOverlay(bitmap)
+                }
+            }, 50)
         }
         
         floatingView = frameLayout
@@ -105,6 +109,7 @@ class OcrAccessibilityService : AccessibilityService() {
         takeScreenshot(Display.DEFAULT_DISPLAY, applicationContext.mainExecutor,
             object : TakeScreenshotCallback {
                 override fun onSuccess(result: ScreenshotResult) {
+                    floatingView?.visibility = View.VISIBLE
                     val buffer = result.hardwareBuffer
                     val bitmap = Bitmap.wrapHardwareBuffer(buffer, result.colorSpace)
                         ?.copy(Bitmap.Config.ARGB_8888, true)
@@ -115,6 +120,7 @@ class OcrAccessibilityService : AccessibilityService() {
                 }
 
                 override fun onFailure(errorCode: Int) {
+                    floatingView?.visibility = View.VISIBLE
                     Log.e("OcrAccessibilityService", "Screenshot capture failed with error code: $errorCode")
                     Toast.makeText(this@OcrAccessibilityService, "Screenshot failed: $errorCode", Toast.LENGTH_SHORT).show()
                 }
