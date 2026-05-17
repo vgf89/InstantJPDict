@@ -8,6 +8,7 @@ import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import java.nio.FloatBuffer
+import java.nio.LongBuffer
 
 class MeikiOcrEngine(private val context: Context) {
     private val env: OrtEnvironment = OrtEnvironment.getEnvironment()
@@ -64,13 +65,13 @@ class MeikiOcrEngine(private val context: Context) {
         inputs[imageInputName] = inputTensor
         
         if (session.inputNames.contains("image_size")) {
-            val sizeData = FloatBuffer.wrap(floatArrayOf(DETECT_HEIGHT.toFloat(), DETECT_WIDTH.toFloat()))
+            val sizeData = LongBuffer.wrap(longArrayOf(DETECT_HEIGHT.toLong(), DETECT_WIDTH.toLong()))
             val sizeTensor = OnnxTensor.createTensor(env, sizeData, longArrayOf(1, 2))
             inputs["image_size"] = sizeTensor
         }
 
         if (session.inputNames.contains("orig_target_sizes")) {
-            val sizeData = FloatBuffer.wrap(floatArrayOf(bitmap.height.toFloat(), bitmap.width.toFloat()))
+            val sizeData = LongBuffer.wrap(longArrayOf(bitmap.height.toLong(), bitmap.width.toLong()))
             val sizeTensor = OnnxTensor.createTensor(env, sizeData, longArrayOf(1, 2))
             inputs["orig_target_sizes"] = sizeTensor
         }
