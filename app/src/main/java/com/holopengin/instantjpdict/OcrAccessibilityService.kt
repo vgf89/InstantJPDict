@@ -151,10 +151,6 @@ class OcrAccessibilityService : AccessibilityService() {
         val imageView = android.widget.ImageView(this).apply {
             setImageBitmap(bitmap)
             scaleType = android.widget.ImageView.ScaleType.FIT_XY
-            // Dim the image
-            colorFilter = android.graphics.ColorMatrixColorFilter(android.graphics.ColorMatrix().apply {
-                setScale(0.5f, 0.5f, 0.5f, 1f)
-            })
         }
         rootLayout.addView(imageView)
 
@@ -234,7 +230,7 @@ class OcrAccessibilityService : AccessibilityService() {
     private fun drawBoxes(rootLayout: FrameLayout, boxes: List<Rect>) {
         val borderDrawable = GradientDrawable().apply {
             setStroke(2, android.graphics.Color.CYAN)
-            setColor(android.graphics.Color.argb(50, 0, 255, 255))
+            setColor(android.graphics.Color.argb(76, 0, 255, 255))
             cornerRadius = 4f
         }
 
