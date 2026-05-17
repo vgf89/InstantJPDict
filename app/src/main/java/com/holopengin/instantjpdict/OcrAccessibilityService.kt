@@ -3,7 +3,6 @@ package com.holopengin.instantjpdict
 import android.accessibilityservice.AccessibilityService
 import android.graphics.Bitmap
 import android.graphics.PixelFormat
-import android.graphics.Rect
 import android.graphics.drawable.GradientDrawable
 import android.view.Display
 import android.view.Gravity
@@ -199,9 +198,8 @@ class OcrAccessibilityService : AccessibilityService() {
                         debugTextView.bringToFront()
                         progressBar.visibility = View.GONE
                         
-                        // Draw character boxes
-                        val allCharBoxes = results.flatMap { it.charBoxes }
-                        drawBoxes(rootLayout, allCharBoxes)
+                        // Draw character results
+                        drawResults(rootLayout, results)
                         
                         // Log results
                         results.forEach { line ->
@@ -227,22 +225,39 @@ class OcrAccessibilityService : AccessibilityService() {
         }.start()
     }
 
-    private fun drawBoxes(rootLayout: FrameLayout, boxes: List<Rect>) {
+    private fun drawResults(rootLayout: FrameLayout, results: List<LineResult>) {
         val borderDrawable = GradientDrawable().apply {
             setStroke(2, android.graphics.Color.CYAN)
-            setColor(android.graphics.Color.argb(0, 0, 0, 0))
+            setColor(android.graphics.Color.argb(0, 0, 255, 255))
             cornerRadius = 4f
         }
 
-        for (box in boxes) {
-            val boxView = View(this).apply {
-                background = borderDrawable.constantState?.newDrawable()
+        for (line in results) {
+            for (i in line.charBoxes.indices) {
+                val box = line.charBoxes[i]
+                val char = line.text.getOrNull(i)?.toString() ?: ""
+                
+                val frame = FrameLayout(this)
+                frame.background = borderDrawable.constantState?.newDrawable()
+                
+                val textView = TextView(this).apply {
+                    text = char
+                    setTextColor(android.graphics.Color.RED)
+                    alpha = 0.5f
+                    gravity = Gravity.CENTER
+                    // Scale text size to fit box height
+                    setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, box.height().toFloat() * 0.8f)
+                    setPadding(0, 0, 0, 0)
+                    includeFontPadding = false
+                }
+                frame.addView(textView)
+
+                val params = FrameLayout.LayoutParams(box.width(), box.height()).apply {
+                    leftMargin = box.left
+                    topMargin = box.top
+                }
+                rootLayout.addView(frame, params)
             }
-            val params = FrameLayout.LayoutParams(box.width(), box.height()).apply {
-                leftMargin = box.left
-                topMargin = box.top
-            }
-            rootLayout.addView(boxView, params)
         }
     }
 
