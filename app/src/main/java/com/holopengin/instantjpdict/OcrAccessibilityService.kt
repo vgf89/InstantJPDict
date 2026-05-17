@@ -195,6 +195,7 @@ class OcrAccessibilityService : AccessibilityService() {
         rootLayout.addView(imageView)
 
         val debugTextView = TextView(this).apply {
+            tag = "debug_text"
             setTextColor(android.graphics.Color.YELLOW)
             setBackgroundColor(android.graphics.Color.argb(200, 0, 0, 0))
             setPadding(40, 20, 40, 20)
@@ -235,7 +236,7 @@ class OcrAccessibilityService : AccessibilityService() {
                     val results = ocrEngine.recognize(bitmap, lineBoxes)
                     
                     rootLayout.post {
-                        debugTextView.text = "Done. Found ${results.sumOf { it.charBoxes.size }} characters."
+                        debugTextView.text = "Found ${results.sumOf { it.charBoxes.size }} characters."
                         debugTextView.bringToFront()
                         progressBar.visibility = View.GONE
                         
@@ -415,6 +416,18 @@ class OcrAccessibilityService : AccessibilityService() {
                             withContext(Dispatchers.Main) {
                                 textViews[currentIdx].setTextColor(android.graphics.Color.YELLOW)
                                 textViews[currentIdx].typeface = android.graphics.Typeface.DEFAULT_BOLD
+
+                                val debugView = rootLayout.findViewWithTag<TextView>("debug_text")
+                                if (debugView != null) {
+                                    debugView.text = "No entry found: $char~~"
+                                    debugView.postDelayed({
+                                        val currentStatus = debugView.text.toString()
+                                        if (currentStatus == "No entry found: $char~~") {
+                                            val count = results.sumOf { line -> line.charBoxes.size }
+                                            debugView.text = "Done. Found $count characters."
+                                        }
+                                    }, 2000)
+                                }
                             }
                         }
                     }
