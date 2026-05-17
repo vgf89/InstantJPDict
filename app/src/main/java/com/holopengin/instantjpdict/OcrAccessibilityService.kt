@@ -311,8 +311,7 @@ class OcrAccessibilityService : AccessibilityService() {
                     
                     serviceScope.launch {
                         val db = AppDatabase.getDatabase(applicationContext)
-                        var foundEntries: List<com.holopengin.instantjpdict.data.DictionaryEntry> = emptyList()
-                        var matchedText = ""
+                        val allMatches = mutableListOf<Pair<String, List<com.holopengin.instantjpdict.data.DictionaryEntry>>>()
 
                         // Greedy Search Loop: Longest string to shortest
                         for (len in followingText.length downTo 1) {
@@ -326,45 +325,25 @@ class OcrAccessibilityService : AccessibilityService() {
                             // Try variants: normalized, hiragana-only, and collapsed emphatic sequences
                             val variants = listOf(queryText, queryTextHiragana, queryTextCollapsed).distinct()
                             
-                            var innerResults: List<com.holopengin.instantjpdict.data.DictionaryEntry> = emptyList()
-                            
                             for (variant in variants) {
                                 val dbResults = withContext(Dispatchers.IO) {
                                     db.dictionaryDao().findByText(variant)
                                 }
                                 if (dbResults.isNotEmpty()) {
-                                    innerResults = dbResults
-                                    matchedText = variant
-                                    break
-                                } else {
-                                    Log.v("OcrAccessibilityService", "  No match for variant: $variant")
+                                    allMatches.add(variant to dbResults.sortedByDescending { it.popularity })
                                 }
-                            }
-
-                            if (innerResults.isNotEmpty()) {
-                                foundEntries = innerResults
-                                break
                             }
                             
                             // Deinflection Pass
                             val deinflections = deinflector.deinflect(queryText)
-                            var foundDeinflection = false
-                            
-                            Log.v("OcrAccessibilityService", "  Deinflector generated ${deinflections.size} candidates for $queryText")
-                            deinflections.forEach { Log.v("OcrAccessibilityService", "    - Candidate: ${it.term} (reasons: ${it.reasons}, tags: ${it.type})") }
-                            
                             for (deinflection in deinflections) {
-                                val isOriginal = deinflection.term == queryText
-                                if (isOriginal) continue 
+                                if (deinflection.term == queryText) continue 
                                 
                                 val dbResults = withContext(Dispatchers.IO) {
                                     db.dictionaryDao().findByText(deinflection.term)
                                 }
                                 
-                                if (dbResults.isNotEmpty()) {
-                                    Log.v("OcrAccessibilityService", "    Found ${deinflection.term} in DB. Tags: ${dbResults.map { it.rules }}")
-                                    
-                                    // Filter based on rules (PoS tags)
+                                // Filter based on rules (PoS tags)
                                 val validResults = dbResults.filter { entry ->
                                     val entryTags = entry.rules.split(" ")
                                     deinflection.type.isEmpty() || 
@@ -372,24 +351,21 @@ class OcrAccessibilityService : AccessibilityService() {
                                     (entryTags.any { it.startsWith("v") } && deinflection.type.any { it.startsWith("v") })
                                 }
 
-                                    if (validResults.isNotEmpty()) {
-                                        Log.i("OcrAccessibilityService", "  Deinflection HIT: ${queryText} -> ${deinflection.term} (tags: ${deinflection.type})")
-                                        foundEntries = validResults.sortedByDescending { it.popularity }
-                                        matchedText = deinflection.term
-                                        foundDeinflection = true
-                                        break
-                                    } else {
-                                        Log.v("OcrAccessibilityService", "    PoS tags mismatch for ${deinflection.term}. Entry: ${dbResults[0].rules}, Needed: ${deinflection.type}")
-                                    }
+                                if (validResults.isNotEmpty()) {
+                                    allMatches.add(deinflection.term to validResults.sortedByDescending { it.popularity })
                                 }
                             }
-                            if (foundDeinflection) break
                         }
                         
-                        if (foundEntries.isNotEmpty()) {
-                            Log.i("OcrAccessibilityService", "MATCH FOUND for '$matchedText':")
-                            foundEntries.forEach { entry ->
-                                Log.i("OcrAccessibilityService", "  - [${entry.reading}] ${entry.definitions}")
+                        // Display all unique matches found
+                        val uniqueMatches = allMatches.distinctBy { it.first }
+                        if (uniqueMatches.isNotEmpty()) {
+                            Log.i("OcrAccessibilityService", "FOUND ${uniqueMatches.size} UNIQUE MATCHES:")
+                            uniqueMatches.forEach { (term, entries) ->
+                                Log.i("OcrAccessibilityService", "  MATCH: '$term' (${entries.size} entries)")
+                                entries.forEach { entry ->
+                                    Log.i("OcrAccessibilityService", "    - [${entry.reading}] ${entry.definitions}")
+                                }
                             }
                         } else {
                             Log.i("OcrAccessibilityService", "No dictionary results found for any part of '$followingText'")
