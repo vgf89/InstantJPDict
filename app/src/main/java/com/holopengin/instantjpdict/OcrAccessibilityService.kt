@@ -16,6 +16,12 @@ import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import android.util.Log
+import com.holopengin.instantjpdict.data.AppDatabase
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -25,6 +31,7 @@ class OcrAccessibilityService : AccessibilityService() {
     private var floatingView: View? = null
     private var screenshotOverlay: View? = null
     private lateinit var ocrEngine: MeikiOcrEngine
+    private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
     override fun onCreate() {
         super.onCreate()
@@ -295,7 +302,24 @@ class OcrAccessibilityService : AccessibilityService() {
                     // Extract following text
                     val followingText = allChars.subList(currentIdx, allChars.size).joinToString("")
                     Log.i("OcrAccessibilityService", "Tapped '$char'. Following sequence: $followingText")
-                    Toast.makeText(this, "Sequence starting with '$char' logged", Toast.LENGTH_SHORT).show()
+                    
+                    // Dictionary lookup for the single character
+                    serviceScope.launch {
+                        val results = withContext(Dispatchers.IO) {
+                            AppDatabase.getDatabase(applicationContext).dictionaryDao().findByText(char)
+                        }
+                        
+                        if (results.isNotEmpty()) {
+                            Log.i("OcrAccessibilityService", "Dictionary results for '$char':")
+                            results.forEach { entry ->
+                                Log.i("OcrAccessibilityService", "  - [${entry.reading}] ${entry.definitions}")
+                            }
+                        } else {
+                            Log.i("OcrAccessibilityService", "No dictionary results found for '$char'")
+                        }
+                    }
+                    
+                    Toast.makeText(this, "Lookup for '$char' started", Toast.LENGTH_SHORT).show()
                 }
             }
         }
