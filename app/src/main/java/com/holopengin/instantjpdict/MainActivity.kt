@@ -39,7 +39,6 @@ class MainActivity : ComponentActivity() {
             InstantJPDictTheme {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
                     val scope = rememberCoroutineScope()
-                    val importer = remember { DictionaryImporter(this) }
                     var status by remember { mutableStateOf("Ready") }
                     
                     val launcher = rememberLauncherForActivityResult(
@@ -48,11 +47,16 @@ class MainActivity : ComponentActivity() {
                         uri?.let {
                             status = "Importing..."
                             scope.launch {
-                                val result = importer.importZip(it)
-                                status = result.fold(
-                                    onSuccess = { count -> "Imported $count entries" },
-                                    onFailure = { e -> "Error: ${e.message}" }
-                                )
+                                try {
+                                    val importer = DictionaryImporter(applicationContext)
+                                    val result = importer.importZip(it)
+                                    status = result.fold(
+                                        onSuccess = { count -> "Imported $count entries" },
+                                        onFailure = { e -> "Error: ${e.message}" }
+                                    )
+                                } catch (e: Exception) {
+                                    status = "Error initializing importer: ${e.message}"
+                                }
                             }
                         }
                     }
@@ -67,8 +71,13 @@ class MainActivity : ComponentActivity() {
                         },
                         onCheckDb = {
                             scope.launch {
-                                val count = AppDatabase.getDatabase(this@MainActivity).dictionaryDao().getCount()
-                                status = "DB contains $count entries"
+                                try {
+                                    val db = AppDatabase.getDatabase(applicationContext)
+                                    val count = db.dictionaryDao().getCount()
+                                    status = "DB contains $count entries"
+                                } catch (e: Exception) {
+                                    status = "DB Error: ${e.message}"
+                                }
                             }
                         },
                         modifier = Modifier.padding(innerPadding)

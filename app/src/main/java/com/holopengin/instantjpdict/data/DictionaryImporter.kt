@@ -10,12 +10,13 @@ import java.io.InputStreamReader
 import java.util.zip.ZipInputStream
 
 class DictionaryImporter(private val context: Context) {
-    private val db = AppDatabase.getDatabase(context)
-    private val dao = db.dictionaryDao()
     private val gson = Gson()
 
     suspend fun importZip(uri: android.net.Uri): Result<Int> = withContext(Dispatchers.IO) {
         try {
+            val db = AppDatabase.getDatabase(context)
+            val dao = db.dictionaryDao()
+            
             val inputStream = context.contentResolver.openInputStream(uri) ?: return@withContext Result.failure(Exception("Failed to open input stream"))
             val zipInputStream = ZipInputStream(inputStream)
             var totalEntries = 0
@@ -25,7 +26,7 @@ class DictionaryImporter(private val context: Context) {
                 if (entry.name.startsWith("term_bank_") && entry.name.endsWith(".json")) {
                     Log.d("DictionaryImporter", "Processing ${entry.name}")
                     val reader = JsonReader(InputStreamReader(zipInputStream, "UTF-8"))
-                    totalEntries += parseTermBank(reader)
+                    totalEntries += parseTermBank(reader, dao)
                 }
                 zipInputStream.closeEntry()
                 entry = zipInputStream.nextEntry
@@ -38,7 +39,7 @@ class DictionaryImporter(private val context: Context) {
         }
     }
 
-    private suspend fun parseTermBank(reader: JsonReader): Int {
+    private suspend fun parseTermBank(reader: JsonReader, dao: DictionaryDao): Int {
         var count = 0
         val batchSize = 1000
         val batch = mutableListOf<DictionaryEntry>()
