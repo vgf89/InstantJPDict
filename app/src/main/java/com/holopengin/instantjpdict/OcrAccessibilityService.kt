@@ -11,6 +11,7 @@ import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.widget.Button
 import android.widget.FrameLayout
+import android.widget.ProgressBar
 import android.widget.Toast
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -120,17 +121,38 @@ class OcrAccessibilityService : AccessibilityService() {
                     WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
             width = WindowManager.LayoutParams.MATCH_PARENT
             height = WindowManager.LayoutParams.MATCH_PARENT
+            gravity = Gravity.FILL
+            layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
         }
 
-        val imageView = android.widget.ImageView(this).apply {
-            setImageBitmap(bitmap)
-            scaleType = android.widget.ImageView.ScaleType.FIT_XY
+        val rootLayout = FrameLayout(this).apply {
             setOnClickListener {
                 hideScreenshotOverlay()
             }
         }
 
-        screenshotOverlay = imageView
+        val imageView = android.widget.ImageView(this).apply {
+            setImageBitmap(bitmap)
+            scaleType = android.widget.ImageView.ScaleType.FIT_XY
+            // Dim the image
+            colorFilter = android.graphics.ColorMatrixColorFilter(android.graphics.ColorMatrix().apply {
+                setScale(0.5f, 0.5f, 0.5f, 1f)
+            })
+        }
+        rootLayout.addView(imageView)
+
+        val progressBar = ProgressBar(this).apply {
+            isIndeterminate = true
+        }
+        val progressParams = FrameLayout.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT
+        ).apply {
+            gravity = Gravity.CENTER
+        }
+        rootLayout.addView(progressBar, progressParams)
+
+        screenshotOverlay = rootLayout
         windowManager?.addView(screenshotOverlay, params)
     }
 
