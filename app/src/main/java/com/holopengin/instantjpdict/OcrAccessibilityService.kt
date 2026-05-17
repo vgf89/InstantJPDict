@@ -454,15 +454,8 @@ class OcrAccessibilityService : AccessibilityService() {
                 }
 
                 try {
-                    val definitions: List<String> = gson.fromJson(entry.definitions, object : com.google.gson.reflect.TypeToken<List<String>>() {}.type)
-                    for (def in definitions) {
-                        termSection.addView(TextView(this).apply {
-                            text = "• $def"
-                            setTextColor(android.graphics.Color.WHITE)
-                            textSize = 16f
-                            setPadding(20, 5, 0, 5)
-                        })
-                    }
+                    val definitions = gson.fromJson<Any>(entry.definitions, Any::class.java)
+                    renderDefinition(termSection, definitions)
                 } catch (e: Exception) {
                     termSection.addView(TextView(this).apply {
                         text = entry.definitions
@@ -527,6 +520,41 @@ class OcrAccessibilityService : AccessibilityService() {
         }
 
         rootLayout.addView(container, params)
+    }
+
+    private fun renderDefinition(container: LinearLayout, data: Any?, level: Int = 0) {
+        when (data) {
+            is String -> {
+                container.addView(TextView(this).apply {
+                    text = if (level == 0) "• $data" else data
+                    setTextColor(android.graphics.Color.WHITE)
+                    textSize = 16f
+                    setPadding(20 * (level + 1), 5, 0, 5)
+                })
+            }
+            is List<*> -> {
+                for (item in data) {
+                    renderDefinition(container, item, level)
+                }
+            }
+            is Map<*, *> -> {
+                // Handle Yomitan Structured Content
+                val content = data["content"]
+                if (content != null) {
+                    renderDefinition(container, content, level + 1)
+                } else {
+                    val text = data["text"]
+                    if (text is String) {
+                        container.addView(TextView(this).apply {
+                            this.text = text
+                            setTextColor(android.graphics.Color.WHITE)
+                            textSize = 16f
+                            setPadding(20 * (level + 1), 5, 0, 5)
+                        })
+                    }
+                }
+            }
+        }
     }
 
     private fun hideScreenshotOverlay() {
