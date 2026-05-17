@@ -14,10 +14,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -49,7 +51,9 @@ class MainActivity : ComponentActivity() {
                             scope.launch {
                                 try {
                                     val importer = DictionaryImporter(applicationContext)
-                                    val result = importer.importZip(it)
+                                    val result = importer.importZip(it) { progress ->
+                                        status = "Importing: $progress entries..."
+                                    }
                                     status = result.fold(
                                         onSuccess = { count -> "Imported $count entries" },
                                         onFailure = { e -> "Error: ${e.message}" }
@@ -80,6 +84,17 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
                         },
+                        onClearDb = {
+                            scope.launch {
+                                try {
+                                    val db = AppDatabase.getDatabase(applicationContext)
+                                    db.dictionaryDao().clearAll()
+                                    status = "Dictionary wiped"
+                                } catch (e: Exception) {
+                                    status = "Error wiping DB: ${e.message}"
+                                }
+                            }
+                        },
                         modifier = Modifier.padding(innerPadding)
                     )
                 }
@@ -94,8 +109,32 @@ fun HomeScreen(
     onOpenSettings: () -> Unit,
     onImportDict: () -> Unit,
     onCheckDb: () -> Unit,
+    onClearDb: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    var showDeleteConfirm by remember { mutableStateOf(false) }
+
+    if (showDeleteConfirm) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = false },
+            title = { Text("Wipe Dictionary") },
+            text = { Text("Are you sure you want to clear all dictionary entries? This cannot be undone.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    onClearDb()
+                    showDeleteConfirm = false
+                }) {
+                    Text("Wipe", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteConfirm = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
     Column(modifier = modifier.padding(16.dp)) {
         Text(text = "Instant JP Dict", style = MaterialTheme.typography.headlineMedium)
         Spacer(modifier = Modifier.height(8.dp))
@@ -111,6 +150,17 @@ fun HomeScreen(
         Spacer(modifier = Modifier.height(8.dp))
         Button(onClick = onCheckDb, modifier = Modifier.fillMaxWidth()) {
             Text("Check DB Count")
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        Button(
+            onClick = { showDeleteConfirm = true },
+            modifier = Modifier.fillMaxWidth(),
+            colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.errorContainer,
+                contentColor = MaterialTheme.colorScheme.onErrorContainer
+            )
+        ) {
+            Text("Wipe Dictionary")
         }
     }
 }
