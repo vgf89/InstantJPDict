@@ -12,7 +12,7 @@ import java.util.zip.ZipInputStream
 class DictionaryImporter(private val context: Context) {
     private val gson = Gson()
 
-    suspend fun importZip(uri: android.net.Uri): Result<Int> = withContext(Dispatchers.IO) {
+    suspend fun importZip(uri: android.net.Uri, onProgress: (Int) -> Unit): Result<Int> = withContext(Dispatchers.IO) {
         try {
             val db = AppDatabase.getDatabase(context)
             val dao = db.dictionaryDao()
@@ -26,7 +26,9 @@ class DictionaryImporter(private val context: Context) {
                 if (entry.name.startsWith("term_bank_") && entry.name.endsWith(".json")) {
                     Log.d("DictionaryImporter", "Processing ${entry.name}")
                     val reader = JsonReader(InputStreamReader(zipInputStream, "UTF-8"))
-                    totalEntries += parseTermBank(reader, dao)
+                    totalEntries += parseTermBank(reader, dao) { batchCount ->
+                        onProgress(totalEntries + batchCount)
+                    }
                 }
                 zipInputStream.closeEntry()
                 entry = zipInputStream.nextEntry
@@ -39,7 +41,7 @@ class DictionaryImporter(private val context: Context) {
         }
     }
 
-    private suspend fun parseTermBank(reader: JsonReader, dao: DictionaryDao): Int {
+    private suspend fun parseTermBank(reader: JsonReader, dao: DictionaryDao, onBatchImported: (Int) -> Unit): Int {
         var count = 0
         val batchSize = 1000
         val batch = mutableListOf<DictionaryEntry>()
@@ -55,12 +57,14 @@ class DictionaryImporter(private val context: Context) {
             if (batch.size >= batchSize) {
                 dao.insertAll(batch)
                 batch.clear()
+                onBatchImported(count)
             }
         }
         reader.endArray()
 
         if (batch.isNotEmpty()) {
             dao.insertAll(batch)
+            onBatchImported(count)
         }
         return count
     }
