@@ -16,6 +16,9 @@ import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import android.util.Log
+import android.widget.LinearLayout
+import android.widget.ScrollView
+import com.google.gson.Gson
 import com.holopengin.instantjpdict.data.AppDatabase
 import com.holopengin.instantjpdict.util.Deinflector
 import com.holopengin.instantjpdict.util.JapaneseUtil
@@ -34,6 +37,7 @@ class OcrAccessibilityService : AccessibilityService() {
     private var screenshotOverlay: View? = null
     private lateinit var ocrEngine: MeikiOcrEngine
     private lateinit var deinflector: Deinflector
+    private val gson = Gson()
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
     override fun onCreate() {
@@ -361,6 +365,9 @@ class OcrAccessibilityService : AccessibilityService() {
                         val uniqueMatches = allMatches.distinctBy { it.first }
                         if (uniqueMatches.isNotEmpty()) {
                             Log.i("OcrAccessibilityService", "FOUND ${uniqueMatches.size} UNIQUE MATCHES:")
+                            withContext(Dispatchers.Main) {
+                                showResultsUi(rootLayout, uniqueMatches)
+                            }
                             uniqueMatches.forEach { (term, entries) ->
                                 Log.i("OcrAccessibilityService", "  MATCH: '$term' (${entries.size} entries)")
                                 entries.forEach { entry ->
@@ -376,6 +383,110 @@ class OcrAccessibilityService : AccessibilityService() {
                 }
             }
         }
+    }
+
+    private fun showResultsUi(rootLayout: FrameLayout, matches: List<Pair<String, List<com.holopengin.instantjpdict.data.DictionaryEntry>>>) {
+        // Remove existing result view if any
+        rootLayout.findViewWithTag<View>("results_panel")?.let { rootLayout.removeView(it) }
+
+        val container = LinearLayout(this).apply {
+            tag = "results_panel"
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(android.graphics.Color.argb(235, 30, 30, 30))
+            setPadding(40, 40, 40, 40)
+            elevation = 20f
+        }
+
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+
+        header.addView(TextView(this).apply {
+            text = "Dictionary Results"
+            setTextColor(android.graphics.Color.WHITE)
+            textSize = 20f
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        })
+
+        header.addView(Button(this).apply {
+            text = "X"
+            setOnClickListener { rootLayout.removeView(container) }
+            layoutParams = LinearLayout.LayoutParams(120, 120)
+        })
+
+        container.addView(header)
+
+        val scrollView = ScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
+        }
+
+        val scrollContent = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, 20, 0, 80)
+        }
+
+        for ((term, entries) in matches) {
+            val termSection = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(0, 30, 0, 30)
+            }
+
+            termSection.addView(TextView(this).apply {
+                text = term
+                setTextColor(android.graphics.Color.CYAN)
+                textSize = 24f
+                typeface = android.graphics.Typeface.DEFAULT_BOLD
+            })
+
+            for (entry in entries) {
+                if (entry.reading.isNotEmpty() && entry.reading != term) {
+                    termSection.addView(TextView(this).apply {
+                        text = "Reading: ${entry.reading}"
+                        setTextColor(android.graphics.Color.LTGRAY)
+                        textSize = 16f
+                    })
+                }
+
+                try {
+                    val definitions: List<String> = gson.fromJson(entry.definitions, object : com.google.gson.reflect.TypeToken<List<String>>() {}.type)
+                    for (def in definitions) {
+                        termSection.addView(TextView(this).apply {
+                            text = "• $def"
+                            setTextColor(android.graphics.Color.WHITE)
+                            textSize = 16f
+                            setPadding(20, 5, 0, 5)
+                        })
+                    }
+                } catch (e: Exception) {
+                    termSection.addView(TextView(this).apply {
+                        text = entry.definitions
+                        setTextColor(android.graphics.Color.WHITE)
+                        textSize = 14f
+                    })
+                }
+                
+                termSection.addView(View(this).apply {
+                    layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 2)
+                    setBackgroundColor(android.graphics.Color.DKGRAY)
+                    alpha = 0.5f
+                })
+            }
+            scrollContent.addView(termSection)
+        }
+
+        scrollView.addView(scrollContent)
+        container.addView(scrollView)
+
+        val params = FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            (rootLayout.height * 0.4).toInt()
+        ).apply {
+            gravity = Gravity.BOTTOM
+        }
+
+        rootLayout.addView(container, params)
     }
 
     private fun hideScreenshotOverlay() {
