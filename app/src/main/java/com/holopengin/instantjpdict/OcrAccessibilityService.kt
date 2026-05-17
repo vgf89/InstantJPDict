@@ -419,12 +419,12 @@ class OcrAccessibilityService : AccessibilityService() {
 
                                 val debugView = rootLayout.findViewWithTag<TextView>("debug_text")
                                 if (debugView != null) {
-                                    debugView.text = "No entry found: $char~~"
+                                    debugView.text = "No entry found"
                                     debugView.postDelayed({
                                         val currentStatus = debugView.text.toString()
-                                        if (currentStatus == "No entry found: $char~~") {
+                                        if (currentStatus == "No entry found") {
                                             val count = results.sumOf { line -> line.charBoxes.size }
-                                            debugView.text = "Done. Found $count characters."
+                                            debugView.text = "Found $count characters."
                                         }
                                     }, 2000)
                                 }
