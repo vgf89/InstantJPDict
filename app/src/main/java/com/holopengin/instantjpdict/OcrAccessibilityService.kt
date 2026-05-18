@@ -250,8 +250,8 @@ class OcrAccessibilityService : AccessibilityService() {
             tag = "debug_text"
             setTextColor(android.graphics.Color.YELLOW)
             setBackgroundColor(android.graphics.Color.argb(200, 0, 0, 0))
-            setPadding(40, 20, 40, 20)
-            textSize = 16f
+            setPadding(20, 10, 20, 10)
+            textSize = 12f
             text = "Initializing OCR..."
         }
         val debugParams = FrameLayout.LayoutParams(
@@ -259,7 +259,7 @@ class OcrAccessibilityService : AccessibilityService() {
             WindowManager.LayoutParams.WRAP_CONTENT
         ).apply {
             gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
-            bottomMargin = 100
+            bottomMargin = 0
         }
         rootLayout.addView(debugTextView, debugParams)
 
