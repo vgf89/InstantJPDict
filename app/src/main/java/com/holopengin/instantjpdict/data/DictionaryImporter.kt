@@ -50,6 +50,11 @@ class DictionaryImporter(private val context: Context) {
                     totalEntries += parseTermBank(reader, dao, dictionaryId) { batchCount ->
                         onProgress(totalEntries + batchCount)
                     }
+                } else if (entry2.name.startsWith("kanji_bank_") && entry2.name.endsWith(".json")) {
+                    val reader = JsonReader(InputStreamReader(zipInputStream2, "UTF-8"))
+                    totalEntries += parseKanjiBank(reader, dao, dictionaryId) { batchCount ->
+                        onProgress(totalEntries + batchCount)
+                    }
                 }
                 zipInputStream2.closeEntry()
                 entry2 = zipInputStream2.nextEntry
@@ -59,6 +64,59 @@ class DictionaryImporter(private val context: Context) {
         } catch (e: Exception) {
             Log.e("DictionaryImporter", "Import failed", e)
             Result.failure(e)
+        }
+    }
+
+    private suspend fun parseKanjiBank(reader: JsonReader, dao: DictionaryDao, dictionaryId: Int, onBatchImported: (Int) -> Unit): Int {
+        var count = 0
+        val batchSize = 1000
+        val batch = mutableListOf<DictionaryEntry>()
+
+        reader.beginArray()
+        while (reader.hasNext()) {
+            val kanjiData = parseKanjiEntry(reader, dictionaryId)
+            if (kanjiData != null) {
+                batch.add(kanjiData)
+                count++
+            }
+
+            if (batch.size >= batchSize) {
+                dao.insertAll(batch)
+                batch.clear()
+                onBatchImported(count)
+            }
+        }
+        reader.endArray()
+
+        if (batch.isNotEmpty()) {
+            dao.insertAll(batch)
+            onBatchImported(count)
+        }
+        return count
+    }
+
+    private fun parseKanjiEntry(reader: JsonReader, dictionaryId: Int): DictionaryEntry? {
+        try {
+            reader.beginArray()
+            val kanji = reader.nextString()
+            val reading = reader.nextString() // On
+            reader.skipValue() // Kun
+            reader.skipValue() // Grade / Frequency info
+            val definitions = gson.fromJson<Any>(reader, Any::class.java) // Glossary
+            reader.skipValue() // Metadata object
+            reader.endArray()
+
+            return DictionaryEntry(
+                kanji = kanji,
+                reading = reading,
+                definitions = gson.toJson(definitions),
+                rules = "",
+                popularity = 0,
+                dictionaryId = dictionaryId
+            )
+        } catch (e: Exception) {
+            Log.e("DictionaryImporter", "Failed to parse kanji entry", e)
+            return null
         }
     }
 

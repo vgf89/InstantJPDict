@@ -812,18 +812,20 @@ class OcrAccessibilityService : AccessibilityService() {
             }
             is Map<*, *> -> {
                 // Handle Yomitan Structured Content
-                val content = data["content"]
+                val content = data["content"] ?: data["list"]
                 if (content != null) {
                     renderDefinition(container, content, level + 1)
                 } else {
-                    val text = data["text"]
-                    if (text is String) {
-                        container.addView(TextView(this).apply {
-                            this.text = text
-                            setTextColor(android.graphics.Color.WHITE)
-                            textSize = 16f
-                            setPadding(20 * (level + 1), 5, 0, 5)
-                        })
+                    // KANJIDIC: sometimes just a map of fields
+                    data.forEach { (key, value) ->
+                         // Filter out keys we might not want to display
+                         if (key !in listOf("ucs", "strokes", "skip")) {
+                             container.addView(TextView(this).apply {
+                                text = "$key: $value"
+                                setTextColor(android.graphics.Color.LTGRAY)
+                                textSize = 14f
+                             })
+                         }
                     }
                 }
             }
