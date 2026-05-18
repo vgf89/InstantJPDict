@@ -473,48 +473,75 @@ class OcrAccessibilityService : AccessibilityService() {
                         val allMatches = mutableListOf<Pair<String, List<com.holopengin.instantjpdict.data.DictionaryEntry>>>()
                         var maxMatchedLen = 0
 
+                        // 1. Pre-calculate all candidate terms to minimize DB round-trips
+                        val candidatesByLength = mutableListOf<Pair<Int, List<Pair<String, List<String>?>>>>()
+                        val allTermsToSearch = mutableSetOf<String>()
+
                         for (len in followingText.length downTo 1) {
                             val queryTextRaw = followingText.substring(0, len)
                             val queryText = JapaneseUtil.normalize(queryTextRaw)
-                            val queryTextHiragana = JapaneseUtil.katakanaToHiragana(queryText)
-                            val queryTextCollapsed = JapaneseUtil.collapseEmphatic(queryText)
-                            val variants = listOf(queryText, queryTextHiragana, queryTextCollapsed).distinct()
                             
-                            var foundInThisLen = false
-                            for (variant in variants) {
-                                val dbResults = withContext(Dispatchers.IO) {
-                                    db.dictionaryDao().findByText(variant)
+                            val variants = listOf(
+                                queryText,
+                                JapaneseUtil.katakanaToHiragana(queryText),
+                                JapaneseUtil.collapseEmphatic(queryText)
+                            ).distinct()
+                            
+                            val deinflections = deinflector.deinflect(queryText)
+                            
+                            val lengthCandidates = mutableListOf<Pair<String, List<String>?>>()
+                            variants.forEach { 
+                                lengthCandidates.add(it to null)
+                                allTermsToSearch.add(it)
+                            }
+                            deinflections.forEach { 
+                                if (it.term != queryText) {
+                                    lengthCandidates.add(it.term to it.type)
+                                    allTermsToSearch.add(it.term)
                                 }
+                            }
+                            candidatesByLength.add(len to lengthCandidates)
+                        }
+
+                        // 2. Single Batch Query
+                        val dbResults = withContext(Dispatchers.IO) {
+                            db.dictionaryDao().findByTexts(allTermsToSearch.toList())
+                        }
+                        
+                        // Group results by the search term (kanji or reading) for fast lookup
+                        val resultsByTerm = mutableMapOf<String, MutableList<com.holopengin.instantjpdict.data.DictionaryEntry>>()
+                        dbResults.forEach { entry ->
+                            if (entry.kanji in allTermsToSearch) resultsByTerm.getOrPut(entry.kanji) { mutableListOf() }.add(entry)
+                            if (entry.reading in allTermsToSearch) resultsByTerm.getOrPut(entry.reading) { mutableListOf() }.add(entry)
+                        }
+
+                        // 3. Process results in order of length (longest first)
+                        for ((len, candidates) in candidatesByLength) {
+                            var foundInThisLen = false
+                            
+                            for ((term, requiredTypes) in candidates) {
+                                val termEntries = resultsByTerm[term] ?: continue
                                 
-                                // Filter: If it's a Kanji entry (has onyomi/kunyomi), only match if the variant is the Kanji itself.
-                                // This prevents tapping Katakana/Hiragana from showing every Kanji that has that reading.
-                                val filteredResults = dbResults.filter { entry ->
-                                    val isKanjiEntry = entry.onyomi != null || entry.kunyomi != null
-                                    !isKanjiEntry || entry.kanji == variant
+                                val filteredResults = if (requiredTypes == null) {
+                                    // Variant/Direct match: Apply standard Kanji filter
+                                    val queryTextRaw = followingText.substring(0, len)
+                                    val queryText = JapaneseUtil.normalize(queryTextRaw)
+                                    termEntries.filter { entry ->
+                                        val isKanjiEntry = entry.onyomi != null || entry.kunyomi != null
+                                        !isKanjiEntry || entry.kanji == queryText
+                                    }
+                                } else {
+                                    // Deinflection match: Apply type filter
+                                    termEntries.filter { entry ->
+                                        val entryTags = entry.rules.split(" ")
+                                        requiredTypes.isEmpty() || 
+                                        requiredTypes.any { it in entryTags } ||
+                                        (entryTags.any { it.startsWith("v") } && requiredTypes.any { it.startsWith("v") })
+                                    }
                                 }
 
                                 if (filteredResults.isNotEmpty()) {
-                                    allMatches.add(variant to filteredResults)
-                                    foundInThisLen = true
-                                }
-                            }
-                            
-                            val deinflections = deinflector.deinflect(queryText)
-                            for (deinflection in deinflections) {
-                                if (deinflection.term == queryText) continue 
-                                val dbResults = withContext(Dispatchers.IO) {
-                                    db.dictionaryDao().findByText(deinflection.term)
-                                }
-                                
-                                val validResults = dbResults.filter { entry ->
-                                    val entryTags = entry.rules.split(" ")
-                                    deinflection.type.isEmpty() || 
-                                    deinflection.type.any { it in entryTags } ||
-                                    (entryTags.any { it.startsWith("v") } && deinflection.type.any { it.startsWith("v") })
-                                }
-
-                                if (validResults.isNotEmpty()) {
-                                    allMatches.add(deinflection.term to validResults)
+                                    allMatches.add(term to filteredResults.distinctBy { it.id })
                                     foundInThisLen = true
                                 }
                             }
