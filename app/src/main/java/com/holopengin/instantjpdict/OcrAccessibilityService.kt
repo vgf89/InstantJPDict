@@ -52,8 +52,14 @@ class OcrAccessibilityService : AccessibilityService() {
     
     private val screenOffReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action == Intent.ACTION_SCREEN_OFF) {
-                hideScreenshotOverlay()
+            when (intent?.action) {
+                Intent.ACTION_SCREEN_OFF -> {
+                    hideScreenshotOverlay()
+                    floatingView?.visibility = View.GONE
+                }
+                Intent.ACTION_USER_PRESENT -> {
+                    floatingView?.visibility = View.VISIBLE
+                }
             }
         }
     }
@@ -82,7 +88,10 @@ class OcrAccessibilityService : AccessibilityService() {
         ocrEngine = MeikiOcrEngine(this)
         deinflector = Deinflector(this)
         
-        val filter = IntentFilter(Intent.ACTION_SCREEN_OFF)
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_USER_PRESENT)
+        }
         registerReceiver(screenOffReceiver, filter)
     }
 
