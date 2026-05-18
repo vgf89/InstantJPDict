@@ -16,8 +16,11 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.holopengin.instantjpdict.data.AppDatabase
@@ -33,35 +36,75 @@ fun DictionaryManagerDialog(
 ) {
     val scope = rememberCoroutineScope()
     val dictionaries = remember { mutableStateListOf<DictionaryMeta>() }
+    var dictionaryToDelete by remember { mutableStateOf<DictionaryMeta?>(null) }
+    var isDeleting by remember { mutableStateOf(false) }
 
-    LaunchedEffect(Unit) {
+    // Refresh function
+    suspend fun refresh() {
         val db = AppDatabase.getDatabase(context)
         val loaded = withContext(Dispatchers.IO) { db.dictionaryDao().getAllDictionaries() }
+        dictionaries.clear()
         dictionaries.addAll(loaded)
+    }
+
+    LaunchedEffect(Unit) {
+        refresh()
+    }
+
+    if (dictionaryToDelete != null) {
+        AlertDialog(
+            onDismissRequest = { dictionaryToDelete = null },
+            title = { Text("Delete Dictionary") },
+            text = { Text("Are you sure you want to delete '${dictionaryToDelete?.name}'? All entries will be removed.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    val dict = dictionaryToDelete
+                    dictionaryToDelete = null
+                    if (dict != null) {
+                        isDeleting = true
+                        scope.launch {
+                            val db = AppDatabase.getDatabase(context)
+                            withContext(Dispatchers.IO) {
+                                db.dictionaryDao().deleteEntriesForDictionary(dict.id)
+                                db.dictionaryDao().deleteDictionary(dict.id)
+                            }
+                            refresh()
+                            isDeleting = false
+                        }
+                    }
+                }) {
+                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { dictionaryToDelete = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Manage Dictionaries") },
         text = {
-            LazyColumn {
-                itemsIndexed(dictionaries) { index, dict ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(8.dp),
-                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
-                    ) {
-                        Text(text = dict.name, modifier = Modifier.weight(1f))
-                        IconButton(onClick = {
-                            scope.launch {
-                                val db = AppDatabase.getDatabase(context)
-                                db.dictionaryDao().deleteEntriesForDictionary(dict.id)
-                                db.dictionaryDao().deleteDictionary(dict.id)
-                                dictionaries.removeAt(index)
+            if (isDeleting) {
+                androidx.compose.foundation.layout.Box(modifier = Modifier.fillMaxWidth().padding(16.dp), contentAlignment = androidx.compose.ui.Alignment.Center) {
+                    androidx.compose.material3.CircularProgressIndicator()
+                }
+            } else {
+                LazyColumn {
+                    itemsIndexed(dictionaries) { index, dict ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(8.dp),
+                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                        ) {
+                            Text(text = dict.name, modifier = Modifier.weight(1f))
+                            IconButton(onClick = { dictionaryToDelete = dict }) {
+                                Icon(Icons.Default.Delete, contentDescription = "Delete")
                             }
-                        }) {
-                            Icon(Icons.Default.Delete, contentDescription = "Delete")
                         }
                     }
                 }
