@@ -1,13 +1,17 @@
 package com.holopengin.instantjpdict
 
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -21,6 +25,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.holopengin.instantjpdict.data.AppDatabase
@@ -45,6 +50,31 @@ fun DictionaryManagerDialog(
         val loaded = withContext(Dispatchers.IO) { db.dictionaryDao().getAllDictionaries() }
         dictionaries.clear()
         dictionaries.addAll(loaded)
+    }
+
+    fun saveOrder() {
+        scope.launch(Dispatchers.IO) {
+            val dao = AppDatabase.getDatabase(context).dictionaryDao()
+            dictionaries.forEachIndexed { index, dict ->
+                dao.updatePriority(dict.id, index)
+            }
+        }
+    }
+
+    fun moveUp(index: Int) {
+        if (index > 0) {
+            val item = dictionaries.removeAt(index)
+            dictionaries.add(index - 1, item)
+            saveOrder()
+        }
+    }
+
+    fun moveDown(index: Int) {
+        if (index < dictionaries.size - 1) {
+            val item = dictionaries.removeAt(index)
+            dictionaries.add(index + 1, item)
+            saveOrder()
+        }
     }
 
     LaunchedEffect(Unit) {
@@ -90,19 +120,26 @@ fun DictionaryManagerDialog(
         title = { Text("Manage Dictionaries") },
         text = {
             if (isDeleting) {
-                androidx.compose.foundation.layout.Box(modifier = Modifier.fillMaxWidth().padding(16.dp), contentAlignment = androidx.compose.ui.Alignment.Center) {
-                    androidx.compose.material3.CircularProgressIndicator()
+                Box(modifier = Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator()
                 }
             } else {
                 LazyColumn {
-                    itemsIndexed(dictionaries) { index, dict ->
+                    itemsIndexed(dictionaries, key = { _, dict -> dict.id }) { index, dict ->
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(8.dp),
-                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                                .padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(text = dict.name, modifier = Modifier.weight(1f))
+                            
+                            IconButton(onClick = { moveUp(index) }, enabled = index > 0) {
+                                Icon(Icons.Default.ArrowUpward, contentDescription = "Move Up")
+                            }
+                            IconButton(onClick = { moveDown(index) }, enabled = index < dictionaries.size - 1) {
+                                Icon(Icons.Default.ArrowDownward, contentDescription = "Move Down")
+                            }
                             IconButton(onClick = { dictionaryToDelete = dict }) {
                                 Icon(Icons.Default.Delete, contentDescription = "Delete")
                             }

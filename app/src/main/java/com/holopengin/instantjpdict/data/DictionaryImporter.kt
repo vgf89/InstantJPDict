@@ -36,7 +36,8 @@ class DictionaryImporter(private val context: Context) {
             }
             zipInputStream1.close()
 
-            val dictionaryId = dao.insertDictionary(DictionaryMeta(name = dictTitle, priority = 0)).toInt()
+            val maxPriority = dao.getMaxPriority() ?: -1
+            val dictionaryId = dao.insertDictionary(DictionaryMeta(name = dictTitle, priority = maxPriority + 1)).toInt()
 
             // Second pass: process entries
             val inputStream2 = context.contentResolver.openInputStream(uri) ?: return@withContext Result.failure(Exception("Failed to open input stream"))
