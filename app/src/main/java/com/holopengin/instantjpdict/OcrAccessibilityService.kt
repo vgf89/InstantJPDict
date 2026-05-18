@@ -483,8 +483,16 @@ class OcrAccessibilityService : AccessibilityService() {
                                 val dbResults = withContext(Dispatchers.IO) {
                                     db.dictionaryDao().findByText(variant)
                                 }
-                                if (dbResults.isNotEmpty()) {
-                                    allMatches.add(variant to dbResults.sortedByDescending { it.popularity })
+                                
+                                // Filter: If it's a Kanji entry (has onyomi/kunyomi), only match if the variant is the Kanji itself.
+                                // This prevents tapping Katakana/Hiragana from showing every Kanji that has that reading.
+                                val filteredResults = dbResults.filter { entry ->
+                                    val isKanjiEntry = entry.onyomi != null || entry.kunyomi != null
+                                    !isKanjiEntry || entry.kanji == variant
+                                }
+
+                                if (filteredResults.isNotEmpty()) {
+                                    allMatches.add(variant to filteredResults.sortedByDescending { it.popularity })
                                     foundInThisLen = true
                                 }
                             }
@@ -602,9 +610,9 @@ class OcrAccessibilityService : AccessibilityService() {
                     setPadding(0, 10, 0, 10)
                 }
                 
-                // Kanji
+                // Kanji / Term Title
                 termHeader.addView(TextView(this).apply {
-                    text = term
+                    text = entry.kanji
                     setTextColor(android.graphics.Color.CYAN)
                     textSize = 48f
                     typeface = android.graphics.Typeface.DEFAULT_BOLD
