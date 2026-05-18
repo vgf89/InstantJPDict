@@ -228,9 +228,9 @@ class OcrAccessibilityService : AccessibilityService() {
             // Task 2: Try to keep system UI visible
             systemUiVisibility = View.SYSTEM_UI_FLAG_LAYOUT_STABLE or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
             setOnClickListener {
-                val resultsPanel = findViewWithTag<View>("results_panel")
-                if (resultsPanel != null) {
-                    removeView(resultsPanel)
+                val panel = findViewWithTag<View>("results_panel")
+                if (panel != null) {
+                    removeView(panel)
                     resetHighlights()
                 } else {
                     hideScreenshotOverlay()
@@ -275,23 +275,20 @@ class OcrAccessibilityService : AccessibilityService() {
         screenshotOverlay = rootLayout
         windowManager?.addView(screenshotOverlay, params)
         
-        // Task 5: Move button into the overlay window and ensure it's below the results panel
-        floatingView?.let { fv ->
-            floatingParams?.let { fp ->
-                if (fv.isAttachedToWindow) {
-                    windowManager?.removeView(fv)
-                }
-                ocrButton?.text = "Close OCR"
-                val lp = FrameLayout.LayoutParams(
-                    WindowManager.LayoutParams.WRAP_CONTENT,
-                    WindowManager.LayoutParams.WRAP_CONTENT
-                ).apply {
-                    leftMargin = fp.x
-                    topMargin = fp.y
-                }
-                rootLayout.addView(fv, lp)
-            }
+        // Task 5: Add a separate Close button in the overlay
+        val closeButton = Button(this).apply {
+            text = "Close OCR"
+            setOnClickListener { hideScreenshotOverlay() }
         }
+        val lp = FrameLayout.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT
+        ).apply {
+            // Position it near the original button's location
+            leftMargin = floatingParams?.x ?: 100
+            topMargin = floatingParams?.y ?: 100
+        }
+        rootLayout.addView(closeButton, lp)
 
         // Run OCR in background
         Thread {
@@ -511,7 +508,6 @@ class OcrAccessibilityService : AccessibilityService() {
                             }
                         }
                     }
-                    Toast.makeText(this@OcrAccessibilityService, "Lookup started...", Toast.LENGTH_SHORT).show()
                 }
             }
         }
@@ -813,22 +809,12 @@ class OcrAccessibilityService : AccessibilityService() {
         screenshotOverlay = null
         
         // 3. Restore the floating button to the WindowManager
-        ocrButton?.text = "OCR"
         fv.visibility = View.VISIBLE
         
         try {
-            // If for some reason it's still attached to WindowManager directly, remove it first
-            // to avoid "View already added" exception.
-            if (fv.isAttachedToWindow) {
-                windowManager?.removeViewImmediate(fv)
-            }
-            windowManager?.addView(fv, floatingParams)
+            windowManager?.updateViewLayout(fv, floatingParams)
         } catch (e: Exception) {
             Log.e("OcrAccessibilityService", "Error restoring floating button to WindowManager", e)
-            // Fallback: if addView fails, try to update layout if it's already there
-            try {
-                windowManager?.updateViewLayout(fv, floatingParams)
-            } catch (e2: Exception) {}
         }
 
         boxViews.clear()
