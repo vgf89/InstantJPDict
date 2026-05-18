@@ -592,7 +592,7 @@ class OcrAccessibilityService : AccessibilityService() {
             setPadding(0, 0, 0, 100)
         }
 
-        for ((term, entries) in matches) {
+        for ((_, entries) in matches) {
             val termSection = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(0, 20, 0, 40)
@@ -606,6 +606,8 @@ class OcrAccessibilityService : AccessibilityService() {
                 val entry = readingEntries.first()
                 val isKanjiEntry = entry.onyomi != null || entry.kunyomi != null
                 
+                val currentHeader: View
+
                 if (isKanjiEntry) {
                     // Vertical layout for Kanji lookup
                     val termHeader = LinearLayout(this).apply {
@@ -636,42 +638,53 @@ class OcrAccessibilityService : AccessibilityService() {
                         })
                     }
                     termSection.addView(termHeader)
+                    currentHeader = termHeader
                 } else {
                     // Standard Ruby/Furigana layout for words
                     val termHeader = createRubyView(entry.kanji, entry.reading)
                     termSection.addView(termHeader)
+                    currentHeader = termHeader
                 }
 
-                // Tags / JLPT info
-                val allTags = readingEntries.flatMap { it.rules.split(" ") }
-                    .filter { it.isNotEmpty() }
-                    .distinct()
-
-                val infoText = mutableListOf<String>()
-                entry.jlpt?.takeIf { it.isNotEmpty() }?.let { infoText.add("jlpt level: $it") }
+                // Process Tags and Senses across all reading entries
+                val allGlobalTags = mutableSetOf<String>()
+                val allInfoText = mutableSetOf<String>()
                 
-                // Extract grade from rules if needed
-                val gradeMatch = "grade:([^\\s]+)".toRegex().find(entry.rules)
-                gradeMatch?.groupValues?.get(1)?.let { infoText.add("grade: $it") }
+                for (e in readingEntries) {
+                    e.jlpt?.takeIf { it.isNotEmpty() }?.let { allInfoText.add("jlpt level: $it") }
+                    val gradeMatch = "grade:([^\\s]+)".toRegex().find(e.rules)
+                    gradeMatch?.groupValues?.get(1)?.let { allInfoText.add("grade: $it") }
 
-                val tagContainer = LinearLayout(this).apply {
+                    val segments = e.rules.split(" | ")
+                    val t1 = segments.getOrNull(0)?.split(" ")?.filter { it.isNotEmpty() } ?: emptyList()
+                    val rs = segments.getOrNull(1)?.split(" ")?.filter { it.isNotEmpty() } ?: emptyList()
+                    val t2 = segments.getOrNull(2)?.split(" ")?.filter { it.isNotEmpty() } ?: emptyList()
+                    
+                    (t1 + rs + t2).forEach { tag ->
+                        if (tag.toIntOrNull() == null && !tag.startsWith("grade:")) {
+                            allGlobalTags.add(tag)
+                        }
+                    }
+                }
+
+                val metadataContainer = LinearLayout(this).apply {
                     orientation = LinearLayout.VERTICAL
                     setPadding(0, 5, 0, 10)
                 }
-                termSection.addView(tagContainer)
+                termSection.addView(metadataContainer)
 
-                if (infoText.isNotEmpty()) {
-                    tagContainer.addView(TextView(this).apply {
-                        text = "(${infoText.joinToString(", ")})"
+                if (allInfoText.isNotEmpty()) {
+                    metadataContainer.addView(TextView(this).apply {
+                        text = "(${allInfoText.joinToString(", ")})"
                         setTextColor(android.graphics.Color.parseColor("#AAAAAA"))
                         textSize = 14f
                         typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.ITALIC)
                     })
                 }
 
-                if (allTags.isNotEmpty()) {
-                    tagContainer.addView(TextView(this@OcrAccessibilityService).apply {
-                        text = allTags.joinToString(", ")
+                if (allGlobalTags.isNotEmpty()) {
+                    metadataContainer.addView(TextView(this).apply {
+                        text = allGlobalTags.joinToString(", ")
                         setTextColor(android.graphics.Color.parseColor("#888888"))
                         textSize = 12f
                     })
@@ -680,7 +693,67 @@ class OcrAccessibilityService : AccessibilityService() {
                 for (e in readingEntries) {
                     try {
                         val definitions = gson.fromJson<Any>(e.definitions, Any::class.java)
-                        renderDefinition(termSection, definitions)
+                        
+                        if (definitions is List<*>) {
+                            // Re-parse tags1 and tags2 for sense-specific associations
+                            val segments = e.rules.split(" | ")
+                            val t1 = segments.getOrNull(0)?.split(" ")?.filter { it.isNotEmpty() } ?: emptyList()
+                            val t2 = segments.getOrNull(2)?.split(" ")?.filter { it.isNotEmpty() } ?: emptyList()
+                            
+                            val senseToTags = mutableMapOf<Int, MutableList<String>>()
+                            val unnumberedTags = mutableListOf<String>()
+                            
+                            fun parseSenseTags(tagList: List<String>) {
+                                var currentSenseNum: Int? = null
+                                for (tag in tagList) {
+                                    val num = tag.toIntOrNull()
+                                    if (num != null) {
+                                        currentSenseNum = num
+                                    } else {
+                                        if (currentSenseNum != null) {
+                                            senseToTags.getOrPut(currentSenseNum) { mutableListOf() }.add(tag)
+                                        } else {
+                                            unnumberedTags.add(tag)
+                                        }
+                                    }
+                                }
+                            }
+
+                            parseSenseTags(t1)
+                            parseSenseTags(t2)
+
+                            definitions.forEachIndexed { index, sense ->
+                                val senseNum = index + 1
+                                val tagsForThisSense = mutableListOf<String>()
+                                
+                                // Tags specifically for this sense index
+                                senseToTags[senseNum]?.let { tagsForThisSense.addAll(it) }
+                                
+                                // If this entry is split and only has one sense, but tags have a specific sense number,
+                                // we assume that sense number refers to this sense.
+                                if (definitions.size == 1 && senseToTags.isNotEmpty()) {
+                                    senseToTags.values.forEach { tagsForThisSense.addAll(it) }
+                                }
+                                
+                                // Add unnumbered tags if they aren't already covered
+                                tagsForThisSense.addAll(unnumberedTags)
+
+                                val finalSenseTags = tagsForThisSense.distinct().filter { it.toIntOrNull() == null && !it.startsWith("grade:") }
+                                
+                                if (finalSenseTags.isNotEmpty()) {
+                                    termSection.addView(TextView(this@OcrAccessibilityService).apply {
+                                        text = finalSenseTags.joinToString(", ")
+                                        setTextColor(android.graphics.Color.parseColor("#666666"))
+                                        textSize = 11f
+                                        setPadding(20, 5, 0, 0)
+                                    })
+                                }
+                                
+                                renderDefinition(termSection, sense, 0)
+                            }
+                        } else {
+                            renderDefinition(termSection, definitions)
+                        }
                     } catch (ex: Exception) {
                         termSection.addView(TextView(this).apply {
                             text = e.definitions
