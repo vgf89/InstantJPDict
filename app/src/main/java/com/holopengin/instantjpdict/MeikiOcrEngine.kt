@@ -103,62 +103,52 @@ class MeikiOcrEngine(private val context: Context) {
         val results = mutableListOf<LineResult>()
 
         for (box in lineBoxes) {
-            val isVertical = box.height() > box.width();
+            val isVertical = box.height() > box.width()
             try {
                 val cropX = max(0, box.left)
                 val cropY = max(0, box.top)
                 val cropW = min(bitmap.width - cropX, box.width())
                 val cropH = min(bitmap.height - cropY, box.height())
+
                 if (cropW <= 0 || cropH <= 0) continue
 
                 val crop = Bitmap.createBitmap(bitmap, cropX, cropY, cropW, cropH)
 
-                var paddedLine: Bitmap? = null
-                var resizedLine: Bitmap? = null
-                var targetH = 0
-                var targetW = 0
+                val targetW = if (isVertical) VERT_REC_WIDTH else REC_WIDTH
+                val targetH = if (isVertical) VERT_REC_HEIGHT else REC_HEIGHT
+
+                val effectiveW: Int
+                val effectiveH: Int
                 if (isVertical) {
                     val scaleFactor = 32f / crop.width
-                    targetH = min(VERT_REC_HEIGHT, (crop.height * scaleFactor).toInt())
-                    resizedLine = Bitmap.createScaledBitmap(crop, VERT_REC_WIDTH, targetH, true)
-                    paddedLine = Bitmap.createBitmap(VERT_REC_WIDTH, VERT_REC_HEIGHT, Bitmap.Config.ARGB_8888)
-
+                    effectiveW = 32
+                    effectiveH = min(VERT_REC_HEIGHT, (crop.height * scaleFactor).toInt())
                 } else {
                     val scaleFactor = 32f / crop.height
-                    targetW = min(REC_WIDTH, (crop.width * scaleFactor).toInt())
-                    resizedLine = Bitmap.createScaledBitmap(crop, targetW, REC_HEIGHT, true)
-
-                    paddedLine = Bitmap.createBitmap(REC_WIDTH, REC_HEIGHT, Bitmap.Config.ARGB_8888)
+                    effectiveH = 32
+                    effectiveW = min(REC_WIDTH, (crop.width * scaleFactor).toInt())
                 }
+
+                val resizedLine = Bitmap.createScaledBitmap(crop, effectiveW, effectiveH, true)
+                val paddedLine = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
                 val canvas = Canvas(paddedLine)
                 canvas.drawColor(Color.BLACK)
                 canvas.drawBitmap(resizedLine, 0f, 0f, null)
 
-                val imgData = if (isVertical)
-                    bitmapToFloatBuffer(paddedLine, VERT_REC_WIDTH, VERT_REC_HEIGHT)
-                else
-                    bitmapToFloatBuffer(paddedLine, REC_WIDTH, REC_HEIGHT)
-                val inputTensor = if (isVertical)
-                    OnnxTensor.createTensor(env, imgData, longArrayOf(1, 3, VERT_REC_HEIGHT.toLong(), VERT_REC_WIDTH.toLong()))
-                else
-                    OnnxTensor.createTensor(env, imgData, longArrayOf(1, 3, REC_HEIGHT.toLong(), REC_WIDTH.toLong()))
+                val imgData = bitmapToFloatBuffer(paddedLine, targetW, targetH)
+                val inputTensor = OnnxTensor.createTensor(env, imgData, longArrayOf(1, 3, targetH.toLong(), targetW.toLong()))
                 
                 val inputs = mutableMapOf<String, OnnxTensor>()
-                val imageInputName = session.inputNames.find { it.contains("image") || it.contains("input") } ?: session.inputNames.iterator().next()
+                val activeSession = if (isVertical) sessionVertical else session
+                val imageInputName = activeSession.inputNames.find { it.contains("image") || it.contains("input") } ?: activeSession.inputNames.iterator().next()
                 inputs[imageInputName] = inputTensor
 
-                val sizeData = if (isVertical)
-                    LongBuffer.wrap(longArrayOf(VERT_REC_WIDTH.toLong(), VERT_REC_HEIGHT.toLong()))
-                else
-                    LongBuffer.wrap(longArrayOf(REC_WIDTH.toLong(), REC_HEIGHT.toLong()))
+                val sizeData = LongBuffer.wrap(longArrayOf(targetW.toLong(), targetH.toLong()))
                 inputs["orig_target_sizes"] = OnnxTensor.createTensor(env, sizeData, longArrayOf(1, 2))
 
-                val output = if (isVertical)
-                    sessionVertical.run(inputs)
-                else
-                    session.run(inputs)
+                val output = activeSession.run(inputs)
 
-                val outputNames = session.outputNames.toList()
+                val outputNames = activeSession.outputNames.toList()
                 val labelsResult = output.get(outputNames.find { it.contains("labels") } ?: outputNames[0])
                 val boxesResult = output.get(outputNames.find { it.contains("boxes") } ?: outputNames[1])
                 val scoresResult = output.get(outputNames.find { it.contains("scores") } ?: outputNames[2])
@@ -184,7 +174,7 @@ class MeikiOcrEngine(private val context: Context) {
                             CharCandidate(
                                 char = labelsArr[i].toInt().toChar(),
                                 score = scoresArr[i],
-                                box = boxesArr[i] // [x1, y1, x2, y2]
+                                box = boxesArr[i] // [rx1, ry1, rx2, ry2]
                             )
                         )
                     }
@@ -195,22 +185,21 @@ class MeikiOcrEngine(private val context: Context) {
                 for (cand in candidates) {
                     var keep = true
                     for (f in filtered) {
-                        if (isVertical) {
-                            if (calculateYOverlap(cand.box, f.box) > X_OVERLAP_THRESHOLD) {
-                                keep = false
-                                break
-                            }
-                        } else {
-                            if (calculateXOverlap(cand.box, f.box) > X_OVERLAP_THRESHOLD) {
-                                keep = false
-                                break
-                            }
+                        val overlap = if (isVertical) calculateYOverlap(cand.box, f.box) else calculateXOverlap(cand.box, f.box)
+                        if (overlap > X_OVERLAP_THRESHOLD) {
+                            keep = false
+                            break
                         }
                     }
                     if (keep) filtered.add(cand)
                 }
 
-                filtered.sortBy { it.box[0] }
+                if (isVertical) {
+                    filtered.sortBy { it.box[1] }
+                } else {
+                    filtered.sortBy { it.box[0] }
+                }
+                
                 val text = filtered.joinToString("") { it.char.toString() }
                 
                 val charBoxes = filtered.map { cand ->
@@ -219,27 +208,23 @@ class MeikiOcrEngine(private val context: Context) {
                     val rx2 = cand.box[2]
                     val ry2 = cand.box[3]
 
-                    var x1 = 0.0f
-                    var y1 = 0.0f
-                    var x2 = 0.0f
-                    var y2 = 0.0f
+                    val x1: Float
+                    val y1: Float
+                    val x2: Float
+                    val y2: Float
+                    
                     if (isVertical) {
-                        val effectiveH = targetH.toFloat()
-                        y1 = (min(ry1, effectiveH) / effectiveH) * crop.height + cropY
                         x1 = (rx1 / 32f) * crop.width + cropX
-                        y2 = (min(ry2, effectiveH) / effectiveH) * crop.height + cropY
+                        y1 = (ry1 / effectiveH) * crop.height + cropY
                         x2 = (rx2 / 32f) * crop.width + cropX
+                        y2 = (ry2 / effectiveH) * crop.height + cropY
                     } else {
-                        val effectiveW = targetW.toFloat()
-                        x1 = (min(rx1, effectiveW) / effectiveW) * crop.width + cropX
+                        x1 = (rx1 / effectiveW) * crop.width + cropX
                         y1 = (ry1 / 32f) * crop.height + cropY
-                        x2 = (min(rx2, effectiveW) / effectiveW) * crop.width + cropX
+                        x2 = (rx2 / effectiveW) * crop.width + cropX
                         y2 = (ry2 / 32f) * crop.height + cropY
                     }
-                    Log.d(
-                        "MeikiOcrEngine",
-                        "Char Box: [$x1, $y1, $x2, $y2] size: ${x2 - x1}x${y2 - y1}"
-                    )
+                    
                     Rect(x1.toInt(), y1.toInt(), x2.toInt(), y2.toInt())
                 }
 

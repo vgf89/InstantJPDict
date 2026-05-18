@@ -242,6 +242,18 @@ class OcrAccessibilityService : AccessibilityService() {
                         
                         // Draw character results
                         drawResults(rootLayout, results)
+
+                        // Draw line boxes for debugging
+                        lineBoxes.forEach { box ->
+                            val lineView = View(this@OcrAccessibilityService).apply {
+                                background = borderDrawable
+                            }
+                            val lineParams = FrameLayout.LayoutParams(box.width(), box.height()).apply {
+                                leftMargin = box.left
+                                topMargin = box.top
+                            }
+                            rootLayout.addView(lineView, lineParams)
+                        }
                         
                         // Log results
                         results.forEach { line ->
@@ -329,7 +341,8 @@ class OcrAccessibilityService : AccessibilityService() {
                 textViews.add(textView)
 
                 val boxView = View(this).apply {
-                    background = null // Entirely transparent
+                    background = highlightDrawable // Visible border for debugging
+                    alpha = 0.5f
                     isClickable = true
                 }
                 // Center the clickable box vertically in the container to match character position
