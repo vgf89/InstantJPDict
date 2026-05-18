@@ -603,40 +603,44 @@ class OcrAccessibilityService : AccessibilityService() {
             val entriesByReading = entries.groupBy { it.reading }
 
             for ((_, readingEntries) in entriesByReading) {
-                // Term with specific layout
                 val entry = readingEntries.first()
-                val termHeader = LinearLayout(this).apply {
-                    orientation = LinearLayout.VERTICAL
-                    setPadding(0, 10, 0, 10)
-                }
-                
-                // Kanji / Term Title
-                termHeader.addView(TextView(this).apply {
-                    text = entry.kanji
-                    setTextColor(android.graphics.Color.CYAN)
-                    textSize = 48f
-                    typeface = android.graphics.Typeface.DEFAULT_BOLD
-                })
+                val isKanjiEntry = entry.onyomi != null || entry.kunyomi != null
 
-                // Onyomi
-                entry.onyomi?.let {
+                if (isKanjiEntry) {
+                    // Vertical layout for Kanji lookup
+                    val termHeader = LinearLayout(this).apply {
+                        orientation = LinearLayout.VERTICAL
+                        setPadding(0, 10, 0, 10)
+                    }
+                    
                     termHeader.addView(TextView(this).apply {
-                        text = "on: $it"
-                        setTextColor(android.graphics.Color.LTGRAY)
-                        textSize = 18f
+                        text = entry.kanji
+                        setTextColor(android.graphics.Color.CYAN)
+                        textSize = 48f
+                        typeface = android.graphics.Typeface.DEFAULT_BOLD
                     })
-                }
 
-                // Kunyomi
-                entry.kunyomi?.let {
-                    termHeader.addView(TextView(this).apply {
-                        text = "kun: $it"
-                        setTextColor(android.graphics.Color.LTGRAY)
-                        textSize = 18f
-                    })
+                    entry.onyomi?.takeIf { it.isNotEmpty() }?.let {
+                        termHeader.addView(TextView(this).apply {
+                            text = "on: $it"
+                            setTextColor(android.graphics.Color.LTGRAY)
+                            textSize = 18f
+                        })
+                    }
+
+                    entry.kunyomi?.takeIf { it.isNotEmpty() }?.let {
+                        termHeader.addView(TextView(this).apply {
+                            text = "kun: $it"
+                            setTextColor(android.graphics.Color.LTGRAY)
+                            textSize = 18f
+                        })
+                    }
+                    termSection.addView(termHeader)
+                } else {
+                    // Standard Ruby/Furigana layout for words
+                    val termHeader = createRubyView(entry.kanji, entry.reading)
+                    termSection.addView(termHeader)
                 }
-                
-                termSection.addView(termHeader)
 
                 // Tags / JLPT info
                 val infoText = mutableListOf<String>()
