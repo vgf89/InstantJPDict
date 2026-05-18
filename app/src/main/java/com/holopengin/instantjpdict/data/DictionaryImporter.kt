@@ -99,20 +99,26 @@ class DictionaryImporter(private val context: Context) {
         try {
             reader.beginArray()
             val kanji = reader.nextString()
-            val reading = reader.nextString() // On
-            reader.skipValue() // Kun
-            reader.skipValue() // Grade / Frequency info
+            val onyomi = reader.nextString() // On
+            val kunyomi = reader.nextString() // Kun
+            val gradeFreq = reader.nextString() // Grade / Frequency info
             val definitions = gson.fromJson<Any>(reader, Any::class.java) // Glossary
-            reader.skipValue() // Metadata object
+            val meta = gson.fromJson<Map<String, Any>>(reader, Map::class.java) // Metadata object
             reader.endArray()
+
+            val jlpt = meta["jlpt"]?.toString() ?: ""
+            val rules = "grade:$gradeFreq"
 
             return DictionaryEntry(
                 kanji = kanji,
-                reading = reading,
+                reading = onyomi, // Keep 'reading' for compatibility
                 definitions = gson.toJson(definitions),
-                rules = "",
+                rules = rules,
                 popularity = 0,
-                dictionaryId = dictionaryId
+                dictionaryId = dictionaryId,
+                onyomi = onyomi,
+                kunyomi = kunyomi,
+                jlpt = jlpt
             )
         } catch (e: Exception) {
             Log.e("DictionaryImporter", "Failed to parse kanji entry", e)

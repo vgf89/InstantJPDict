@@ -591,22 +591,56 @@ class OcrAccessibilityService : AccessibilityService() {
             }
 
             // Group entries by reading to combine them
+            // Use reading from the database or specific onyomi/kunyomi fields
             val entriesByReading = entries.groupBy { it.reading }
 
-            for ((reading, readingEntries) in entriesByReading) {
-                // Term with Furigana
-                val termHeader = createRubyView(term, reading)
+            for ((_, readingEntries) in entriesByReading) {
+                // Term with specific layout
+                val entry = readingEntries.first()
+                val termHeader = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(0, 10, 0, 10)
+                }
+                
+                // Kanji
+                termHeader.addView(TextView(this).apply {
+                    text = term
+                    setTextColor(android.graphics.Color.CYAN)
+                    textSize = 48f
+                    typeface = android.graphics.Typeface.DEFAULT_BOLD
+                })
+
+                // Onyomi
+                entry.onyomi?.let {
+                    termHeader.addView(TextView(this).apply {
+                        text = "on: $it"
+                        setTextColor(android.graphics.Color.LTGRAY)
+                        textSize = 18f
+                    })
+                }
+
+                // Kunyomi
+                entry.kunyomi?.let {
+                    termHeader.addView(TextView(this).apply {
+                        text = "kun: $it"
+                        setTextColor(android.graphics.Color.LTGRAY)
+                        textSize = 18f
+                    })
+                }
+                
                 termSection.addView(termHeader)
 
-                // Tags / Parts of Speech (combined from all entries with this reading)
-                val allTags = readingEntries.flatMap { it.rules.split(" ") }
-                    .filter { it.isNotEmpty() }
-                    .distinct()
-                    .map { formatTag(it) }
+                // Tags / JLPT info
+                val infoText = mutableListOf<String>()
+                entry.jlpt?.takeIf { it.isNotEmpty() }?.let { infoText.add("jlpt level: $it") }
                 
-                if (allTags.isNotEmpty()) {
+                // Extract grade from rules if needed
+                val gradeMatch = "grade:([^\\s]+)".toRegex().find(entry.rules)
+                gradeMatch?.groupValues?.get(1)?.let { infoText.add("grade: $it") }
+
+                if (infoText.isNotEmpty()) {
                     termSection.addView(TextView(this).apply {
-                        text = allTags.joinToString(", ")
+                        text = "(${infoText.joinToString(", ")})"
                         setTextColor(android.graphics.Color.parseColor("#AAAAAA"))
                         textSize = 14f
                         setPadding(0, 5, 0, 10)
@@ -614,13 +648,13 @@ class OcrAccessibilityService : AccessibilityService() {
                     })
                 }
 
-                for (entry in readingEntries) {
+                for (e in readingEntries) {
                     try {
-                        val definitions = gson.fromJson<Any>(entry.definitions, Any::class.java)
+                        val definitions = gson.fromJson<Any>(e.definitions, Any::class.java)
                         renderDefinition(termSection, definitions)
-                    } catch (e: Exception) {
+                    } catch (ex: Exception) {
                         termSection.addView(TextView(this).apply {
-                            text = entry.definitions
+                            text = e.definitions
                             setTextColor(android.graphics.Color.WHITE)
                             textSize = 15f
                             setPadding(20, 10, 0, 10)
