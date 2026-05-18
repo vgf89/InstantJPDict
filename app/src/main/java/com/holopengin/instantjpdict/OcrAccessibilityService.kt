@@ -279,12 +279,51 @@ class OcrAccessibilityService : AccessibilityService() {
         val closeButton = Button(this).apply {
             text = "Close OCR"
             setOnClickListener { hideScreenshotOverlay() }
+            setOnTouchListener(object : View.OnTouchListener {
+                private var initialX = 0f
+                private var initialY = 0f
+                private var initialTouchX = 0f
+                private var initialTouchY = 0f
+
+                override fun onTouch(v: View, event: MotionEvent): Boolean {
+                    val lp = v.layoutParams as FrameLayout.LayoutParams
+                    when (event.action) {
+                        MotionEvent.ACTION_DOWN -> {
+                            initialX = lp.leftMargin.toFloat()
+                            initialY = lp.topMargin.toFloat()
+                            initialTouchX = event.rawX
+                            initialTouchY = event.rawY
+                            return true
+                        }
+                        MotionEvent.ACTION_MOVE -> {
+                            val newX = (initialX + (event.rawX - initialTouchX)).roundToInt()
+                            val newY = (initialY + (event.rawY - initialTouchY)).roundToInt()
+                            lp.leftMargin = newX
+                            lp.topMargin = newY
+                            v.layoutParams = lp
+                            
+                            // Update the base position so the main button appears here later
+                            floatingParams?.x = newX
+                            floatingParams?.y = newY
+                            return true
+                        }
+                        MotionEvent.ACTION_UP -> {
+                            val diffX = event.rawX - initialTouchX
+                            val diffY = event.rawY - initialTouchY
+                            if (abs(diffX) < 10 && abs(diffY) < 10) {
+                                v.performClick()
+                            }
+                            return true
+                        }
+                    }
+                    return false
+                }
+            })
         }
         val lp = FrameLayout.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT
         ).apply {
-            // Position it near the original button's location
             leftMargin = floatingParams?.x ?: 100
             topMargin = floatingParams?.y ?: 100
         }
