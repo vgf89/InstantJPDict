@@ -8,34 +8,53 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.InputStreamReader
 import java.util.zip.ZipInputStream
+import java.util.zip.ZipEntry
 
 class DictionaryImporter(private val context: Context) {
     private val gson = Gson()
 
-    suspend fun importZip(uri: android.net.Uri, dictionaryName: String, onProgress: (Int) -> Unit): Result<Int> = withContext(Dispatchers.IO) {
+    suspend fun importZip(uri: android.net.Uri, fileName: String, onProgress: (Int) -> Unit): Result<Int> = withContext(Dispatchers.IO) {
         try {
             val db = AppDatabase.getDatabase(context)
             val dao = db.dictionaryDao()
             
-            val dictionaryId = dao.insertDictionary(DictionaryMeta(name = dictionaryName, priority = 0)).toInt()
+            // First pass: extract metadata
+            var dictTitle = fileName.removeSuffix(".zip")
+            
+            val inputStream1 = context.contentResolver.openInputStream(uri) ?: return@withContext Result.failure(Exception("Failed to open input stream"))
+            val zipInputStream1 = ZipInputStream(inputStream1)
+            var entry1: ZipEntry? = zipInputStream1.nextEntry
+            while (entry1 != null) {
+                if (entry1.name == "index.json") {
+                    val reader = JsonReader(InputStreamReader(zipInputStream1, "UTF-8"))
+                    val map = gson.fromJson<Map<String, Any>>(reader, Map::class.java)
+                    dictTitle = map["title"] as? String ?: dictTitle
+                    break
+                }
+                zipInputStream1.closeEntry()
+                entry1 = zipInputStream1.nextEntry
+            }
+            zipInputStream1.close()
 
-            val inputStream = context.contentResolver.openInputStream(uri) ?: return@withContext Result.failure(Exception("Failed to open input stream"))
-            val zipInputStream = ZipInputStream(inputStream)
+            val dictionaryId = dao.insertDictionary(DictionaryMeta(name = dictTitle, priority = 0)).toInt()
+
+            // Second pass: process entries
+            val inputStream2 = context.contentResolver.openInputStream(uri) ?: return@withContext Result.failure(Exception("Failed to open input stream"))
+            val zipInputStream2 = ZipInputStream(inputStream2)
             var totalEntries = 0
-
-            var entry = zipInputStream.nextEntry
-            while (entry != null) {
-                if (entry.name.startsWith("term_bank_") && entry.name.endsWith(".json")) {
-                    Log.d("DictionaryImporter", "Processing ${entry.name}")
-                    val reader = JsonReader(InputStreamReader(zipInputStream, "UTF-8"))
+            
+            var entry2: ZipEntry? = zipInputStream2.nextEntry
+            while (entry2 != null) {
+                if (entry2.name.startsWith("term_bank_") && entry2.name.endsWith(".json")) {
+                    val reader = JsonReader(InputStreamReader(zipInputStream2, "UTF-8"))
                     totalEntries += parseTermBank(reader, dao, dictionaryId) { batchCount ->
                         onProgress(totalEntries + batchCount)
                     }
                 }
-                zipInputStream.closeEntry()
-                entry = zipInputStream.nextEntry
+                zipInputStream2.closeEntry()
+                entry2 = zipInputStream2.nextEntry
             }
-            zipInputStream.close()
+            zipInputStream2.close()
             Result.success(totalEntries)
         } catch (e: Exception) {
             Log.e("DictionaryImporter", "Import failed", e)
@@ -80,7 +99,6 @@ class DictionaryImporter(private val context: Context) {
             val rules = reader.nextString()
             val popularity = reader.nextInt()
             
-            // Definitions is an array at index 5
             val definitions = gson.fromJson<Any>(reader, Any::class.java)
             val definitionsJson = gson.toJson(definitions)
             

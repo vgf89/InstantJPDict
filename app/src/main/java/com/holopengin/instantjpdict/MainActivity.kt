@@ -22,6 +22,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -44,14 +45,20 @@ class MainActivity : ComponentActivity() {
                     var status by remember { mutableStateOf("Ready") }
                     
                     val launcher = rememberLauncherForActivityResult(
-                        contract = ActivityResultContracts.GetContent()
+                        contract = ActivityResultContracts.OpenDocument()
                     ) { uri ->
                         uri?.let {
+                            val cursor = contentResolver.query(it, null, null, null, null)
+                            val name = cursor?.use { c ->
+                                val nameIndex = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                                if (c.moveToFirst()) c.getString(nameIndex) else "Imported Dictionary"
+                            } ?: "Imported Dictionary"
+                            
                             status = "Importing..."
                             scope.launch {
                                 try {
                                     val importer = DictionaryImporter(applicationContext)
-                                    val result = importer.importZip(it, "Imported Dictionary") { progress ->
+                                    val result = importer.importZip(it, name) { progress ->
                                         status = "Importing: $progress entries..."
                                     }
                                     status = result.fold(
@@ -65,36 +72,30 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
+                    val refreshStatus = remember {
+                        {
+                            scope.launch {
+                                val db = AppDatabase.getDatabase(applicationContext)
+                                val entryCount = db.dictionaryDao().getCount()
+                                val dictCount = db.dictionaryDao().getAllDictionaries().size
+                                status = "DB contains $entryCount entries in $dictCount dictionaries"
+                            }
+                        }
+                    }
+
+                    LaunchedEffect(Unit) {
+                        refreshStatus()
+                    }
+
                     HomeScreen(
                         status = status,
                         onOpenSettings = {
                             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
                         },
                         onImportDict = {
-                            launcher.launch("application/zip")
+                            launcher.launch(arrayOf("application/zip"))
                         },
-                        onCheckDb = {
-                            scope.launch {
-                                try {
-                                    val db = AppDatabase.getDatabase(applicationContext)
-                                    val count = db.dictionaryDao().getCount()
-                                    status = "DB contains $count entries"
-                                } catch (e: Exception) {
-                                    status = "DB Error: ${e.message}"
-                                }
-                            }
-                        },
-                        onClearDb = {
-                            scope.launch {
-                                try {
-                                    val db = AppDatabase.getDatabase(applicationContext)
-                                    db.dictionaryDao().clearAll()
-                                    status = "Dictionary wiped"
-                                } catch (e: Exception) {
-                                    status = "Error wiping DB: ${e.message}"
-                                }
-                            }
-                        },
+                        onCheckDb = { refreshStatus() },
                         modifier = Modifier.padding(innerPadding)
                     )
                 }
@@ -109,31 +110,9 @@ fun HomeScreen(
     onOpenSettings: () -> Unit,
     onImportDict: () -> Unit,
     onCheckDb: () -> Unit,
-    onClearDb: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     var showDeleteConfirm by remember { mutableStateOf(false) }
-
-    if (showDeleteConfirm) {
-        AlertDialog(
-            onDismissRequest = { showDeleteConfirm = false },
-            title = { Text("Wipe Dictionary") },
-            text = { Text("Are you sure you want to clear all dictionary entries? This cannot be undone.") },
-            confirmButton = {
-                TextButton(onClick = {
-                    onClearDb()
-                    showDeleteConfirm = false
-                }) {
-                    Text("Wipe", color = MaterialTheme.colorScheme.error)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showDeleteConfirm = false }) {
-                    Text("Cancel")
-                }
-            }
-        )
-    }
 
     Column(modifier = modifier.padding(16.dp)) {
         Text(text = "Instant JP Dict", style = MaterialTheme.typography.headlineMedium)
@@ -162,18 +141,7 @@ fun HomeScreen(
         }
         Spacer(modifier = Modifier.height(8.dp))
         Button(onClick = onCheckDb, modifier = Modifier.fillMaxWidth()) {
-            Text("Check DB Count")
-        }
-        Spacer(modifier = Modifier.height(8.dp))
-        Button(
-            onClick = { showDeleteConfirm = true },
-            modifier = Modifier.fillMaxWidth(),
-            colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-                containerColor = MaterialTheme.colorScheme.errorContainer,
-                contentColor = MaterialTheme.colorScheme.onErrorContainer
-            )
-        ) {
-            Text("Wipe Dictionary")
+            Text("Refresh Status")
         }
     }
 }
