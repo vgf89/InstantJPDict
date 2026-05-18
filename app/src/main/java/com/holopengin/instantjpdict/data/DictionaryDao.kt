@@ -13,10 +13,10 @@ interface DictionaryDao {
     @Query("""
         SELECT d.* FROM dictionary d 
         JOIN dictionary_meta m ON d.dictionaryId = m.id 
-        WHERE d.kanji = :text OR d.reading = :text 
+        WHERE d.kanji IN (:texts) OR d.reading IN (:texts) 
         ORDER BY m.priority ASC, d.popularity DESC
     """)
-    suspend fun findByText(text: String): List<DictionaryEntry>
+    suspend fun findByTexts(texts: List<String>): List<DictionaryEntry>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertDictionary(dictionary: DictionaryMeta): Long
