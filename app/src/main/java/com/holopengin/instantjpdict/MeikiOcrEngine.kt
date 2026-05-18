@@ -9,6 +9,7 @@ import android.util.Log
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
+import androidx.lifecycle.HasDefaultViewModelProviderFactory
 import java.nio.FloatBuffer
 import java.nio.LongBuffer
 import kotlin.math.max
@@ -18,12 +19,15 @@ class MeikiOcrEngine(private val context: Context) {
     private val env: OrtEnvironment = OrtEnvironment.getEnvironment()
     private var detectSession: OrtSession? = null
     private var recognizeSession: OrtSession? = null
+    private var recognizeSessionVertical: OrtSession? = null
 
     companion object {
         private const val DETECT_WIDTH = 960
         private const val DETECT_HEIGHT = 544
         private const val REC_WIDTH = 960
         private const val REC_HEIGHT = 32
+        private const val VERT_REC_WIDTH = 32
+        private const val VERT_REC_HEIGHT = 480
         private const val REC_CONFIDENCE_THRESHOLD = 0.1f
         private const val X_OVERLAP_THRESHOLD = 0.3f
     }
@@ -32,6 +36,7 @@ class MeikiOcrEngine(private val context: Context) {
         try {
             detectSession = env.createSession(loadModel("meiki.text.detect.v0.1.960x544.onnx"))
             recognizeSession = env.createSession(loadModel("meiki.text.rec.v0.960x32.onnx"))
+            recognizeSessionVertical = env.createSession(loadModel("meiki.text.rec.v0.vertical.32x480.onnx"))
             Log.d("MeikiOcrEngine", "Models loaded successfully")
         } catch (e: Exception) {
             Log.e("MeikiOcrEngine", "Failed to load models", e)
@@ -42,7 +47,7 @@ class MeikiOcrEngine(private val context: Context) {
         return context.assets.open(fileName).readBytes()
     }
 
-    fun isReady(): Boolean = detectSession != null && recognizeSession != null
+    fun isReady(): Boolean = detectSession != null && recognizeSession != null && recognizeSessionVertical != null
 
     fun detect(bitmap: Bitmap): List<Rect> {
         val session = detectSession ?: return emptyList()
@@ -94,9 +99,11 @@ class MeikiOcrEngine(private val context: Context) {
 
     fun recognize(bitmap: Bitmap, lineBoxes: List<Rect>): List<LineResult> {
         val session = recognizeSession ?: return emptyList()
+        val sessionVertical = recognizeSessionVertical ?: return emptyList()
         val results = mutableListOf<LineResult>()
 
         for (box in lineBoxes) {
+            val isVertical = box.height() > box.width();
             try {
                 val cropX = max(0, box.left)
                 val cropY = max(0, box.top)
@@ -105,28 +112,51 @@ class MeikiOcrEngine(private val context: Context) {
                 if (cropW <= 0 || cropH <= 0) continue
 
                 val crop = Bitmap.createBitmap(bitmap, cropX, cropY, cropW, cropH)
-                
-                val scaleFactor = 32f / crop.height
-                val targetW = min(960, (crop.width * scaleFactor).toInt())
-                val resizedLine = Bitmap.createScaledBitmap(crop, targetW, 32, true)
-                
-                val paddedLine = Bitmap.createBitmap(REC_WIDTH, REC_HEIGHT, Bitmap.Config.ARGB_8888)
+
+                var paddedLine: Bitmap? = null
+                var resizedLine: Bitmap? = null
+                var targetH = 0
+                var targetW = 0
+                if (isVertical) {
+                    val scaleFactor = 32f / crop.width
+                    targetH = min(VERT_REC_HEIGHT, (crop.height * scaleFactor).toInt())
+                    resizedLine = Bitmap.createScaledBitmap(crop, VERT_REC_WIDTH, targetH, true)
+                    paddedLine = Bitmap.createBitmap(VERT_REC_WIDTH, VERT_REC_HEIGHT, Bitmap.Config.ARGB_8888)
+
+                } else {
+                    val scaleFactor = 32f / crop.height
+                    targetW = min(REC_WIDTH, (crop.width * scaleFactor).toInt())
+                    resizedLine = Bitmap.createScaledBitmap(crop, targetW, REC_HEIGHT, true)
+
+                    paddedLine = Bitmap.createBitmap(REC_WIDTH, REC_HEIGHT, Bitmap.Config.ARGB_8888)
+                }
                 val canvas = Canvas(paddedLine)
                 canvas.drawColor(Color.BLACK)
                 canvas.drawBitmap(resizedLine, 0f, 0f, null)
 
-                val imgData = bitmapToFloatBuffer(paddedLine, REC_WIDTH, REC_HEIGHT)
-                val inputTensor = OnnxTensor.createTensor(env, imgData, longArrayOf(1, 3, REC_HEIGHT.toLong(), REC_WIDTH.toLong()))
+                val imgData = if (isVertical)
+                    bitmapToFloatBuffer(paddedLine, VERT_REC_WIDTH, VERT_REC_HEIGHT)
+                else
+                    bitmapToFloatBuffer(paddedLine, REC_WIDTH, REC_HEIGHT)
+                val inputTensor = if (isVertical)
+                    OnnxTensor.createTensor(env, imgData, longArrayOf(1, 3, VERT_REC_HEIGHT.toLong(), VERT_REC_WIDTH.toLong()))
+                else
+                    OnnxTensor.createTensor(env, imgData, longArrayOf(1, 3, REC_HEIGHT.toLong(), REC_WIDTH.toLong()))
                 
                 val inputs = mutableMapOf<String, OnnxTensor>()
                 val imageInputName = session.inputNames.find { it.contains("image") || it.contains("input") } ?: session.inputNames.iterator().next()
                 inputs[imageInputName] = inputTensor
 
-                // FIX: provide orig_target_sizes [960, 32] as required by the model architecture
-                val sizeData = LongBuffer.wrap(longArrayOf(REC_WIDTH.toLong(), REC_HEIGHT.toLong()))
+                val sizeData = if (isVertical)
+                    LongBuffer.wrap(longArrayOf(VERT_REC_WIDTH.toLong(), VERT_REC_HEIGHT.toLong()))
+                else
+                    LongBuffer.wrap(longArrayOf(REC_WIDTH.toLong(), REC_HEIGHT.toLong()))
                 inputs["orig_target_sizes"] = OnnxTensor.createTensor(env, sizeData, longArrayOf(1, 2))
 
-                val output = session.run(inputs)
+                val output = if (isVertical)
+                    sessionVertical.run(inputs)
+                else
+                    session.run(inputs)
 
                 val outputNames = session.outputNames.toList()
                 val labelsResult = output.get(outputNames.find { it.contains("labels") } ?: outputNames[0])
@@ -165,9 +195,16 @@ class MeikiOcrEngine(private val context: Context) {
                 for (cand in candidates) {
                     var keep = true
                     for (f in filtered) {
-                        if (calculateXOverlap(cand.box, f.box) > X_OVERLAP_THRESHOLD) {
-                            keep = false
-                            break
+                        if (isVertical) {
+                            if (calculateYOverlap(cand.box, f.box) > X_OVERLAP_THRESHOLD) {
+                                keep = false
+                                break
+                            }
+                        } else {
+                            if (calculateXOverlap(cand.box, f.box) > X_OVERLAP_THRESHOLD) {
+                                keep = false
+                                break
+                            }
                         }
                     }
                     if (keep) filtered.add(cand)
@@ -181,14 +218,28 @@ class MeikiOcrEngine(private val context: Context) {
                     val ry1 = cand.box[1]
                     val rx2 = cand.box[2]
                     val ry2 = cand.box[3]
-                    
-                    val effectiveW = targetW.toFloat()
-                    val x1 = (min(rx1, effectiveW) / effectiveW) * crop.width + cropX
-                    val y1 = (ry1 / 32f) * crop.height + cropY
-                    val x2 = (min(rx2, effectiveW) / effectiveW) * crop.width + cropX
-                    val y2 = (ry2 / 32f) * crop.height + cropY
 
-                    Log.d("MeikiOcrEngine", "Char Box: [$x1, $y1, $x2, $y2] size: ${x2-x1}x${y2-y1}")
+                    var x1 = 0.0f
+                    var y1 = 0.0f
+                    var x2 = 0.0f
+                    var y2 = 0.0f
+                    if (isVertical) {
+                        val effectiveH = targetH.toFloat()
+                        y1 = (min(ry1, effectiveH) / effectiveH) * crop.height + cropY
+                        x1 = (rx1 / 32f) * crop.width + cropX
+                        y2 = (min(ry2, effectiveH) / effectiveH) * crop.height + cropY
+                        x2 = (rx2 / 32f) * crop.width + cropX
+                    } else {
+                        val effectiveW = targetW.toFloat()
+                        x1 = (min(rx1, effectiveW) / effectiveW) * crop.width + cropX
+                        y1 = (ry1 / 32f) * crop.height + cropY
+                        x2 = (min(rx2, effectiveW) / effectiveW) * crop.width + cropX
+                        y2 = (ry2 / 32f) * crop.height + cropY
+                    }
+                    Log.d(
+                        "MeikiOcrEngine",
+                        "Char Box: [$x1, $y1, $x2, $y2] size: ${x2 - x1}x${y2 - y1}"
+                    )
                     Rect(x1.toInt(), y1.toInt(), x2.toInt(), y2.toInt())
                 }
 
@@ -239,10 +290,22 @@ class MeikiOcrEngine(private val context: Context) {
         if (w1 <= 0 || w2 <= 0) return 0f
         return intersection / min(w1, w2)
     }
+    private fun calculateYOverlap(box1: FloatArray, box2: FloatArray): Float {
+        val y1_min = box1[1]
+        val y1_max = box1[3]
+        val y2_min = box2[1]
+        val y2_max = box2[3]
+        val intersection = max(0f, min(y1_max, y2_max) - max(y1_min, y2_min))
+        val h1 = y1_max - y1_min
+        val h2 = y2_max - y2_min
+        if (h1 <= 0 || h2 <= 0) return 0f
+        return intersection / min(h1, h2)
+    }
 
     fun close() {
         detectSession?.close()
         recognizeSession?.close()
+        recognizeSessionVertical?.close()
         env.close()
     }
 }
