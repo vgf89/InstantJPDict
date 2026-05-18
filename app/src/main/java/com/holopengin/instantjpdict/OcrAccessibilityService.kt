@@ -942,26 +942,31 @@ class OcrAccessibilityService : AccessibilityService() {
         return container
     }
 
-    private fun renderDefinition(container: LinearLayout, data: Any?, level: Int = 0) {
+    private fun renderDefinition(container: LinearLayout, data: Any?, level: Int = 0, forceBullet: Boolean = false) {
         when (data) {
             is String -> {
                 container.addView(TextView(this).apply {
-                    text = if (level == 0) "• $data" else data
+                    val shouldBullet = level == 0 || forceBullet
+                    text = if (shouldBullet) "• $data" else data
                     setTextColor(android.graphics.Color.WHITE)
                     textSize = 16f
-                    setPadding(20 * (level + 1), 5, 0, 5)
+                    setPadding(20 * level, 0, 0, 0)
                 })
             }
             is List<*> -> {
                 for (item in data) {
-                    renderDefinition(container, item, level)
+                    renderDefinition(container, item, level, forceBullet)
                 }
             }
             is Map<*, *> -> {
                 // Handle Yomitan Structured Content
+                val tag = data["tag"] as? String
+                val isListItem = tag == "li"
                 val content = data["content"] ?: data["list"]
                 if (content != null) {
-                    renderDefinition(container, content, level + 1)
+                    // Carry over the bullet requirement if we are at the top level of a sense
+                    // or if this specific element is a list item.
+                    renderDefinition(container, content, level + 1, forceBullet || level == 0 || isListItem)
                 } else {
                     // KANJIDIC: sometimes just a map of fields
                     data.forEach { (key, value) ->
