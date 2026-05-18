@@ -129,18 +129,86 @@ class DictionaryImporter(private val context: Context) {
         }
     }
 
+    private fun nextStringOrArray(reader: JsonReader): String {
+        return when (reader.peek()) {
+            com.google.gson.stream.JsonToken.STRING -> reader.nextString()
+            com.google.gson.stream.JsonToken.BEGIN_ARRAY -> {
+                val list = mutableListOf<String>()
+                reader.beginArray()
+                while (reader.hasNext()) {
+                    if (reader.peek() == com.google.gson.stream.JsonToken.STRING) {
+                        list.add(reader.nextString())
+                    } else {
+                        reader.skipValue()
+                    }
+                }
+                reader.endArray()
+                list.joinToString(" ")
+            }
+            com.google.gson.stream.JsonToken.NULL -> {
+                reader.nextNull()
+                ""
+            }
+            else -> {
+                reader.skipValue()
+                ""
+            }
+        }
+    }
+
+    private fun nextIntSafe(reader: JsonReader): Int {
+        return when (reader.peek()) {
+            com.google.gson.stream.JsonToken.NUMBER -> {
+                try {
+                    reader.nextInt()
+                } catch (e: Exception) {
+                    try {
+                        reader.nextDouble().toInt()
+                    } catch (e2: Exception) {
+                        Log.w("DictionaryImporter", "Failed to parse number", e2)
+                        0
+                    }
+                }
+            }
+            com.google.gson.stream.JsonToken.STRING -> {
+                reader.nextString().toIntOrNull() ?: 0
+            }
+            com.google.gson.stream.JsonToken.NULL -> {
+                reader.nextNull()
+                0
+            }
+            else -> {
+                reader.skipValue()
+                0
+            }
+        }
+    }
+
     private fun parseKanjiEntry(reader: JsonReader, dictionaryId: Int): DictionaryEntry? {
         try {
             reader.beginArray()
-            val kanji = reader.nextString()
-            val onyomi = reader.nextString() // On
-            val kunyomi = reader.nextString() // Kun
-            val gradeFreq = reader.nextString() // Grade / Frequency info
-            val definitions = gson.fromJson<Any>(reader, Any::class.java) // Glossary
-            val meta = gson.fromJson<Map<String, Any>>(reader, Map::class.java) // Metadata object
+            val kanji = nextStringOrArray(reader)
+            val onyomi = nextStringOrArray(reader) // On
+            val kunyomi = nextStringOrArray(reader) // Kun
+            val gradeFreq = nextStringOrArray(reader) // Grade / Frequency info
+            val definitions = if (reader.peek() != com.google.gson.stream.JsonToken.END_ARRAY) {
+                gson.fromJson<Any>(reader, Any::class.java)
+            } else null
+            
+            val meta = if (reader.peek() != com.google.gson.stream.JsonToken.END_ARRAY) {
+                try {
+                    gson.fromJson<Map<String, Any>>(reader, Map::class.java)
+                } catch (e: Exception) {
+                    null
+                }
+            } else null
+
+            while (reader.hasNext()) {
+                reader.skipValue()
+            }
             reader.endArray()
 
-            val jlpt = meta["jlpt"]?.toString() ?: ""
+            val jlpt = (meta?.get("jlpt") ?: "").toString()
             val rules = "grade:$gradeFreq"
 
             return DictionaryEntry(
@@ -193,29 +261,31 @@ class DictionaryImporter(private val context: Context) {
             reader.beginArray()
             val kanji = reader.nextString()
             val reading = reader.nextString()
-            val tags1 = reader.nextString() // tags
-            val rules = reader.nextString() // rules/deinflection info
-            val popularity = reader.nextInt()
+            val tags1 = nextStringOrArray(reader)
+            val rules = nextStringOrArray(reader)
+            val popularity = nextIntSafe(reader)
             
-            val definitions = gson.fromJson<Any>(reader, Any::class.java)
+            val definitions = if (reader.peek() != com.google.gson.stream.JsonToken.END_ARRAY) {
+                gson.fromJson<Any>(reader, Any::class.java)
+            } else null
             val definitionsJson = gson.toJson(definitions)
             
-            reader.nextInt() // sequence
-            val tags2 = reader.nextString() // more tags
+            val sequence = nextIntSafe(reader)
+            val tags2 = nextStringOrArray(reader)
+
+            while (reader.hasNext()) {
+                reader.skipValue()
+            }
             reader.endArray()
 
-            // Combine all tags into the rules field for lookup
-            val allTags = listOf(tags1, rules, tags2)
-                .flatMap { it.split(" ") }
-                .filter { it.isNotEmpty() }
-                .distinct()
-                .joinToString(" ")
+            // Combine all tags into the rules field for lookup, preserving original grouping
+            val combinedRules = "$tags1 | $rules | $tags2"
 
             return DictionaryEntry(
                 kanji = kanji,
                 reading = reading,
                 definitions = definitionsJson,
-                rules = allTags,
+                rules = combinedRules,
                 popularity = popularity,
                 dictionaryId = dictionaryId
             )
