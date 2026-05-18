@@ -1,24 +1,31 @@
 package com.holopengin.instantjpdict
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.AccessibilityService.ScreenshotResult
+import android.accessibilityservice.AccessibilityService.TakeScreenshotCallback
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.Bitmap
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.graphics.drawable.GradientDrawable
+import android.util.Log
 import android.view.Display
 import android.view.Gravity
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.widget.Button
 import android.widget.FrameLayout
+import android.widget.LinearLayout
 import android.widget.ProgressBar
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
-import android.util.Log
-import android.widget.LinearLayout
-import android.widget.ScrollView
 import com.google.gson.Gson
 import com.holopengin.instantjpdict.data.AppDatabase
 import com.holopengin.instantjpdict.util.Deinflector
@@ -41,6 +48,14 @@ class OcrAccessibilityService : AccessibilityService() {
     private val gson = Gson()
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     
+    private val screenOffReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == Intent.ACTION_SCREEN_OFF) {
+                hideScreenshotOverlay()
+            }
+        }
+    }
+    
     private val boxViews = mutableListOf<View>()
     private val textViews = mutableListOf<TextView>()
     private var lastLandscapeGravity = Gravity.END
@@ -48,7 +63,7 @@ class OcrAccessibilityService : AccessibilityService() {
 
     private val borderDrawable by lazy {
         GradientDrawable().apply {
-            setStroke(2, android.graphics.Color.CYAN)
+            setColor(android.graphics.Color.argb(100, 0, 0, 0))
             cornerRadius = 4f
         }
     }
@@ -64,6 +79,9 @@ class OcrAccessibilityService : AccessibilityService() {
         super.onCreate()
         ocrEngine = MeikiOcrEngine(this)
         deinflector = Deinflector(this)
+        
+        val filter = IntentFilter(Intent.ACTION_SCREEN_OFF)
+        registerReceiver(screenOffReceiver, filter)
     }
 
     override fun onServiceConnected() {
@@ -126,6 +144,12 @@ class OcrAccessibilityService : AccessibilityService() {
         })
 
         button.setOnClickListener {
+            // Task 5: Toggle overlay
+            if (screenshotOverlay != null) {
+                hideScreenshotOverlay()
+                return@setOnClickListener
+            }
+            
             floatingView?.visibility = View.GONE
             // Give the system a moment to hide the view before taking the screenshot
             it.postDelayed({
@@ -164,16 +188,15 @@ class OcrAccessibilityService : AccessibilityService() {
     private fun showScreenshotOverlay(bitmap: Bitmap) {
         if (screenshotOverlay != null) return
 
+        // Task 2: Underneath system UI (try FLAG_LAYOUT_IN_SCREEN without FLAG_LAYOUT_NO_LIMITS)
         val params = WindowManager.LayoutParams().apply {
             type = WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
             format = PixelFormat.TRANSLUCENT
             flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
             width = WindowManager.LayoutParams.MATCH_PARENT
             height = WindowManager.LayoutParams.MATCH_PARENT
             gravity = Gravity.FILL
-            layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
         }
 
         val rootLayout = FrameLayout(this).apply {
@@ -243,7 +266,7 @@ class OcrAccessibilityService : AccessibilityService() {
                         // Draw character results
                         drawResults(rootLayout, results)
 
-                        // Draw line boxes for debugging
+                        // Task 1: Draw line boxes with translucent black background
                         lineBoxes.forEach { box ->
                             val lineView = View(this@OcrAccessibilityService).apply {
                                 background = borderDrawable
@@ -329,7 +352,7 @@ class OcrAccessibilityService : AccessibilityService() {
                 val textView = TextView(this).apply {
                     text = char
                     setTextColor(android.graphics.Color.RED)
-                    gravity = Gravity.CENTER
+                    gravity = Gravity.START or Gravity.CENTER_VERTICAL
                     typeface = android.graphics.Typeface.DEFAULT
                     setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, box.height().toFloat())
                     setPadding(0, 0, 0, 0)
@@ -458,65 +481,81 @@ class OcrAccessibilityService : AccessibilityService() {
     }
 
     private fun showResultsUi(rootLayout: FrameLayout, matches: List<Pair<String, List<com.holopengin.instantjpdict.data.DictionaryEntry>>>, tappedBox: Rect) {
+        // Task 3: Group identical readings, furigana, short POS
+        
         // Remove existing result view if any
         rootLayout.findViewWithTag<View>("results_panel")?.let { rootLayout.removeView(it) }
 
         val container = LinearLayout(this).apply {
             tag = "results_panel"
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(android.graphics.Color.argb(235, 30, 30, 30))
+            setBackgroundColor(android.graphics.Color.argb(245, 25, 25, 25))
             setPadding(40, 40, 40, 40)
             elevation = 20f
-            // Consume clicks so they don't reach rootLayout and close the overlay
             setOnClickListener { }
         }
 
         val scrollView = ScrollView(this).apply {
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
+            isVerticalScrollBarEnabled = false
         }
 
         val scrollContent = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(0, 20, 0, 80)
+            setPadding(0, 0, 0, 100)
         }
 
         for ((term, entries) in matches) {
             val termSection = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
-                setPadding(0, 30, 0, 30)
+                setPadding(0, 20, 0, 40)
             }
 
-            termSection.addView(TextView(this).apply {
-                text = term
-                setTextColor(android.graphics.Color.CYAN)
-                textSize = 24f
-                typeface = android.graphics.Typeface.DEFAULT_BOLD
-            })
+            // Group entries by reading to combine them
+            val entriesByReading = entries.groupBy { it.reading }
 
-            for (entry in entries) {
-                if (entry.reading.isNotEmpty() && entry.reading != term) {
+            for ((reading, readingEntries) in entriesByReading) {
+                // Term with Furigana
+                val termHeader = createRubyView(term, reading)
+                termSection.addView(termHeader)
+
+                // Tags / Parts of Speech (combined from all entries with this reading)
+                val allTags = readingEntries.flatMap { it.rules.split(" ") }
+                    .filter { it.isNotEmpty() }
+                    .distinct()
+                    .map { formatTag(it) }
+                
+                if (allTags.isNotEmpty()) {
                     termSection.addView(TextView(this).apply {
-                        text = "Reading: ${entry.reading}"
-                        setTextColor(android.graphics.Color.LTGRAY)
-                        textSize = 16f
+                        text = allTags.joinToString(", ")
+                        setTextColor(android.graphics.Color.parseColor("#AAAAAA"))
+                        textSize = 14f
+                        setPadding(0, 5, 0, 10)
+                        typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.ITALIC)
                     })
                 }
 
-                try {
-                    val definitions = gson.fromJson<Any>(entry.definitions, Any::class.java)
-                    renderDefinition(termSection, definitions)
-                } catch (e: Exception) {
-                    termSection.addView(TextView(this).apply {
-                        text = entry.definitions
-                        setTextColor(android.graphics.Color.WHITE)
-                        textSize = 14f
-                    })
+                for (entry in readingEntries) {
+                    try {
+                        val definitions = gson.fromJson<Any>(entry.definitions, Any::class.java)
+                        renderDefinition(termSection, definitions)
+                    } catch (e: Exception) {
+                        termSection.addView(TextView(this).apply {
+                            text = entry.definitions
+                            setTextColor(android.graphics.Color.WHITE)
+                            textSize = 15f
+                            setPadding(20, 10, 0, 10)
+                        })
+                    }
                 }
                 
                 termSection.addView(View(this).apply {
-                    layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 2)
+                    layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1).apply {
+                        topMargin = 20
+                        bottomMargin = 20
+                    }
                     setBackgroundColor(android.graphics.Color.DKGRAY)
-                    alpha = 0.5f
+                    alpha = 0.3f
                 })
             }
             scrollContent.addView(termSection)
@@ -529,7 +568,6 @@ class OcrAccessibilityService : AccessibilityService() {
         val params = if (isLandscape) {
             val panelWidth = (rootLayout.width * 0.4).toInt()
             
-            // Overlap check for current side
             val overlaps = if (lastLandscapeGravity == Gravity.END) {
                 tappedBox.right > rootLayout.width - panelWidth
             } else {
@@ -549,7 +587,6 @@ class OcrAccessibilityService : AccessibilityService() {
         } else {
             val panelHeight = (rootLayout.height * 0.4).toInt()
             
-            // Overlap check for current side
             val overlaps = if (lastPortraitGravity == Gravity.BOTTOM) {
                 tappedBox.bottom > rootLayout.height - panelHeight
             } else {
@@ -569,6 +606,114 @@ class OcrAccessibilityService : AccessibilityService() {
         }
 
         rootLayout.addView(container, params)
+    }
+
+    private fun formatTag(tag: String): String {
+        return when(tag) {
+            "v1" -> "v1"
+            "v5" -> "v5"
+            "v5k", "v5k-s" -> "v5k"
+            "v5s" -> "v5s"
+            "v5t" -> "v5t"
+            "v5n" -> "v5n"
+            "v5m" -> "v5m"
+            "v5r", "v5r-i" -> "v5r"
+            "v5w" -> "v5w"
+            "v5g" -> "v5g"
+            "v5z" -> "v5z"
+            "v5b" -> "v5b"
+            "vs", "vs-i", "vs-s" -> "vs"
+            "vi" -> "vi"
+            "vt" -> "vt"
+            "adj-i" -> "adj-i"
+            "adj-na" -> "adj-na"
+            "n" -> "n"
+            "adv" -> "adv"
+            "pn" -> "pn"
+            "p" -> "p"
+            else -> tag
+        }
+    }
+
+    private fun createRubyView(term: String, reading: String): View {
+        if (term == reading) {
+            return TextView(this).apply {
+                text = term
+                setTextColor(android.graphics.Color.CYAN)
+                textSize = 28f
+                typeface = android.graphics.Typeface.DEFAULT_BOLD
+            }
+        }
+
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.BOTTOM
+        }
+
+        var prefixLen = 0
+        while (prefixLen < term.length && prefixLen < reading.length && term[prefixLen] == reading[prefixLen]) {
+            prefixLen++
+        }
+
+        var suffixLen = 0
+        while (suffixLen < (term.length - prefixLen) && suffixLen < (reading.length - prefixLen) && 
+               term[term.length - 1 - suffixLen] == reading[reading.length - 1 - suffixLen]) {
+            suffixLen++
+        }
+
+        val prefix = term.substring(0, prefixLen)
+        val termMid = term.substring(prefixLen, term.length - suffixLen)
+        val readingMid = reading.substring(prefixLen, reading.length - suffixLen)
+        val suffix = term.substring(term.length - suffixLen)
+
+        if (prefix.isNotEmpty()) {
+            container.addView(TextView(this).apply {
+                text = prefix
+                setTextColor(android.graphics.Color.CYAN)
+                textSize = 28f
+                typeface = android.graphics.Typeface.DEFAULT_BOLD
+                setPadding(0, 0, 0, 0)
+                includeFontPadding = false
+            })
+        }
+
+        if (termMid.isNotEmpty()) {
+            val rubyItem = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_HORIZONTAL
+            }
+            rubyItem.addView(TextView(this).apply {
+                text = readingMid
+                setTextColor(android.graphics.Color.LTGRAY)
+                textSize = 12f
+                gravity = Gravity.CENTER
+                setPadding(0, 0, 0, 0)
+                includeFontPadding = false
+            })
+            rubyItem.addView(TextView(this).apply {
+                text = termMid
+                setTextColor(android.graphics.Color.CYAN)
+                textSize = 28f
+                typeface = android.graphics.Typeface.DEFAULT_BOLD
+                gravity = Gravity.CENTER
+                setPadding(0, 0, 0, 0)
+                includeFontPadding = false
+            })
+            container.addView(rubyItem)
+        }
+
+        if (suffix.isNotEmpty()) {
+            container.addView(TextView(this).apply {
+                text = suffix
+                setTextColor(android.graphics.Color.CYAN)
+                textSize = 28f
+                typeface = android.graphics.Typeface.DEFAULT_BOLD
+                setPadding(0, 0, 0, 0)
+                includeFontPadding = false
+            })
+        }
+
+        return container
     }
 
     private fun renderDefinition(container: LinearLayout, data: Any?, level: Int = 0) {
@@ -615,12 +760,40 @@ class OcrAccessibilityService : AccessibilityService() {
         textViews.clear()
     }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (event == null) return
+        
+        // Task 4: Close overlay if status bar is pulled down or app loses focus
+        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            if (screenshotOverlay != null) {
+                if (event.packageName == "com.android.systemui") {
+                    hideScreenshotOverlay()
+                }
+            }
+        }
+    }
 
     override fun onInterrupt() {}
 
+    override fun onKeyEvent(event: KeyEvent?): Boolean {
+        // Task 4: Close on back button
+        if (event?.keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_DOWN) {
+            if (screenshotOverlay != null) {
+                hideScreenshotOverlay()
+                return true
+            }
+        }
+        return super.onKeyEvent(event)
+    }
+
     override fun onDestroy() {
         super.onDestroy()
+        // Task 4 cleanup
+        try {
+            unregisterReceiver(screenOffReceiver)
+        } catch (e: Exception) {
+            // Ignore if not registered
+        }
         floatingView?.let { windowManager?.removeView(it) }
         hideScreenshotOverlay()
         ocrEngine.close()
