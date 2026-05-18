@@ -66,6 +66,7 @@ fun DictionaryManagerDialog(
                             val db = AppDatabase.getDatabase(context)
                             withContext(Dispatchers.IO) {
                                 db.dictionaryDao().deleteEntriesForDictionary(dict.id)
+                                db.dictionaryDao().deleteTagsForDictionary(dict.id)
                                 db.dictionaryDao().deleteDictionary(dict.id)
                             }
                             refresh()

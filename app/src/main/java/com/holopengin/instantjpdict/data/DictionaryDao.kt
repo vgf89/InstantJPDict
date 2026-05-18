@@ -28,6 +28,21 @@ interface DictionaryDao {
     @Query("UPDATE dictionary_meta SET priority = :priority WHERE id = :dictionaryId")
     suspend fun updatePriority(dictionaryId: Int, priority: Int)
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertTags(tags: List<DictionaryTag>)
+
+    @Query("SELECT notes FROM dictionary_tag WHERE name = :tagName AND dictionaryId = :dictionaryId")
+    suspend fun getTagNotes(tagName: String, dictionaryId: Int): String?
+
+    @Query("SELECT notes FROM dictionary_tag WHERE name IN (:tagNames)")
+    suspend fun getNotesForTags(tagNames: List<String>): List<String>
+
+    @Query("SELECT * FROM dictionary_tag WHERE name IN (:tagNames)")
+    suspend fun getTagsByName(tagNames: List<String>): List<DictionaryTag>
+
+    @Query("DELETE FROM dictionary_tag WHERE dictionaryId = :dictionaryId")
+    suspend fun deleteTagsForDictionary(dictionaryId: Int)
+
     @Query("SELECT COUNT(*) FROM dictionary")
     suspend fun getCount(): Int
 
