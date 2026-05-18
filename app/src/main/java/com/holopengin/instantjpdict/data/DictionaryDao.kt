@@ -10,7 +10,12 @@ interface DictionaryDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAll(entries: List<DictionaryEntry>)
 
-    @Query("SELECT * FROM dictionary WHERE kanji = :text OR reading = :text ORDER BY popularity DESC")
+    @Query("""
+        SELECT d.* FROM dictionary d 
+        JOIN dictionary_meta m ON d.dictionaryId = m.id 
+        WHERE d.kanji = :text OR d.reading = :text 
+        ORDER BY m.priority ASC, d.popularity DESC
+    """)
     suspend fun findByText(text: String): List<DictionaryEntry>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -27,6 +32,9 @@ interface DictionaryDao {
 
     @Query("UPDATE dictionary_meta SET priority = :priority WHERE id = :dictionaryId")
     suspend fun updatePriority(dictionaryId: Int, priority: Int)
+
+    @Query("SELECT MAX(priority) FROM dictionary_meta")
+    suspend fun getMaxPriority(): Int?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertTags(tags: List<DictionaryTag>)

@@ -492,7 +492,7 @@ class OcrAccessibilityService : AccessibilityService() {
                                 }
 
                                 if (filteredResults.isNotEmpty()) {
-                                    allMatches.add(variant to filteredResults.sortedByDescending { it.popularity })
+                                    allMatches.add(variant to filteredResults)
                                     foundInThisLen = true
                                 }
                             }
@@ -512,7 +512,7 @@ class OcrAccessibilityService : AccessibilityService() {
                                 }
 
                                 if (validResults.isNotEmpty()) {
-                                    allMatches.add(deinflection.term to validResults.sortedByDescending { it.popularity })
+                                    allMatches.add(deinflection.term to validResults)
                                     foundInThisLen = true
                                 }
                             }
