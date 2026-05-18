@@ -606,46 +606,6 @@ class OcrAccessibilityService : AccessibilityService() {
                 val entry = readingEntries.first()
                 val isKanjiEntry = entry.onyomi != null || entry.kunyomi != null
                 
-                val currentHeader: View
-
-                if (isKanjiEntry) {
-                    // Vertical layout for Kanji lookup
-                    val termHeader = LinearLayout(this).apply {
-                        orientation = LinearLayout.VERTICAL
-                        setPadding(0, 10, 0, 10)
-                    }
-                    
-                    termHeader.addView(TextView(this).apply {
-                        text = entry.kanji
-                        setTextColor(android.graphics.Color.CYAN)
-                        textSize = 48f
-                        typeface = android.graphics.Typeface.DEFAULT_BOLD
-                    })
-
-                    entry.onyomi?.takeIf { it.isNotEmpty() }?.let {
-                        termHeader.addView(TextView(this).apply {
-                            text = "on: $it"
-                            setTextColor(android.graphics.Color.LTGRAY)
-                            textSize = 18f
-                        })
-                    }
-
-                    entry.kunyomi?.takeIf { it.isNotEmpty() }?.let {
-                        termHeader.addView(TextView(this).apply {
-                            text = "kun: $it"
-                            setTextColor(android.graphics.Color.LTGRAY)
-                            textSize = 18f
-                        })
-                    }
-                    termSection.addView(termHeader)
-                    currentHeader = termHeader
-                } else {
-                    // Standard Ruby/Furigana layout for words
-                    val termHeader = createRubyView(entry.kanji, entry.reading)
-                    termSection.addView(termHeader)
-                    currentHeader = termHeader
-                }
-
                 // Process Tags and Senses across all reading entries
                 val allGlobalTags = mutableSetOf<String>()
                 val allInfoText = mutableSetOf<String>()
@@ -667,13 +627,72 @@ class OcrAccessibilityService : AccessibilityService() {
                     }
                 }
 
+                val currentHeader: View
+
+                if (isKanjiEntry) {
+                    // Horizontal layout for Kanji lookup: Kanji on left, readings on right
+                    val termHeader = LinearLayout(this).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        setPadding(0, 10, 0, 10)
+                        gravity = Gravity.CENTER_VERTICAL
+                    }
+                    
+                    termHeader.addView(TextView(this).apply {
+                        text = entry.kanji
+                        setTextColor(android.graphics.Color.CYAN)
+                        textSize = 48f
+                        typeface = android.graphics.Typeface.DEFAULT_BOLD
+                        setPadding(0, 0, 40, 0)
+                    })
+
+                    val readingContainer = LinearLayout(this).apply {
+                        orientation = LinearLayout.VERTICAL
+                    }
+
+                    entry.onyomi?.takeIf { it.isNotEmpty() }?.let {
+                        readingContainer.addView(TextView(this).apply {
+                            text = "on: ${it.replace(" ", "、")}"
+                            setTextColor(android.graphics.Color.LTGRAY)
+                            textSize = 14f
+                            includeFontPadding = false
+                        })
+                    }
+
+                    entry.kunyomi?.takeIf { it.isNotEmpty() }?.let {
+                        readingContainer.addView(TextView(this).apply {
+                            text = "kun: ${it.replace(" ", "、")}"
+                            setTextColor(android.graphics.Color.LTGRAY)
+                            textSize = 14f
+                            includeFontPadding = false
+                        })
+                    }
+
+                    if (allInfoText.isNotEmpty()) {
+                        readingContainer.addView(TextView(this).apply {
+                            text = "${allInfoText.joinToString(", ")}"
+                            setTextColor(android.graphics.Color.parseColor("#666666"))
+                            textSize = 11f
+                            includeFontPadding = false
+                        })
+                    }
+
+                    termHeader.addView(readingContainer)
+                    termSection.addView(termHeader)
+                    currentHeader = termHeader
+                } else {
+                    // Standard Ruby/Furigana layout for words
+                    val termHeader = createRubyView(entry.kanji, entry.reading)
+                    termSection.addView(termHeader)
+                    currentHeader = termHeader
+                }
+
                 val metadataContainer = LinearLayout(this).apply {
                     orientation = LinearLayout.VERTICAL
                     setPadding(0, 5, 0, 10)
                 }
                 termSection.addView(metadataContainer)
 
-                if (allInfoText.isNotEmpty()) {
+                if (!isKanjiEntry && allInfoText.isNotEmpty()) {
                     metadataContainer.addView(TextView(this).apply {
                         text = "${allInfoText.joinToString(", ")}"
                         setTextColor(android.graphics.Color.parseColor("#666666"))
