@@ -1,102 +1,139 @@
 package com.holopengin.instantjpdict.data
 
 import android.content.Context
-import com.google.gson.stream.JsonReader
 import android.util.Log
 import com.google.gson.Gson
+import com.google.gson.stream.JsonReader
+import com.google.gson.stream.JsonToken
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.BufferedInputStream
 import java.io.InputStreamReader
 import java.util.zip.ZipInputStream
-import java.util.zip.ZipEntry
 
 class DictionaryImporter(private val context: Context) {
     private val gson = Gson()
 
     suspend fun importZip(uri: android.net.Uri, fileName: String, onProgress: (Int) -> Unit): Result<Int> = withContext(Dispatchers.IO) {
+        val startTime = System.currentTimeMillis()
         try {
             val db = AppDatabase.getDatabase(context)
             val dao = db.dictionaryDao()
             
-            // First pass: extract metadata
+            val inputStream = context.contentResolver.openInputStream(uri) ?: return@withContext Result.failure(Exception("Failed to open input stream"))
+            val bufferedStream = BufferedInputStream(inputStream)
+            val zipInputStream = ZipInputStream(bufferedStream)
+            
             var dictTitle = fileName.removeSuffix(".zip")
+            var dictionaryId: Int? = null
+            var totalProcessed = 0
             
-            val inputStream1 = context.contentResolver.openInputStream(uri) ?: return@withContext Result.failure(Exception("Failed to open input stream"))
-            val zipInputStream1 = ZipInputStream(inputStream1)
-            var entry1: ZipEntry? = zipInputStream1.nextEntry
-            while (entry1 != null) {
-                if (entry1.name == "index.json") {
-                    val reader = JsonReader(InputStreamReader(zipInputStream1, "UTF-8"))
-                    val map = gson.fromJson<Map<String, Any>>(reader, Map::class.java)
-                    dictTitle = map["title"] as? String ?: dictTitle
-                    break
-                }
-                zipInputStream1.closeEntry()
-                entry1 = zipInputStream1.nextEntry
-            }
-            zipInputStream1.close()
-
-            val maxPriority = dao.getMaxPriority() ?: -1
-            val dictionaryId = dao.insertDictionary(DictionaryMeta(name = dictTitle, priority = maxPriority + 1)).toInt()
-
-            // Second pass: process entries
-            val inputStream2 = context.contentResolver.openInputStream(uri) ?: return@withContext Result.failure(Exception("Failed to open input stream"))
-            val zipInputStream2 = ZipInputStream(inputStream2)
-            var totalEntries = 0
+            val batchChannel = Channel<List<DictionaryEntry>>(capacity = 10)
             
-            var entry2: ZipEntry? = zipInputStream2.nextEntry
-            while (entry2 != null) {
-                if (entry2.name.startsWith("term_bank_") && entry2.name.endsWith(".json")) {
-                    val reader = JsonReader(InputStreamReader(zipInputStream2, "UTF-8"))
-                    totalEntries += parseTermBank(reader, dao, dictionaryId) { batchCount ->
-                        onProgress(totalEntries + batchCount)
-                    }
-                } else if (entry2.name.startsWith("kanji_bank_") && entry2.name.endsWith(".json")) {
-                    val reader = JsonReader(InputStreamReader(zipInputStream2, "UTF-8"))
-                    totalEntries += parseKanjiBank(reader, dao, dictionaryId) { batchCount ->
-                        onProgress(totalEntries + batchCount)
-                    }
-                } else if (entry2.name.startsWith("tag_bank_") && entry2.name.endsWith(".json")) {
-                    val reader = JsonReader(InputStreamReader(zipInputStream2, "UTF-8"))
-                    parseTagBank(reader, dao, dictionaryId)
+            val dbJob = launch {
+                for (batch in batchChannel) {
+                    dao.insertAll(batch)
+                    totalProcessed += batch.size
+                    onProgress(totalProcessed)
                 }
-                zipInputStream2.closeEntry()
-                entry2 = zipInputStream2.nextEntry
             }
-            zipInputStream2.close()
-            Result.success(totalEntries)
+
+            var entry = zipInputStream.nextEntry
+            while (entry != null) {
+                when {
+                    entry.name == "index.json" -> {
+                        val reader = JsonReader(InputStreamReader(zipInputStream, "UTF-8"))
+                        val map = gson.fromJson<Map<String, Any>>(reader, Map::class.java)
+                        val newTitle = map["title"] as? String
+                        if (newTitle != null) {
+                            dictTitle = newTitle
+                            val id = dictionaryId
+                            if (id != null) {
+                                dao.updateName(id, dictTitle)
+                            }
+                        }
+                    }
+                    entry.name.startsWith("term_bank_") && entry.name.endsWith(".json") -> {
+                        if (dictionaryId == null) {
+                            val maxPriority = dao.getMaxPriority() ?: -1
+                            dictionaryId = dao.insertDictionary(DictionaryMeta(name = dictTitle, priority = maxPriority + 1)).toInt()
+                        }
+                        val reader = JsonReader(InputStreamReader(zipInputStream, "UTF-8"))
+                        processTermBank(reader, dictionaryId!!, batchChannel)
+                    }
+                    entry.name.startsWith("kanji_bank_") && entry.name.endsWith(".json") -> {
+                        if (dictionaryId == null) {
+                            val maxPriority = dao.getMaxPriority() ?: -1
+                            dictionaryId = dao.insertDictionary(DictionaryMeta(name = dictTitle, priority = maxPriority + 1)).toInt()
+                        }
+                        val reader = JsonReader(InputStreamReader(zipInputStream, "UTF-8"))
+                        processKanjiBank(reader, dictionaryId!!, batchChannel)
+                    }
+                    entry.name.startsWith("tag_bank_") && entry.name.endsWith(".json") -> {
+                        if (dictionaryId == null) {
+                            val maxPriority = dao.getMaxPriority() ?: -1
+                            dictionaryId = dao.insertDictionary(DictionaryMeta(name = dictTitle, priority = maxPriority + 1)).toInt()
+                        }
+                        val reader = JsonReader(InputStreamReader(zipInputStream, "UTF-8"))
+                        parseTagBank(reader, dao, dictionaryId!!)
+                    }
+                }
+                zipInputStream.closeEntry()
+                entry = zipInputStream.nextEntry
+            }
+            
+            batchChannel.close()
+            dbJob.join()
+            zipInputStream.close()
+            
+            val duration = System.currentTimeMillis() - startTime
+            Log.i("DictionaryImporter", "Imported $totalProcessed entries in ${duration}ms")
+            
+            Result.success(totalProcessed)
         } catch (e: Exception) {
             Log.e("DictionaryImporter", "Import failed", e)
             Result.failure(e)
         }
     }
 
-    private suspend fun parseKanjiBank(reader: JsonReader, dao: DictionaryDao, dictionaryId: Int, onBatchImported: (Int) -> Unit): Int {
-        var count = 0
-        val batchSize = 1000
-        val batch = mutableListOf<DictionaryEntry>()
-
+    private suspend fun processTermBank(reader: JsonReader, dictionaryId: Int, channel: Channel<List<DictionaryEntry>>) {
+        val batchSize = 5000
+        var batch = mutableListOf<DictionaryEntry>()
+        
         reader.beginArray()
         while (reader.hasNext()) {
-            val kanjiData = parseKanjiEntry(reader, dictionaryId)
-            if (kanjiData != null) {
-                batch.add(kanjiData)
-                count++
+            val entry = parseTermEntry(reader, dictionaryId)
+            if (entry != null) {
+                batch.add(entry)
             }
-
             if (batch.size >= batchSize) {
-                dao.insertAll(batch)
-                batch.clear()
-                onBatchImported(count)
+                channel.send(batch)
+                batch = mutableListOf()
             }
         }
         reader.endArray()
+        if (batch.isNotEmpty()) channel.send(batch)
+    }
 
-        if (batch.isNotEmpty()) {
-            dao.insertAll(batch)
-            onBatchImported(count)
+    private suspend fun processKanjiBank(reader: JsonReader, dictionaryId: Int, channel: Channel<List<DictionaryEntry>>) {
+        val batchSize = 5000
+        var batch = mutableListOf<DictionaryEntry>()
+        
+        reader.beginArray()
+        while (reader.hasNext()) {
+            val entry = parseKanjiEntry(reader, dictionaryId)
+            if (entry != null) {
+                batch.add(entry)
+            }
+            if (batch.size >= batchSize) {
+                channel.send(batch)
+                batch = mutableListOf()
+            }
         }
-        return count
+        reader.endArray()
+        if (batch.isNotEmpty()) channel.send(batch)
     }
 
     private suspend fun parseTagBank(reader: JsonReader, dao: DictionaryDao, dictionaryId: Int) {
@@ -122,6 +159,8 @@ class DictionaryImporter(private val context: Context) {
                 ))
             } catch (e: Exception) {
                 Log.e("DictionaryImporter", "Failed to parse tag entry", e)
+                while (reader.peek() != JsonToken.END_ARRAY) reader.skipValue()
+                reader.endArray()
             }
         }
         reader.endArray()
@@ -132,12 +171,12 @@ class DictionaryImporter(private val context: Context) {
 
     private fun nextStringOrArray(reader: JsonReader): String {
         return when (reader.peek()) {
-            com.google.gson.stream.JsonToken.STRING -> reader.nextString()
-            com.google.gson.stream.JsonToken.BEGIN_ARRAY -> {
+            JsonToken.STRING -> reader.nextString()
+            JsonToken.BEGIN_ARRAY -> {
                 val list = mutableListOf<String>()
                 reader.beginArray()
                 while (reader.hasNext()) {
-                    if (reader.peek() == com.google.gson.stream.JsonToken.STRING) {
+                    if (reader.peek() == JsonToken.STRING) {
                         list.add(reader.nextString())
                     } else {
                         reader.skipValue()
@@ -146,7 +185,7 @@ class DictionaryImporter(private val context: Context) {
                 reader.endArray()
                 list.joinToString(" ")
             }
-            com.google.gson.stream.JsonToken.NULL -> {
+            JsonToken.NULL -> {
                 reader.nextNull()
                 ""
             }
@@ -159,22 +198,21 @@ class DictionaryImporter(private val context: Context) {
 
     private fun nextIntSafe(reader: JsonReader): Int {
         return when (reader.peek()) {
-            com.google.gson.stream.JsonToken.NUMBER -> {
+            JsonToken.NUMBER -> {
                 try {
                     reader.nextInt()
                 } catch (e: Exception) {
                     try {
                         reader.nextDouble().toInt()
                     } catch (e2: Exception) {
-                        Log.w("DictionaryImporter", "Failed to parse number", e2)
                         0
                     }
                 }
             }
-            com.google.gson.stream.JsonToken.STRING -> {
+            JsonToken.STRING -> {
                 reader.nextString().toIntOrNull() ?: 0
             }
-            com.google.gson.stream.JsonToken.NULL -> {
+            JsonToken.NULL -> {
                 reader.nextNull()
                 0
             }
@@ -189,14 +227,15 @@ class DictionaryImporter(private val context: Context) {
         try {
             reader.beginArray()
             val kanji = nextStringOrArray(reader)
-            val onyomi = nextStringOrArray(reader) // On
-            val kunyomi = nextStringOrArray(reader) // Kun
-            val gradeFreq = nextStringOrArray(reader) // Grade / Frequency info
-            val definitions = if (reader.peek() != com.google.gson.stream.JsonToken.END_ARRAY) {
+            val onyomi = nextStringOrArray(reader)
+            val kunyomi = nextStringOrArray(reader)
+            val gradeFreq = nextStringOrArray(reader)
+            
+            val definitions = if (reader.peek() != JsonToken.END_ARRAY) {
                 gson.fromJson<Any>(reader, Any::class.java)
             } else null
             
-            val meta = if (reader.peek() != com.google.gson.stream.JsonToken.END_ARRAY) {
+            val meta = if (reader.peek() != JsonToken.END_ARRAY) {
                 try {
                     gson.fromJson<Map<String, Any>>(reader, Map::class.java)
                 } catch (e: Exception) {
@@ -214,7 +253,7 @@ class DictionaryImporter(private val context: Context) {
 
             return DictionaryEntry(
                 kanji = kanji,
-                reading = onyomi, // Keep 'reading' for compatibility
+                reading = onyomi,
                 definitions = gson.toJson(definitions),
                 rules = rules,
                 popularity = 0,
@@ -229,34 +268,6 @@ class DictionaryImporter(private val context: Context) {
         }
     }
 
-    private suspend fun parseTermBank(reader: JsonReader, dao: DictionaryDao, dictionaryId: Int, onBatchImported: (Int) -> Unit): Int {
-        var count = 0
-        val batchSize = 1000
-        val batch = mutableListOf<DictionaryEntry>()
-
-        reader.beginArray()
-        while (reader.hasNext()) {
-            val termData = parseTermEntry(reader, dictionaryId)
-            if (termData != null) {
-                batch.add(termData)
-                count++
-            }
-
-            if (batch.size >= batchSize) {
-                dao.insertAll(batch)
-                batch.clear()
-                onBatchImported(count)
-            }
-        }
-        reader.endArray()
-
-        if (batch.isNotEmpty()) {
-            dao.insertAll(batch)
-            onBatchImported(count)
-        }
-        return count
-    }
-
     private fun parseTermEntry(reader: JsonReader, dictionaryId: Int): DictionaryEntry? {
         try {
             reader.beginArray()
@@ -266,7 +277,7 @@ class DictionaryImporter(private val context: Context) {
             val rules = nextStringOrArray(reader)
             val popularity = nextIntSafe(reader)
             
-            val definitions = if (reader.peek() != com.google.gson.stream.JsonToken.END_ARRAY) {
+            val definitions = if (reader.peek() != JsonToken.END_ARRAY) {
                 gson.fromJson<Any>(reader, Any::class.java)
             } else null
             val definitionsJson = gson.toJson(definitions)
@@ -279,7 +290,6 @@ class DictionaryImporter(private val context: Context) {
             }
             reader.endArray()
 
-            // Combine all tags into the rules field for lookup, preserving original grouping
             val combinedRules = "$tags1 | $rules | $tags2"
 
             return DictionaryEntry(
