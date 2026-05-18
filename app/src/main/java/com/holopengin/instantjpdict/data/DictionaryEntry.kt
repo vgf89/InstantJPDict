@@ -17,5 +17,6 @@ data class DictionaryEntry(
     val reading: String,
     val definitions: String, // Store as JSON string
     val rules: String,
-    val popularity: Int
+    val popularity: Int,
+    val dictionaryId: Int
 )

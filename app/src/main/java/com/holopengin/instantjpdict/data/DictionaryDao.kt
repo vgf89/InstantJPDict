@@ -10,8 +10,23 @@ interface DictionaryDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAll(entries: List<DictionaryEntry>)
 
-    @Query("SELECT * FROM dictionary WHERE kanji = :text OR reading = :text")
+    @Query("SELECT * FROM dictionary WHERE kanji = :text OR reading = :text ORDER BY popularity DESC")
     suspend fun findByText(text: String): List<DictionaryEntry>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertDictionary(dictionary: DictionaryMeta): Long
+
+    @Query("SELECT * FROM dictionary_meta ORDER BY priority ASC")
+    suspend fun getAllDictionaries(): List<DictionaryMeta>
+
+    @Query("DELETE FROM dictionary_meta WHERE id = :dictionaryId")
+    suspend fun deleteDictionary(dictionaryId: Int)
+
+    @Query("DELETE FROM dictionary WHERE dictionaryId = :dictionaryId")
+    suspend fun deleteEntriesForDictionary(dictionaryId: Int)
+
+    @Query("UPDATE dictionary_meta SET priority = :priority WHERE id = :dictionaryId")
+    suspend fun updatePriority(dictionaryId: Int, priority: Int)
 
     @Query("SELECT COUNT(*) FROM dictionary")
     suspend fun getCount(): Int
