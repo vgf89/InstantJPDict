@@ -51,7 +51,7 @@ class MainActivity : ComponentActivity() {
                             scope.launch {
                                 try {
                                     val importer = DictionaryImporter(applicationContext)
-                                    val result = importer.importZip(it) { progress ->
+                                    val result = importer.importZip(it, "Imported Dictionary") { progress ->
                                         status = "Importing: $progress entries..."
                                     }
                                     status = result.fold(
@@ -146,6 +146,19 @@ fun HomeScreen(
         Spacer(modifier = Modifier.height(8.dp))
         Button(onClick = onImportDict, modifier = Modifier.fillMaxWidth()) {
             Text("Import Yomitan Dictionary (.zip)")
+        }
+        var showManageDicts by remember { mutableStateOf(false) }
+
+        if (showManageDicts) {
+            DictionaryManagerDialog(
+                onDismiss = { showManageDicts = false },
+                context = androidx.compose.ui.platform.LocalContext.current
+            )
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+        Button(onClick = { showManageDicts = true }, modifier = Modifier.fillMaxWidth()) {
+            Text("Manage Dictionaries")
         }
         Spacer(modifier = Modifier.height(8.dp))
         Button(onClick = onCheckDb, modifier = Modifier.fillMaxWidth()) {

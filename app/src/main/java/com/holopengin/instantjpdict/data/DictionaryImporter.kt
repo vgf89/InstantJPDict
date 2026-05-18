@@ -12,11 +12,13 @@ import java.util.zip.ZipInputStream
 class DictionaryImporter(private val context: Context) {
     private val gson = Gson()
 
-    suspend fun importZip(uri: android.net.Uri, onProgress: (Int) -> Unit): Result<Int> = withContext(Dispatchers.IO) {
+    suspend fun importZip(uri: android.net.Uri, dictionaryName: String, onProgress: (Int) -> Unit): Result<Int> = withContext(Dispatchers.IO) {
         try {
             val db = AppDatabase.getDatabase(context)
             val dao = db.dictionaryDao()
             
+            val dictionaryId = dao.insertDictionary(DictionaryMeta(name = dictionaryName, priority = 0)).toInt()
+
             val inputStream = context.contentResolver.openInputStream(uri) ?: return@withContext Result.failure(Exception("Failed to open input stream"))
             val zipInputStream = ZipInputStream(inputStream)
             var totalEntries = 0
@@ -26,7 +28,7 @@ class DictionaryImporter(private val context: Context) {
                 if (entry.name.startsWith("term_bank_") && entry.name.endsWith(".json")) {
                     Log.d("DictionaryImporter", "Processing ${entry.name}")
                     val reader = JsonReader(InputStreamReader(zipInputStream, "UTF-8"))
-                    totalEntries += parseTermBank(reader, dao) { batchCount ->
+                    totalEntries += parseTermBank(reader, dao, dictionaryId) { batchCount ->
                         onProgress(totalEntries + batchCount)
                     }
                 }
@@ -41,14 +43,14 @@ class DictionaryImporter(private val context: Context) {
         }
     }
 
-    private suspend fun parseTermBank(reader: JsonReader, dao: DictionaryDao, onBatchImported: (Int) -> Unit): Int {
+    private suspend fun parseTermBank(reader: JsonReader, dao: DictionaryDao, dictionaryId: Int, onBatchImported: (Int) -> Unit): Int {
         var count = 0
         val batchSize = 1000
         val batch = mutableListOf<DictionaryEntry>()
 
         reader.beginArray()
         while (reader.hasNext()) {
-            val termData = parseTermEntry(reader)
+            val termData = parseTermEntry(reader, dictionaryId)
             if (termData != null) {
                 batch.add(termData)
                 count++
@@ -69,7 +71,7 @@ class DictionaryImporter(private val context: Context) {
         return count
     }
 
-    private fun parseTermEntry(reader: JsonReader): DictionaryEntry? {
+    private fun parseTermEntry(reader: JsonReader, dictionaryId: Int): DictionaryEntry? {
         try {
             reader.beginArray()
             val kanji = reader.nextString()
@@ -91,7 +93,8 @@ class DictionaryImporter(private val context: Context) {
                 reading = reading,
                 definitions = definitionsJson,
                 rules = rules,
-                popularity = popularity
+                popularity = popularity,
+                dictionaryId = dictionaryId
             )
         } catch (e: Exception) {
             Log.e("DictionaryImporter", "Failed to parse term entry", e)
