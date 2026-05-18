@@ -225,7 +225,7 @@ class MeikiOcrEngine(private val context: Context) {
                         y2 = (ry2 / 32f) * crop.height + cropY
                     }
                     
-                    Rect(x1.toInt(), y1.toInt(), x2.toInt(), y2.toInt())
+                    Rect(Math.round(x1), Math.round(y1), Math.round(x2), Math.round(y2))
                 }
 
                 results.add(LineResult(text, charBoxes))
