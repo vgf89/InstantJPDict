@@ -188,18 +188,22 @@ class OcrAccessibilityService : AccessibilityService() {
     private fun showScreenshotOverlay(bitmap: Bitmap) {
         if (screenshotOverlay != null) return
 
-        // Task 2: Underneath system UI (try FLAG_LAYOUT_IN_SCREEN without FLAG_LAYOUT_NO_LIMITS)
+        // Task 2: Underneath system UI (try FLAG_LAYOUT_IN_SCREEN with FLAG_LAYOUT_NO_LIMITS for full screen)
         val params = WindowManager.LayoutParams().apply {
             type = WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
             format = PixelFormat.TRANSLUCENT
             flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
             width = WindowManager.LayoutParams.MATCH_PARENT
             height = WindowManager.LayoutParams.MATCH_PARENT
             gravity = Gravity.FILL
+            layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
         }
 
         val rootLayout = FrameLayout(this).apply {
+            // Task 2: Try to keep system UI visible
+            systemUiVisibility = View.SYSTEM_UI_FLAG_LAYOUT_STABLE or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
             setOnClickListener {
                 val resultsPanel = findViewWithTag<View>("results_panel")
                 if (resultsPanel != null) {
@@ -244,6 +248,21 @@ class OcrAccessibilityService : AccessibilityService() {
             gravity = Gravity.CENTER
         }
         rootLayout.addView(progressBar, progressParams)
+
+        // Task 5: OCR button within the overlay to close it
+        val closeButton = Button(this).apply {
+            text = "Close OCR"
+            setOnClickListener { hideScreenshotOverlay() }
+        }
+        val buttonParams = FrameLayout.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.END
+            topMargin = 150
+            rightMargin = 50
+        }
+        rootLayout.addView(closeButton, buttonParams)
 
         screenshotOverlay = rootLayout
         windowManager?.addView(screenshotOverlay, params)
@@ -352,7 +371,7 @@ class OcrAccessibilityService : AccessibilityService() {
                 val textView = TextView(this).apply {
                     text = char
                     setTextColor(android.graphics.Color.RED)
-                    gravity = Gravity.START or Gravity.CENTER_VERTICAL
+                    gravity = Gravity.CENTER
                     typeface = android.graphics.Typeface.DEFAULT
                     setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, box.height().toFloat())
                     setPadding(0, 0, 0, 0)
