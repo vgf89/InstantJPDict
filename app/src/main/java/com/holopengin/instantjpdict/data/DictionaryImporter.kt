@@ -55,6 +55,9 @@ class DictionaryImporter(private val context: Context) {
                     totalEntries += parseKanjiBank(reader, dao, dictionaryId) { batchCount ->
                         onProgress(totalEntries + batchCount)
                     }
+                } else if (entry2.name.startsWith("tag_bank_") && entry2.name.endsWith(".json")) {
+                    val reader = JsonReader(InputStreamReader(zipInputStream2, "UTF-8"))
+                    parseTagBank(reader, dao, dictionaryId)
                 }
                 zipInputStream2.closeEntry()
                 entry2 = zipInputStream2.nextEntry
@@ -93,6 +96,37 @@ class DictionaryImporter(private val context: Context) {
             onBatchImported(count)
         }
         return count
+    }
+
+    private suspend fun parseTagBank(reader: JsonReader, dao: DictionaryDao, dictionaryId: Int) {
+        val batch = mutableListOf<DictionaryTag>()
+        reader.beginArray()
+        while (reader.hasNext()) {
+            try {
+                reader.beginArray()
+                val name = reader.nextString()
+                val category = reader.nextString()
+                val order = reader.nextInt()
+                val notes = reader.nextString()
+                val popularity = reader.nextInt()
+                reader.endArray()
+
+                batch.add(DictionaryTag(
+                    name = name,
+                    category = category,
+                    order = order,
+                    notes = notes,
+                    popularity = popularity,
+                    dictionaryId = dictionaryId
+                ))
+            } catch (e: Exception) {
+                Log.e("DictionaryImporter", "Failed to parse tag entry", e)
+            }
+        }
+        reader.endArray()
+        if (batch.isNotEmpty()) {
+            dao.insertTags(batch)
+        }
     }
 
     private fun parseKanjiEntry(reader: JsonReader, dictionaryId: Int): DictionaryEntry? {
@@ -159,22 +193,29 @@ class DictionaryImporter(private val context: Context) {
             reader.beginArray()
             val kanji = reader.nextString()
             val reading = reader.nextString()
-            reader.skipValue() // tags
-            val rules = reader.nextString()
+            val tags1 = reader.nextString() // tags
+            val rules = reader.nextString() // rules/deinflection info
             val popularity = reader.nextInt()
             
             val definitions = gson.fromJson<Any>(reader, Any::class.java)
             val definitionsJson = gson.toJson(definitions)
             
             reader.nextInt() // sequence
-            reader.skipValue() // more tags
+            val tags2 = reader.nextString() // more tags
             reader.endArray()
+
+            // Combine all tags into the rules field for lookup
+            val allTags = listOf(tags1, rules, tags2)
+                .flatMap { it.split(" ") }
+                .filter { it.isNotEmpty() }
+                .distinct()
+                .joinToString(" ")
 
             return DictionaryEntry(
                 kanji = kanji,
                 reading = reading,
                 definitions = definitionsJson,
-                rules = rules,
+                rules = allTags,
                 popularity = popularity,
                 dictionaryId = dictionaryId
             )

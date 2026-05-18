@@ -605,7 +605,7 @@ class OcrAccessibilityService : AccessibilityService() {
             for ((_, readingEntries) in entriesByReading) {
                 val entry = readingEntries.first()
                 val isKanjiEntry = entry.onyomi != null || entry.kunyomi != null
-
+                
                 if (isKanjiEntry) {
                     // Vertical layout for Kanji lookup
                     val termHeader = LinearLayout(this).apply {
@@ -643,6 +643,10 @@ class OcrAccessibilityService : AccessibilityService() {
                 }
 
                 // Tags / JLPT info
+                val allTags = readingEntries.flatMap { it.rules.split(" ") }
+                    .filter { it.isNotEmpty() }
+                    .distinct()
+
                 val infoText = mutableListOf<String>()
                 entry.jlpt?.takeIf { it.isNotEmpty() }?.let { infoText.add("jlpt level: $it") }
                 
@@ -650,13 +654,26 @@ class OcrAccessibilityService : AccessibilityService() {
                 val gradeMatch = "grade:([^\\s]+)".toRegex().find(entry.rules)
                 gradeMatch?.groupValues?.get(1)?.let { infoText.add("grade: $it") }
 
+                val tagContainer = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(0, 5, 0, 10)
+                }
+                termSection.addView(tagContainer)
+
                 if (infoText.isNotEmpty()) {
-                    termSection.addView(TextView(this).apply {
+                    tagContainer.addView(TextView(this).apply {
                         text = "(${infoText.joinToString(", ")})"
                         setTextColor(android.graphics.Color.parseColor("#AAAAAA"))
                         textSize = 14f
-                        setPadding(0, 5, 0, 10)
                         typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.ITALIC)
+                    })
+                }
+
+                if (allTags.isNotEmpty()) {
+                    tagContainer.addView(TextView(this@OcrAccessibilityService).apply {
+                        text = allTags.joinToString(", ")
+                        setTextColor(android.graphics.Color.parseColor("#888888"))
+                        textSize = 12f
                     })
                 }
 
