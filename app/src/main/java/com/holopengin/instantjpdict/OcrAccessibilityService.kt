@@ -651,7 +651,7 @@ class OcrAccessibilityService : AccessibilityService() {
                 val allInfoText = mutableSetOf<String>()
                 
                 for (e in readingEntries) {
-                    e.jlpt?.takeIf { it.isNotEmpty() }?.let { allInfoText.add("jlpt level: $it") }
+                    e.jlpt?.takeIf { it.isNotEmpty() }?.let { allInfoText.add("jlpt: N$it") }
                     val gradeMatch = "grade:([^\\s]+)".toRegex().find(e.rules)
                     gradeMatch?.groupValues?.get(1)?.let { allInfoText.add("grade: $it") }
 
@@ -675,18 +675,10 @@ class OcrAccessibilityService : AccessibilityService() {
 
                 if (allInfoText.isNotEmpty()) {
                     metadataContainer.addView(TextView(this).apply {
-                        text = "(${allInfoText.joinToString(", ")})"
-                        setTextColor(android.graphics.Color.parseColor("#AAAAAA"))
-                        textSize = 14f
-                        typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.ITALIC)
-                    })
-                }
-
-                if (allGlobalTags.isNotEmpty()) {
-                    metadataContainer.addView(TextView(this).apply {
-                        text = allGlobalTags.joinToString(", ")
-                        setTextColor(android.graphics.Color.parseColor("#888888"))
-                        textSize = 12f
+                        text = "${allInfoText.joinToString(", ")}"
+                        setTextColor(android.graphics.Color.parseColor("#666666"))
+                        textSize = 11f
+                        setPadding(20, 5, 0, 0)
                     })
                 }
 
