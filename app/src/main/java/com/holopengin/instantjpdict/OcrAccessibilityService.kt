@@ -42,6 +42,8 @@ class OcrAccessibilityService : AccessibilityService() {
 
     private var windowManager: WindowManager? = null
     private var floatingView: View? = null
+    private var floatingParams: WindowManager.LayoutParams? = null
+    private var ocrButton: Button? = null
     private var screenshotOverlay: View? = null
     private lateinit var ocrEngine: MeikiOcrEngine
     private lateinit var deinflector: Deinflector
@@ -92,7 +94,7 @@ class OcrAccessibilityService : AccessibilityService() {
     private fun addFloatingButton() {
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         
-        val params = WindowManager.LayoutParams().apply {
+        floatingParams = WindowManager.LayoutParams().apply {
             type = WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
             format = PixelFormat.TRANSLUCENT
             flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
@@ -104,18 +106,19 @@ class OcrAccessibilityService : AccessibilityService() {
         }
 
         val frameLayout = FrameLayout(this)
-        val button = Button(this).apply {
+        ocrButton = Button(this).apply {
             text = "OCR"
         }
-        frameLayout.addView(button)
+        frameLayout.addView(ocrButton)
         
-        button.setOnTouchListener(object : View.OnTouchListener {
+        ocrButton?.setOnTouchListener(object : View.OnTouchListener {
             private var initialX = 0
             private var initialY = 0
             private var initialTouchX = 0f
             private var initialTouchY = 0f
 
             override fun onTouch(v: View, event: MotionEvent): Boolean {
+                val params = floatingParams ?: return false
                 when (event.action) {
                     MotionEvent.ACTION_DOWN -> {
                         initialX = params.x
@@ -143,7 +146,7 @@ class OcrAccessibilityService : AccessibilityService() {
             }
         })
 
-        button.setOnClickListener {
+        ocrButton?.setOnClickListener {
             // Task 5: Toggle overlay
             if (screenshotOverlay != null) {
                 hideScreenshotOverlay()
@@ -160,7 +163,7 @@ class OcrAccessibilityService : AccessibilityService() {
         }
         
         floatingView = frameLayout
-        windowManager?.addView(floatingView, params)
+        windowManager?.addView(floatingView, floatingParams)
     }
 
     private fun triggerCapture(onSuccessAction: (Bitmap) -> Unit) {
@@ -249,23 +252,17 @@ class OcrAccessibilityService : AccessibilityService() {
         }
         rootLayout.addView(progressBar, progressParams)
 
-        // Task 5: OCR button within the overlay to close it
-        val closeButton = Button(this).apply {
-            text = "Close OCR"
-            setOnClickListener { hideScreenshotOverlay() }
-        }
-        val buttonParams = FrameLayout.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.WRAP_CONTENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.END
-            topMargin = 150
-            rightMargin = 50
-        }
-        rootLayout.addView(closeButton, buttonParams)
-
         screenshotOverlay = rootLayout
         windowManager?.addView(screenshotOverlay, params)
+        
+        // Task 5: Ensure the floating button is on top and has correct text
+        ocrButton?.text = "Close OCR"
+        floatingView?.let { fv ->
+            floatingParams?.let { fp ->
+                windowManager?.removeView(fv)
+                windowManager?.addView(fv, fp)
+            }
+        }
 
         // Run OCR in background
         Thread {
@@ -775,6 +772,7 @@ class OcrAccessibilityService : AccessibilityService() {
             windowManager?.removeView(it)
             screenshotOverlay = null
         }
+        ocrButton?.text = "OCR"
         boxViews.clear()
         textViews.clear()
     }
