@@ -796,20 +796,41 @@ class OcrAccessibilityService : AccessibilityService() {
     }
 
     private fun hideScreenshotOverlay() {
-        screenshotOverlay?.let { root ->
-            floatingView?.let { fv ->
-                (fv.parent as? android.view.ViewGroup)?.removeView(fv)
-                ocrButton?.text = "OCR"
-                if (!fv.isAttachedToWindow) {
-                    windowManager?.addView(fv, floatingParams)
-                }
+        val root = screenshotOverlay ?: return
+        val fv = floatingView ?: return
+        
+        // 1. Remove floating button from its current parent (the overlay)
+        (fv.parent as? android.view.ViewGroup)?.removeView(fv)
+        
+        // 2. Remove the overlay from WindowManager
+        if (root.isAttachedToWindow) {
+            try {
+                windowManager?.removeViewImmediate(root)
+            } catch (e: Exception) {
+                Log.e("OcrAccessibilityService", "Error removing screenshot overlay", e)
             }
-            if (root.isAttachedToWindow) {
-                windowManager?.removeView(root)
-            }
-            screenshotOverlay = null
         }
+        screenshotOverlay = null
+        
+        // 3. Restore the floating button to the WindowManager
         ocrButton?.text = "OCR"
+        fv.visibility = View.VISIBLE
+        
+        try {
+            // If for some reason it's still attached to WindowManager directly, remove it first
+            // to avoid "View already added" exception.
+            if (fv.isAttachedToWindow) {
+                windowManager?.removeViewImmediate(fv)
+            }
+            windowManager?.addView(fv, floatingParams)
+        } catch (e: Exception) {
+            Log.e("OcrAccessibilityService", "Error restoring floating button to WindowManager", e)
+            // Fallback: if addView fails, try to update layout if it's already there
+            try {
+                windowManager?.updateViewLayout(fv, floatingParams)
+            } catch (e2: Exception) {}
+        }
+
         boxViews.clear()
         textViews.clear()
     }
