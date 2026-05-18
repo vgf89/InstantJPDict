@@ -30,6 +30,9 @@ interface DictionaryDao {
     @Query("DELETE FROM dictionary WHERE dictionaryId = :dictionaryId")
     suspend fun deleteEntriesForDictionary(dictionaryId: Int)
 
+    @Query("UPDATE dictionary_meta SET name = :name WHERE id = :dictionaryId")
+    suspend fun updateName(dictionaryId: Int, name: String)
+
     @Query("UPDATE dictionary_meta SET priority = :priority WHERE id = :dictionaryId")
     suspend fun updatePriority(dictionaryId: Int, priority: Int)
 
