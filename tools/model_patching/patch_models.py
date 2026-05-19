@@ -30,7 +30,7 @@ def update_model(in_path, out_path):
         logits_info = helper.make_tensor_value_info(
             'logits',
             vi.type.tensor_type.elem_type,
-            [d.dim_value for d in vi.type.tensor_type.shape.dim]
+            [-1] + [d.dim_value for d in vi.type.tensor_type.shape.dim[1:]]
         )
         model.graph.output.append(logits_info)
         model.graph.node.append(helper.make_node('Identity', [logits_target], ['logits'], name='logits_ext'))
@@ -45,7 +45,7 @@ def update_model(in_path, out_path):
         indices_info = helper.make_tensor_value_info(
             'indices',
             vi_idx.type.tensor_type.elem_type,
-            [d.dim_value for d in vi_idx.type.tensor_type.shape.dim]
+            [-1] + [d.dim_value for d in vi_idx.type.tensor_type.shape.dim[1:]]
         )
         model.graph.output.append(indices_info)
         model.graph.node.append(helper.make_node('Identity', [indices_target], ['indices'], name='indices_ext'))
