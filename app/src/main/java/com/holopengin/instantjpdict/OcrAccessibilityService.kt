@@ -21,6 +21,7 @@ import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.widget.Button
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
@@ -68,6 +69,13 @@ class OcrAccessibilityService : AccessibilityService() {
     private val textViews = mutableListOf<TextView>()
     private var lastLandscapeGravity = Gravity.END
     private var lastPortraitGravity = Gravity.BOTTOM
+
+    private var activeLineResults: List<LineResult> = emptyList()
+    private var activeAllChars: MutableList<Char> = mutableListOf()
+    private var activeAllAlternatives: List<List<Pair<Char, Float>>> = emptyList()
+    private data class CharInfo(val lineIdx: Int, val charIdxInLine: Int, val box: Rect)
+    private var activeCharInfos: List<CharInfo> = emptyList()
+    private var currentTappedIdx: Int = -1
 
     private val borderDrawable by lazy {
         GradientDrawable().apply {
@@ -230,7 +238,7 @@ class OcrAccessibilityService : AccessibilityService() {
             // Task 2: Try to keep system UI visible
             systemUiVisibility = View.SYSTEM_UI_FLAG_LAYOUT_STABLE or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
             setOnClickListener {
-                val panel = findViewWithTag<View>("results_panel")
+                val panel = findViewWithTag<View>("correction_ui_root")
                 if (panel != null) {
                     removeView(panel)
                     resetHighlights()
@@ -383,12 +391,19 @@ class OcrAccessibilityService : AccessibilityService() {
         boxViews.clear()
         textViews.clear()
 
-        // Flatten results for easy index lookup
-        val allChars = results.flatMap { line -> 
-            line.text.indices.map { i -> line.text[i] } 
+        activeLineResults = results
+        activeAllChars = results.flatMap { line -> line.text.toList() }.toMutableList()
+        activeAllAlternatives = results.flatMap { it.alternatives }
+        
+        val infos = mutableListOf<CharInfo>()
+        results.forEachIndexed { lineIdx, line ->
+            line.charBoxes.indices.forEach { charIdx ->
+                infos.add(CharInfo(lineIdx, charIdx, line.charBoxes[charIdx]))
+            }
         }
-        val allAlternatives = results.flatMap { it.alternatives }
-        Log.i("OcrAccessibilityService", "drawResults: allChars.size=${allChars.size}, allAlternatives.size=${allAlternatives.size}")
+        activeCharInfos = infos
+
+        Log.i("OcrAccessibilityService", "drawResults: allChars.size=${activeAllChars.size}, allAlternatives.size=${activeAllAlternatives.size}")
 
         // --- LAYERED ARCHITECTURE ---
         // 1. Bottom layer: Margins that block the overlay from closing but do nothing else.
@@ -454,145 +469,150 @@ class OcrAccessibilityService : AccessibilityService() {
                 boxViews.add(boxView)
 
                 boxView.setOnClickListener {
-                    val currentTextViews = textViews.toList()
-                    val currentAllChars = allChars.toList()
-                    
-                    // Print top-15 candidates to logcat
-                    allAlternatives.getOrNull(currentIdx)?.let { alternatives ->
-                        val logMsg = alternatives.joinToString(", ") { (char, score) ->
-                            "$char (${String.format(java.util.Locale.US, "%.8f", score)})"
+                    performLookup(currentIdx, rootLayout)
+                }
+            }
+        }
+    }
+
+    private fun performLookup(currentIdx: Int, rootLayout: FrameLayout) {
+        currentTappedIdx = currentIdx
+        val tappedBox = activeCharInfos[currentIdx].box
+
+        // Print top-15 candidates to logcat
+        activeAllAlternatives.getOrNull(currentIdx)?.let { alternatives ->
+            val logMsg = alternatives.joinToString(", ") { (char, score) ->
+                "$char (${String.format(java.util.Locale.US, "%.8f", score)})"
+            }
+            Log.i("OcrAccessibilityService", "Top 15 candidates for '${activeAllChars[currentIdx]}': $logMsg")
+        }
+
+        // Reset all highlights
+        resetHighlights()
+
+        // Immediate feedback for the first character
+        if (currentIdx < textViews.size) {
+            textViews[currentIdx].setTextColor(android.graphics.Color.YELLOW)
+            textViews[currentIdx].typeface = android.graphics.Typeface.DEFAULT_BOLD
+        }
+
+        val endIdx = kotlin.math.min(currentIdx + 20, activeAllChars.size)
+        val followingText = activeAllChars.subList(currentIdx, endIdx).joinToString("")
+
+        serviceScope.launch {
+            val db = AppDatabase.getDatabase(applicationContext)
+            val allMatches = mutableListOf<Pair<String, List<com.holopengin.instantjpdict.data.DictionaryEntry>>>()
+            var maxMatchedLen = 0
+
+            // 1. Pre-calculate all candidate terms to minimize DB round-trips
+            val candidatesByLength = mutableListOf<Pair<Int, List<Pair<String, List<String>?>>>>()
+            val allTermsToSearch = mutableSetOf<String>()
+
+            for (len in followingText.length downTo 1) {
+                val queryTextRaw = followingText.substring(0, len)
+                val queryText = JapaneseUtil.normalize(queryTextRaw)
+
+                val variants = listOf(
+                    queryText,
+                    JapaneseUtil.katakanaToHiragana(queryText),
+                    JapaneseUtil.collapseEmphatic(queryText)
+                ).distinct()
+
+                val deinflections = deinflector.deinflect(queryText)
+
+                val lengthCandidates = mutableListOf<Pair<String, List<String>?>>()
+                variants.forEach {
+                    lengthCandidates.add(it to null)
+                    allTermsToSearch.add(it)
+                }
+                deinflections.forEach {
+                    if (it.term != queryText) {
+                        lengthCandidates.add(it.term to it.type)
+                        allTermsToSearch.add(it.term)
+                    }
+                }
+                candidatesByLength.add(len to lengthCandidates)
+            }
+
+            // 2. Single Batch Query
+            val dbResults = withContext(Dispatchers.IO) {
+                db.dictionaryDao().findByTexts(allTermsToSearch.toList())
+            }
+
+            // Group results by the search term (kanji or reading) for fast lookup
+            val resultsByTerm = mutableMapOf<String, MutableList<com.holopengin.instantjpdict.data.DictionaryEntry>>()
+            dbResults.forEach { entry ->
+                if (entry.kanji in allTermsToSearch) resultsByTerm.getOrPut(entry.kanji) { mutableListOf() }.add(entry)
+                if (entry.reading in allTermsToSearch) resultsByTerm.getOrPut(entry.reading) { mutableListOf() }.add(entry)
+            }
+
+            // 3. Process results in order of length (longest first)
+            for ((len, candidates) in candidatesByLength) {
+                var foundInThisLen = false
+
+                for ((term, requiredTypes) in candidates) {
+                    val termEntries = resultsByTerm[term] ?: continue
+
+                    val filteredResults = if (requiredTypes == null) {
+                        // Variant/Direct match: Apply standard Kanji filter
+                        val queryTextRaw = followingText.substring(0, len)
+                        val queryText = JapaneseUtil.normalize(queryTextRaw)
+                        termEntries.filter { entry ->
+                            val isKanjiEntry = entry.onyomi != null || entry.kunyomi != null
+                            !isKanjiEntry || entry.kanji == queryText
                         }
-                        Log.i("OcrAccessibilityService", "Top 15 candidates for '${allChars[currentIdx]}': $logMsg")
+                    } else {
+                        // Deinflection match: Apply type filter
+                        termEntries.filter { entry ->
+                            val entryTags = entry.rules.split(" ")
+                            requiredTypes.isEmpty() ||
+                                    requiredTypes.any { it in entryTags } ||
+                                    (entryTags.any { it.startsWith("v") } && requiredTypes.any { it.startsWith("v") })
+                        }
                     }
 
-                    // Reset all highlights
-                    resetHighlights()
-                    
-                    // Immediate feedback for the first character
-                    textView.setTextColor(android.graphics.Color.YELLOW)
-                    textView.typeface = android.graphics.Typeface.DEFAULT_BOLD
+                    if (filteredResults.isNotEmpty()) {
+                        allMatches.add(term to filteredResults.distinctBy { it.id })
+                        foundInThisLen = true
+                    }
+                }
 
-                    val endIdx = minOf(currentIdx + 20, currentAllChars.size)
-                    val followingText = currentAllChars.subList(currentIdx, endIdx).joinToString("")
-                    
-                    serviceScope.launch {
-                        val db = AppDatabase.getDatabase(applicationContext)
-                        val allMatches = mutableListOf<Pair<String, List<com.holopengin.instantjpdict.data.DictionaryEntry>>>()
-                        var maxMatchedLen = 0
+                if (foundInThisLen && maxMatchedLen == 0) {
+                    maxMatchedLen = len
+                }
+            }
 
-                        // 1. Pre-calculate all candidate terms to minimize DB round-trips
-                        val candidatesByLength = mutableListOf<Pair<Int, List<Pair<String, List<String>?>>>>()
-                        val allTermsToSearch = mutableSetOf<String>()
-
-                        for (len in followingText.length downTo 1) {
-                            val queryTextRaw = followingText.substring(0, len)
-                            val queryText = JapaneseUtil.normalize(queryTextRaw)
-                            
-                            val variants = listOf(
-                                queryText,
-                                JapaneseUtil.katakanaToHiragana(queryText),
-                                JapaneseUtil.collapseEmphatic(queryText)
-                            ).distinct()
-                            
-                            val deinflections = deinflector.deinflect(queryText)
-                            
-                            val lengthCandidates = mutableListOf<Pair<String, List<String>?>>()
-                            variants.forEach { 
-                                lengthCandidates.add(it to null)
-                                allTermsToSearch.add(it)
-                            }
-                            deinflections.forEach { 
-                                if (it.term != queryText) {
-                                    lengthCandidates.add(it.term to it.type)
-                                    allTermsToSearch.add(it.term)
-                                }
-                            }
-                            candidatesByLength.add(len to lengthCandidates)
-                        }
-
-                        // 2. Single Batch Query
-                        val dbResults = withContext(Dispatchers.IO) {
-                            db.dictionaryDao().findByTexts(allTermsToSearch.toList())
-                        }
-                        
-                        // Group results by the search term (kanji or reading) for fast lookup
-                        val resultsByTerm = mutableMapOf<String, MutableList<com.holopengin.instantjpdict.data.DictionaryEntry>>()
-                        dbResults.forEach { entry ->
-                            if (entry.kanji in allTermsToSearch) resultsByTerm.getOrPut(entry.kanji) { mutableListOf() }.add(entry)
-                            if (entry.reading in allTermsToSearch) resultsByTerm.getOrPut(entry.reading) { mutableListOf() }.add(entry)
-                        }
-
-                        // 3. Process results in order of length (longest first)
-                        for ((len, candidates) in candidatesByLength) {
-                            var foundInThisLen = false
-                            
-                            for ((term, requiredTypes) in candidates) {
-                                val termEntries = resultsByTerm[term] ?: continue
-                                
-                                val filteredResults = if (requiredTypes == null) {
-                                    // Variant/Direct match: Apply standard Kanji filter
-                                    val queryTextRaw = followingText.substring(0, len)
-                                    val queryText = JapaneseUtil.normalize(queryTextRaw)
-                                    termEntries.filter { entry ->
-                                        val isKanjiEntry = entry.onyomi != null || entry.kunyomi != null
-                                        !isKanjiEntry || entry.kanji == queryText
-                                    }
-                                } else {
-                                    // Deinflection match: Apply type filter
-                                    termEntries.filter { entry ->
-                                        val entryTags = entry.rules.split(" ")
-                                        requiredTypes.isEmpty() || 
-                                        requiredTypes.any { it in entryTags } ||
-                                        (entryTags.any { it.startsWith("v") } && requiredTypes.any { it.startsWith("v") })
-                                    }
-                                }
-
-                                if (filteredResults.isNotEmpty()) {
-                                    allMatches.add(term to filteredResults.distinctBy { it.id })
-                                    foundInThisLen = true
-                                }
-                            }
-
-                            if (foundInThisLen && maxMatchedLen == 0) {
-                                maxMatchedLen = len
-                            }
-                        }
-                        
-                        val uniqueMatches = allMatches.distinctBy { it.first }
-                        if (uniqueMatches.isNotEmpty()) {
-                            withContext(Dispatchers.Main) {
-                                // Highlight the entire matched sequence in text
-                                for (i in 0 until maxMatchedLen) {
-                                    val targetIdx = currentIdx + i
-                                    if (targetIdx < currentTextViews.size) {
-                                        currentTextViews[targetIdx].setTextColor(android.graphics.Color.YELLOW)
-                                        currentTextViews[targetIdx].typeface = android.graphics.Typeface.DEFAULT_BOLD
-                                    }
-                                }
-                                showResultsUi(rootLayout, uniqueMatches, box)
-                            }
-                        } else {
-                            // Fallback highlight if no dictionary match but was tapped
-                            withContext(Dispatchers.Main) {
-                                if (currentIdx < currentTextViews.size) {
-                                    currentTextViews[currentIdx].setTextColor(android.graphics.Color.YELLOW)
-                                    currentTextViews[currentIdx].typeface = android.graphics.Typeface.DEFAULT_BOLD
-                                }
-
-                                val debugView = rootLayout.findViewWithTag<TextView>("debug_text")
-                                if (debugView != null) {
-                                    debugView.text = "No entry found"
-                                    debugView.postDelayed({
-                                        val currentStatus = debugView.text.toString()
-                                        if (currentStatus == "No entry found") {
-                                            val count = results.sumOf { line -> line.charBoxes.size }
-                                            debugView.text = "Found $count characters."
-                                        }
-                                    }, 2000)
-                                }
-                            }
+            val uniqueMatches = allMatches.distinctBy { it.first }
+            withContext(Dispatchers.Main) {
+                if (uniqueMatches.isNotEmpty()) {
+                    // Highlight the entire matched sequence in text
+                    for (i in 0 until maxMatchedLen) {
+                        val targetIdx = currentIdx + i
+                        if (targetIdx < textViews.size) {
+                            textViews[targetIdx].setTextColor(android.graphics.Color.YELLOW)
+                            textViews[targetIdx].typeface = android.graphics.Typeface.DEFAULT_BOLD
                         }
                     }
+                    showResultsUi(rootLayout, uniqueMatches, tappedBox)
+                } else {
+                    // Fallback highlight if no dictionary match but was tapped
+                    if (currentIdx < textViews.size) {
+                        textViews[currentIdx].setTextColor(android.graphics.Color.YELLOW)
+                        textViews[currentIdx].typeface = android.graphics.Typeface.DEFAULT_BOLD
+                    }
+
+                    val debugView = rootLayout.findViewWithTag<TextView>("debug_text")
+                    if (debugView != null) {
+                        debugView.text = "No entry found"
+                        debugView.postDelayed({
+                            val currentStatus = debugView.text.toString()
+                            if (currentStatus == "No entry found") {
+                                val count = activeAllChars.size
+                                debugView.text = "Found $count characters."
+                            }
+                        }, 2000)
+                    }
+                    showResultsUi(rootLayout, emptyList(), tappedBox)
                 }
             }
         }
@@ -606,13 +626,16 @@ class OcrAccessibilityService : AccessibilityService() {
     }
 
     private fun showResultsUi(rootLayout: FrameLayout, matches: List<Pair<String, List<com.holopengin.instantjpdict.data.DictionaryEntry>>>, tappedBox: Rect) {
-        // Task 3: Group identical readings, furigana, short POS
-        
-        // Remove existing result view if any
-        rootLayout.findViewWithTag<View>("results_panel")?.let { rootLayout.removeView(it) }
+        rootLayout.findViewWithTag<View>("correction_ui_root")?.let { rootLayout.removeView(it) }
 
-        val container = LinearLayout(this).apply {
-            tag = "results_panel"
+        val isLandscape = rootLayout.width > rootLayout.height
+        
+        // Determine panel sizes
+        val panelWidth = if (isLandscape) (rootLayout.width * 0.4).toInt() else FrameLayout.LayoutParams.MATCH_PARENT
+        val panelHeight = if (isLandscape) FrameLayout.LayoutParams.MATCH_PARENT else (rootLayout.height * 0.4).toInt()
+
+        // Dictionary Panel (the original container)
+        val dictionaryPanel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(android.graphics.Color.argb(245, 25, 25, 25))
             setPadding(40, 40, 40, 40)
@@ -620,256 +643,314 @@ class OcrAccessibilityService : AccessibilityService() {
             setOnClickListener { }
         }
 
-        val scrollView = ScrollView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
-            isVerticalScrollBarEnabled = false
-        }
-
-        val scrollContent = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(0, 0, 0, 100)
-        }
-
-        for ((_, entries) in matches) {
-            val termSection = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                setPadding(0, 20, 0, 40)
+        if (matches.isEmpty()) {
+            dictionaryPanel.addView(TextView(this).apply {
+                text = "No results found for \"${activeAllChars.getOrNull(currentTappedIdx)}\""
+                setTextColor(android.graphics.Color.GRAY)
+                gravity = Gravity.CENTER
+                setPadding(0, 100, 0, 0)
+            })
+        } else {
+            val scrollView = ScrollView(this).apply {
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
+                isVerticalScrollBarEnabled = false
             }
-
-            // Group entries by reading to combine them
-            // Use reading from the database or specific onyomi/kunyomi fields
-            val entriesByReading = entries.groupBy { it.reading }
-
-            for ((_, readingEntries) in entriesByReading) {
-                val entry = readingEntries.first()
-                val isKanjiEntry = entry.onyomi != null || entry.kunyomi != null
-                
-                // Process Tags and Senses across all reading entries
-                val allGlobalTags = mutableSetOf<String>()
-                val allInfoText = mutableSetOf<String>()
-                
-                for (e in readingEntries) {
-                    e.jlpt?.takeIf { it.isNotEmpty() }?.let { allInfoText.add("jlpt: N$it") }
-                    val gradeMatch = "grade:([^\\s]+)".toRegex().find(e.rules)
-                    gradeMatch?.groupValues?.get(1)?.let { allInfoText.add("grade: $it") }
-
-                    val segments = e.rules.split(" | ")
-                    val t1 = segments.getOrNull(0)?.split(" ")?.filter { it.isNotEmpty() } ?: emptyList()
-                    val rs = segments.getOrNull(1)?.split(" ")?.filter { it.isNotEmpty() } ?: emptyList()
-                    val t2 = segments.getOrNull(2)?.split(" ")?.filter { it.isNotEmpty() } ?: emptyList()
-                    
-                    (t1 + rs + t2).forEach { tag ->
-                        if (tag.toIntOrNull() == null && !tag.startsWith("grade:")) {
-                            allGlobalTags.add(tag)
-                        }
-                    }
-                }
-
-                val currentHeader: View
-
-                if (isKanjiEntry) {
-                    // Horizontal layout for Kanji lookup: Kanji on left, readings on right
-                    val termHeader = LinearLayout(this).apply {
-                        orientation = LinearLayout.HORIZONTAL
-                        setPadding(0, 10, 0, 10)
-                        gravity = Gravity.CENTER_VERTICAL
-                    }
-                    
-                    termHeader.addView(TextView(this).apply {
-                        text = entry.kanji
-                        setTextColor(android.graphics.Color.CYAN)
-                        textSize = 48f
-                        typeface = android.graphics.Typeface.DEFAULT_BOLD
-                        setPadding(0, 0, 40, 0)
-                    })
-
-                    val readingContainer = LinearLayout(this).apply {
-                        orientation = LinearLayout.VERTICAL
-                    }
-
-                    entry.onyomi?.takeIf { it.isNotEmpty() }?.let {
-                        readingContainer.addView(TextView(this).apply {
-                            text = "on: ${it.replace(" ", "、")}"
-                            setTextColor(android.graphics.Color.LTGRAY)
-                            textSize = 14f
-                            includeFontPadding = false
-                        })
-                    }
-
-                    entry.kunyomi?.takeIf { it.isNotEmpty() }?.let {
-                        readingContainer.addView(TextView(this).apply {
-                            text = "kun: ${it.replace(" ", "、")}"
-                            setTextColor(android.graphics.Color.LTGRAY)
-                            textSize = 14f
-                            includeFontPadding = false
-                        })
-                    }
-
-                    if (allInfoText.isNotEmpty()) {
-                        readingContainer.addView(TextView(this).apply {
-                            text = "${allInfoText.joinToString(", ")}"
-                            setTextColor(android.graphics.Color.parseColor("#666666"))
-                            textSize = 11f
-                            includeFontPadding = false
-                        })
-                    }
-
-                    termHeader.addView(readingContainer)
-                    termSection.addView(termHeader)
-                    currentHeader = termHeader
-                } else {
-                    // Standard Ruby/Furigana layout for words
-                    val termHeader = createRubyView(entry.kanji, entry.reading)
-                    termSection.addView(termHeader)
-                    currentHeader = termHeader
-                }
-
-                val metadataContainer = LinearLayout(this).apply {
+            val scrollContent = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(0, 0, 0, 100)
+            }
+            // ... (fill dictionary results, same as before)
+            for ((_, entries) in matches) {
+                val termSection = LinearLayout(this).apply {
                     orientation = LinearLayout.VERTICAL
-                    setPadding(0, 5, 0, 10)
+                    setPadding(0, 20, 0, 40)
                 }
-                termSection.addView(metadataContainer)
-
-                if (!isKanjiEntry && allInfoText.isNotEmpty()) {
-                    metadataContainer.addView(TextView(this).apply {
-                        text = "${allInfoText.joinToString(", ")}"
-                        setTextColor(android.graphics.Color.parseColor("#666666"))
-                        textSize = 11f
-                        setPadding(20, 5, 0, 0)
-                    })
-                }
-
-                for (e in readingEntries) {
-                    try {
-                        val definitions = gson.fromJson<Any>(e.definitions, Any::class.java)
-                        
-                        if (definitions is List<*>) {
-                            // Re-parse tags1 and tags2 for sense-specific associations
-                            val segments = e.rules.split(" | ")
-                            val t1 = segments.getOrNull(0)?.split(" ")?.filter { it.isNotEmpty() } ?: emptyList()
-                            val t2 = segments.getOrNull(2)?.split(" ")?.filter { it.isNotEmpty() } ?: emptyList()
-                            
-                            val senseToTags = mutableMapOf<Int, MutableList<String>>()
-                            val unnumberedTags = mutableListOf<String>()
-                            
-                            fun parseSenseTags(tagList: List<String>) {
-                                var currentSenseNum: Int? = null
-                                for (tag in tagList) {
-                                    val num = tag.toIntOrNull()
-                                    if (num != null) {
-                                        currentSenseNum = num
-                                    } else {
-                                        if (currentSenseNum != null) {
-                                            senseToTags.getOrPut(currentSenseNum) { mutableListOf() }.add(tag)
-                                        } else {
-                                            unnumberedTags.add(tag)
-                                        }
+                val entriesByReading = entries.groupBy { it.reading }
+                for ((_, readingEntries) in entriesByReading) {
+                    val entry = readingEntries.first()
+                    val isKanjiEntry = entry.onyomi != null || entry.kunyomi != null
+                    val allGlobalTags = mutableSetOf<String>()
+                    val allInfoText = mutableSetOf<String>()
+                    for (e in readingEntries) {
+                        e.jlpt?.takeIf { it.isNotEmpty() }?.let { allInfoText.add("jlpt: N$it") }
+                        val gradeMatch = "grade:([^\\s]+)".toRegex().find(e.rules)
+                        gradeMatch?.groupValues?.get(1)?.let { allInfoText.add("grade: $it") }
+                        val segments = e.rules.split(" | ")
+                        val t1 = segments.getOrNull(0)?.split(" ")?.filter { it.isNotEmpty() } ?: emptyList()
+                        val rs = segments.getOrNull(1)?.split(" ")?.filter { it.isNotEmpty() } ?: emptyList()
+                        val t2 = segments.getOrNull(2)?.split(" ")?.filter { it.isNotEmpty() } ?: emptyList()
+                        (t1 + rs + t2).forEach { tag -> if (tag.toIntOrNull() == null && !tag.startsWith("grade:")) allGlobalTags.add(tag) }
+                    }
+                    if (isKanjiEntry) {
+                        val termHeader = LinearLayout(this).apply {
+                            orientation = LinearLayout.HORIZONTAL
+                            setPadding(0, 10, 0, 10)
+                            gravity = Gravity.CENTER_VERTICAL
+                        }
+                        termHeader.addView(TextView(this).apply {
+                            text = entry.kanji
+                            setTextColor(android.graphics.Color.CYAN)
+                            textSize = 48f
+                            typeface = android.graphics.Typeface.DEFAULT_BOLD
+                            setPadding(0, 0, 40, 0)
+                        })
+                        val readingContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+                        entry.onyomi?.takeIf { it.isNotEmpty() }?.let { readingContainer.addView(TextView(this).apply { text = "on: ${it.replace(" ", "、")}"; setTextColor(android.graphics.Color.LTGRAY); textSize = 14f; includeFontPadding = false }) }
+                        entry.kunyomi?.takeIf { it.isNotEmpty() }?.let { readingContainer.addView(TextView(this).apply { text = "kun: ${it.replace(" ", "、")}"; setTextColor(android.graphics.Color.LTGRAY); textSize = 14f; includeFontPadding = false }) }
+                        if (allInfoText.isNotEmpty()) { readingContainer.addView(TextView(this).apply { text = "${allInfoText.joinToString(", ")}"; setTextColor(android.graphics.Color.parseColor("#666666")); textSize = 11f; includeFontPadding = false }) }
+                        termHeader.addView(readingContainer)
+                        termSection.addView(termHeader)
+                    } else {
+                        termSection.addView(createRubyView(entry.kanji, entry.reading))
+                    }
+                    val metadataContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 5, 0, 10) }
+                    termSection.addView(metadataContainer)
+                    if (!isKanjiEntry && allInfoText.isNotEmpty()) {
+                        metadataContainer.addView(TextView(this).apply { text = "${allInfoText.joinToString(", ")}"; setTextColor(android.graphics.Color.parseColor("#666666")); textSize = 11f; setPadding(20, 5, 0, 0) })
+                    }
+                    for (e in readingEntries) {
+                        try {
+                            val definitions = gson.fromJson<Any>(e.definitions, Any::class.java)
+                            if (definitions is List<*>) {
+                                val segments = e.rules.split(" | ")
+                                val t1 = segments.getOrNull(0)?.split(" ")?.filter { it.isNotEmpty() } ?: emptyList()
+                                val t2 = segments.getOrNull(2)?.split(" ")?.filter { it.isNotEmpty() } ?: emptyList()
+                                val senseToTags = mutableMapOf<Int, MutableList<String>>()
+                                val unnumberedTags = mutableListOf<String>()
+                                fun parseSenseTags(tagList: List<String>) {
+                                    var currentSenseNum: Int? = null
+                                    for (tag in tagList) {
+                                        val num = tag.toIntOrNull()
+                                        if (num != null) currentSenseNum = num
+                                        else { if (currentSenseNum != null) senseToTags.getOrPut(currentSenseNum) { mutableListOf() }.add(tag) else unnumberedTags.add(tag) }
                                     }
                                 }
-                            }
-
-                            parseSenseTags(t1)
-                            parseSenseTags(t2)
-
-                            definitions.forEachIndexed { index, sense ->
-                                val senseNum = index + 1
-                                val tagsForThisSense = mutableListOf<String>()
-                                
-                                // Tags specifically for this sense index
-                                senseToTags[senseNum]?.let { tagsForThisSense.addAll(it) }
-                                
-                                // If this entry is split and only has one sense, but tags have a specific sense number,
-                                // we assume that sense number refers to this sense.
-                                if (definitions.size == 1 && senseToTags.isNotEmpty()) {
-                                    senseToTags.values.forEach { tagsForThisSense.addAll(it) }
+                                parseSenseTags(t1); parseSenseTags(t2)
+                                definitions.forEachIndexed { index, sense ->
+                                    val senseNum = index + 1
+                                    val tagsForThisSense = mutableListOf<String>()
+                                    senseToTags[senseNum]?.let { tagsForThisSense.addAll(it) }
+                                    if (definitions.size == 1 && senseToTags.isNotEmpty()) senseToTags.values.forEach { tagsForThisSense.addAll(it) }
+                                    tagsForThisSense.addAll(unnumberedTags)
+                                    val finalSenseTags = tagsForThisSense.distinct().filter { it.toIntOrNull() == null && !it.startsWith("grade:") }
+                                    if (finalSenseTags.isNotEmpty()) { termSection.addView(TextView(this@OcrAccessibilityService).apply { text = finalSenseTags.joinToString(", "); setTextColor(android.graphics.Color.parseColor("#666666")); textSize = 11f; setPadding(20, 5, 0, 0) }) }
+                                    renderDefinition(termSection, sense, 0)
                                 }
-                                
-                                // Add unnumbered tags if they aren't already covered
-                                tagsForThisSense.addAll(unnumberedTags)
-
-                                val finalSenseTags = tagsForThisSense.distinct().filter { it.toIntOrNull() == null && !it.startsWith("grade:") }
-                                
-                                if (finalSenseTags.isNotEmpty()) {
-                                    termSection.addView(TextView(this@OcrAccessibilityService).apply {
-                                        text = finalSenseTags.joinToString(", ")
-                                        setTextColor(android.graphics.Color.parseColor("#666666"))
-                                        textSize = 11f
-                                        setPadding(20, 5, 0, 0)
-                                    })
-                                }
-                                
-                                renderDefinition(termSection, sense, 0)
-                            }
-                        } else {
-                            renderDefinition(termSection, definitions)
+                            } else { renderDefinition(termSection, definitions) }
+                        } catch (ex: Exception) {
+                            termSection.addView(TextView(this).apply { text = e.definitions; setTextColor(android.graphics.Color.WHITE); textSize = 15f; setPadding(20, 10, 0, 10) })
                         }
-                    } catch (ex: Exception) {
-                        termSection.addView(TextView(this).apply {
-                            text = e.definitions
-                            setTextColor(android.graphics.Color.WHITE)
-                            textSize = 15f
-                            setPadding(20, 10, 0, 10)
-                        })
                     }
+                    termSection.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1).apply { topMargin = 20; bottomMargin = 20 }; setBackgroundColor(android.graphics.Color.DKGRAY); alpha = 0.3f })
                 }
-                
-                termSection.addView(View(this).apply {
-                    layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1).apply {
-                        topMargin = 20
-                        bottomMargin = 20
-                    }
-                    setBackgroundColor(android.graphics.Color.DKGRAY)
-                    alpha = 0.3f
-                })
+                scrollContent.addView(termSection)
             }
-            scrollContent.addView(termSection)
+            scrollView.addView(scrollContent)
+            dictionaryPanel.addView(scrollView)
         }
 
-        scrollView.addView(scrollContent)
-        container.addView(scrollView)
+        // --- NEW CORRECTION UI ---
 
-        val isLandscape = rootLayout.width > rootLayout.height
-        val params = if (isLandscape) {
-            val panelWidth = (rootLayout.width * 0.4).toInt()
-            
-            val overlaps = if (lastLandscapeGravity == Gravity.END) {
-                tappedBox.right > rootLayout.width - panelWidth
+        val mainContainer = LinearLayout(this).apply {
+            tag = "correction_ui_root"
+            orientation = if (isLandscape) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
+            gravity = if (isLandscape) {
+                if (lastLandscapeGravity == Gravity.END) {
+                    val overlaps = tappedBox.right > rootLayout.width - panelWidth
+                    if (overlaps) lastLandscapeGravity = Gravity.START
+                } else {
+                    val overlaps = tappedBox.left < panelWidth
+                    if (overlaps) lastLandscapeGravity = Gravity.END
+                }
+                lastLandscapeGravity
             } else {
-                tappedBox.left < panelWidth
+                if (lastPortraitGravity == Gravity.BOTTOM) {
+                    val overlaps = tappedBox.bottom > rootLayout.height - panelHeight
+                    if (overlaps) lastPortraitGravity = Gravity.TOP
+                } else {
+                    val overlaps = tappedBox.top < panelHeight
+                    if (overlaps) lastPortraitGravity = Gravity.BOTTOM
+                }
+                lastPortraitGravity
             }
-            
-            if (overlaps) {
-                lastLandscapeGravity = if (lastLandscapeGravity == Gravity.END) Gravity.START else Gravity.END
-            }
+        }
 
-            FrameLayout.LayoutParams(
-                panelWidth,
-                FrameLayout.LayoutParams.MATCH_PARENT
-            ).apply {
-                gravity = lastLandscapeGravity
+        val correctionPanel = createCorrectionPanel(currentTappedIdx, isLandscape, rootLayout).apply {
+            layoutParams = if (isLandscape) {
+                LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.MATCH_PARENT)
+            } else {
+                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            }
+        }
+        val alternativesPanelContainer = FrameLayout(this).apply {
+            tag = "alternatives_container"
+            layoutParams = if (isLandscape) {
+                LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.MATCH_PARENT)
+            } else {
+                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            }
+        }
+
+        if (isLandscape) {
+            if (lastLandscapeGravity == Gravity.END) {
+                mainContainer.addView(alternativesPanelContainer)
+                mainContainer.addView(correctionPanel)
+                mainContainer.addView(dictionaryPanel, LinearLayout.LayoutParams(panelWidth, panelHeight))
+            } else {
+                mainContainer.addView(dictionaryPanel, LinearLayout.LayoutParams(panelWidth, panelHeight))
+                mainContainer.addView(correctionPanel)
+                mainContainer.addView(alternativesPanelContainer)
             }
         } else {
-            val panelHeight = (rootLayout.height * 0.4).toInt()
-            
-            val overlaps = if (lastPortraitGravity == Gravity.BOTTOM) {
-                tappedBox.bottom > rootLayout.height - panelHeight
+            if (lastPortraitGravity == Gravity.BOTTOM) {
+                mainContainer.addView(alternativesPanelContainer)
+                mainContainer.addView(correctionPanel)
+                mainContainer.addView(dictionaryPanel, LinearLayout.LayoutParams(panelWidth, panelHeight))
             } else {
-                tappedBox.top < panelHeight
-            }
-            
-            if (overlaps) {
-                lastPortraitGravity = if (lastPortraitGravity == Gravity.BOTTOM) Gravity.TOP else Gravity.BOTTOM
-            }
-
-            FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                panelHeight
-            ).apply {
-                gravity = lastPortraitGravity
+                mainContainer.addView(dictionaryPanel, LinearLayout.LayoutParams(panelWidth, panelHeight))
+                mainContainer.addView(correctionPanel)
+                mainContainer.addView(alternativesPanelContainer)
             }
         }
 
-        rootLayout.addView(container, params)
+        val rootParams = FrameLayout.LayoutParams(
+            if (isLandscape) FrameLayout.LayoutParams.WRAP_CONTENT else FrameLayout.LayoutParams.MATCH_PARENT,
+            if (isLandscape) FrameLayout.LayoutParams.MATCH_PARENT else FrameLayout.LayoutParams.WRAP_CONTENT
+        ).apply {
+            gravity = mainContainer.gravity
+        }
+
+        rootLayout.addView(mainContainer, rootParams)
+    }
+
+    private fun createCorrectionPanel(currentIdx: Int, isLandscape: Boolean, rootLayout: FrameLayout): View {
+        val scroll = if (isLandscape) ScrollView(this) else HorizontalScrollView(this)
+        scroll.isVerticalScrollBarEnabled = false
+        scroll.isHorizontalScrollBarEnabled = false
+        
+        val panel = LinearLayout(this).apply {
+            orientation = if (isLandscape) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
+            setBackgroundColor(android.graphics.Color.argb(255, 45, 45, 45))
+            setPadding(10, 10, 10, 10)
+            elevation = 25f
+            setOnClickListener { }
+        }
+
+        val start = kotlin.math.max(0, currentIdx - 4)
+        val end = kotlin.math.min(activeAllChars.size - 1, currentIdx + 5)
+
+        for (i in start..end) {
+            val char = activeAllChars[i]
+            val textView = TextView(this).apply {
+                text = char.toString()
+                setTextColor(android.graphics.Color.WHITE)
+                textSize = 24f
+                gravity = Gravity.CENTER
+                val size = (resources.displayMetrics.density * 54).toInt()
+                layoutParams = LinearLayout.LayoutParams(size, size).apply {
+                    setMargins(4, 4, 4, 4)
+                }
+                
+                if (i == currentIdx) {
+                    setBackgroundColor(android.graphics.Color.YELLOW)
+                    setTextColor(android.graphics.Color.BLACK)
+                } else {
+                    setBackgroundColor(android.graphics.Color.argb(255, 65, 65, 65))
+                }
+
+                setOnClickListener {
+                    if (i == currentIdx) {
+                        toggleAlternativesPanel(rootLayout, i, isLandscape)
+                    } else {
+                        performLookup(i, rootLayout)
+                    }
+                }
+            }
+            panel.addView(textView)
+        }
+        scroll.addView(panel)
+        return scroll
+    }
+
+    private fun toggleAlternativesPanel(rootLayout: FrameLayout, currentIdx: Int, isLandscape: Boolean) {
+        val container = rootLayout.findViewWithTag<FrameLayout>("alternatives_container") ?: return
+        if (container.childCount > 0) {
+            container.removeAllViews()
+            return
+        }
+
+        val scroll = if (isLandscape) ScrollView(this) else HorizontalScrollView(this)
+        scroll.isVerticalScrollBarEnabled = false
+        scroll.isHorizontalScrollBarEnabled = false
+
+        val panel = LinearLayout(this).apply {
+            orientation = if (isLandscape) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
+            setBackgroundColor(android.graphics.Color.argb(255, 55, 55, 55))
+            setPadding(10, 10, 10, 10)
+            elevation = 30f
+            setOnClickListener { }
+        }
+
+        val alts = activeAllAlternatives.getOrNull(currentIdx) ?: emptyList()
+        val top9 = alts.take(9)
+
+        top9.forEach { (altChar, _) ->
+            val textView = TextView(this).apply {
+                text = altChar.toString()
+                setTextColor(android.graphics.Color.WHITE)
+                textSize = 22f
+                gravity = Gravity.CENTER
+                val size = (resources.displayMetrics.density * 50).toInt()
+                layoutParams = LinearLayout.LayoutParams(size, size).apply {
+                    setMargins(4, 4, 4, 4)
+                }
+                setBackgroundColor(android.graphics.Color.argb(255, 85, 85, 85))
+
+                setOnClickListener {
+                    replaceCharacter(currentIdx, altChar, rootLayout)
+                }
+            }
+            panel.addView(textView)
+        }
+
+        // Stub for manual input
+        val stubView = TextView(this).apply {
+            text = "⌨"
+            setTextColor(android.graphics.Color.GRAY)
+            textSize = 22f
+            gravity = Gravity.CENTER
+            val size = (resources.displayMetrics.density * 50).toInt()
+            layoutParams = LinearLayout.LayoutParams(size, size).apply {
+                setMargins(4, 4, 4, 4)
+            }
+            setBackgroundColor(android.graphics.Color.argb(255, 40, 40, 40))
+            setOnClickListener {
+                Toast.makeText(this@OcrAccessibilityService, "Manual input coming soon", Toast.LENGTH_SHORT).show()
+            }
+        }
+        panel.addView(stubView)
+
+        scroll.addView(panel)
+        container.addView(scroll)
+    }
+
+    private fun replaceCharacter(index: Int, newChar: Char, rootLayout: FrameLayout) {
+        activeAllChars[index] = newChar
+        
+        // Update the LineResult object
+        val info = activeCharInfos[index]
+        val line = activeLineResults[info.lineIdx]
+        val charArray = line.text.toCharArray()
+        charArray[info.charIdxInLine] = newChar
+        line.text = String(charArray)
+
+        // Update the UI TextView
+        if (index < textViews.size) {
+            textViews[index].text = newChar.toString()
+        }
+
+        // Re-run lookup
+        performLookup(index, rootLayout)
     }
 
     private fun formatTag(tag: String): String {
