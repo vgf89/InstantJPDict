@@ -920,9 +920,10 @@ class OcrAccessibilityService : AccessibilityService() {
         }
 
         val alts = activeAllAlternatives.getOrNull(currentIdx) ?: emptyList()
-        val top30 = alts.take(30)
+        val top15 = alts.take(15)
 
-        top30.forEach { (altChar, _) ->
+        var selectedView: View? = null
+        top15.forEach { (altChar, _) ->
             val textView = TextView(this).apply {
                 text = altChar.toString()
                 setTextColor(android.graphics.Color.WHITE)
@@ -932,6 +933,7 @@ class OcrAccessibilityService : AccessibilityService() {
                 if (altChar == activeAllChars[currentIdx]) {
                     setBackgroundColor(android.graphics.Color.YELLOW)
                     setTextColor(android.graphics.Color.BLACK)
+                    selectedView = this
                 } else {
                     setBackgroundColor(android.graphics.Color.argb(255, 85, 85, 85))
                 }
@@ -945,6 +947,17 @@ class OcrAccessibilityService : AccessibilityService() {
         }
         scrollView.addView(candidateList)
         mainLayout.addView(scrollView)
+
+        // Scroll to selected if it exists
+        selectedView?.let { view ->
+            scrollView.post {
+                if (isLandscape) {
+                    scrollView.scrollTo(0, view.top)
+                } else {
+                    (scrollView as HorizontalScrollView).scrollTo(view.left, 0)
+                }
+            }
+        }
 
         // Fixed Stub for manual input (the 11th visible slot)
         val stubView = TextView(this).apply {
