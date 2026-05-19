@@ -628,11 +628,13 @@ class OcrAccessibilityService : AccessibilityService() {
     private fun showResultsUi(rootLayout: FrameLayout, matches: List<Pair<String, List<com.holopengin.instantjpdict.data.DictionaryEntry>>>, tappedBox: Rect) {
         rootLayout.findViewWithTag<View>("correction_ui_root")?.let { rootLayout.removeView(it) }
 
-        val isLandscape = rootLayout.width > rootLayout.height
+        val rootWidth = rootLayout.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
+        val rootHeight = rootLayout.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
+        val isLandscape = rootWidth > rootHeight
         
         // Determine panel sizes
-        val panelWidth = if (isLandscape) (rootLayout.width * 0.4).toInt() else FrameLayout.LayoutParams.MATCH_PARENT
-        val panelHeight = if (isLandscape) FrameLayout.LayoutParams.MATCH_PARENT else (rootLayout.height * 0.4).toInt()
+        val panelWidth = if (isLandscape) (rootWidth * 0.4).toInt() else FrameLayout.LayoutParams.MATCH_PARENT
+        val panelHeight = if (isLandscape) FrameLayout.LayoutParams.MATCH_PARENT else (rootHeight * 0.4).toInt()
 
         // Dictionary Panel (the original container)
         val dictionaryPanel = LinearLayout(this).apply {
@@ -756,7 +758,7 @@ class OcrAccessibilityService : AccessibilityService() {
             orientation = if (isLandscape) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
             gravity = if (isLandscape) {
                 if (lastLandscapeGravity == Gravity.END) {
-                    val overlaps = tappedBox.right > rootLayout.width - panelWidth
+                    val overlaps = tappedBox.right > rootWidth - panelWidth
                     if (overlaps) lastLandscapeGravity = Gravity.START
                 } else {
                     val overlaps = tappedBox.left < panelWidth
@@ -765,7 +767,7 @@ class OcrAccessibilityService : AccessibilityService() {
                 lastLandscapeGravity
             } else {
                 if (lastPortraitGravity == Gravity.BOTTOM) {
-                    val overlaps = tappedBox.bottom > rootLayout.height - panelHeight
+                    val overlaps = tappedBox.bottom > rootHeight - panelHeight
                     if (overlaps) lastPortraitGravity = Gravity.TOP
                 } else {
                     val overlaps = tappedBox.top < panelHeight
@@ -824,52 +826,60 @@ class OcrAccessibilityService : AccessibilityService() {
     }
 
     private fun createCorrectionPanel(currentIdx: Int, isLandscape: Boolean, rootLayout: FrameLayout): View {
-        val scroll = if (isLandscape) ScrollView(this) else HorizontalScrollView(this)
-        scroll.isVerticalScrollBarEnabled = false
-        scroll.isHorizontalScrollBarEnabled = false
-        
+        val rootWidth = rootLayout.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
+        val rootHeight = rootLayout.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
+        val totalSpace = if (isLandscape) rootHeight else rootWidth
+        val itemSize = totalSpace / 11
+        val density = resources.displayMetrics.density
+        val estimatedTextSize = (itemSize * 0.45 / density).toFloat().coerceIn(12f, 22f)
+
         val panel = LinearLayout(this).apply {
             orientation = if (isLandscape) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
             setBackgroundColor(android.graphics.Color.argb(255, 45, 45, 45))
-            setPadding(10, 10, 10, 10)
+            setPadding(6, 6, 6, 6)
             elevation = 25f
             setOnClickListener { }
         }
 
-        val start = kotlin.math.max(0, currentIdx - 4)
-        val end = kotlin.math.min(activeAllChars.size - 1, currentIdx + 5)
+        val lp = if (isLandscape) {
+            LinearLayout.LayoutParams(itemSize, 0, 1f).apply { setMargins(2, 2, 2, 2) }
+        } else {
+            LinearLayout.LayoutParams(0, itemSize, 1f).apply { setMargins(2, 2, 2, 2) }
+        }
 
-        for (i in start..end) {
-            val char = activeAllChars[i]
-            val textView = TextView(this).apply {
-                text = char.toString()
-                setTextColor(android.graphics.Color.WHITE)
-                textSize = 24f
-                gravity = Gravity.CENTER
-                val size = (resources.displayMetrics.density * 54).toInt()
-                layoutParams = LinearLayout.LayoutParams(size, size).apply {
-                    setMargins(4, 4, 4, 4)
-                }
-                
-                if (i == currentIdx) {
-                    setBackgroundColor(android.graphics.Color.YELLOW)
-                    setTextColor(android.graphics.Color.BLACK)
-                } else {
-                    setBackgroundColor(android.graphics.Color.argb(255, 65, 65, 65))
-                }
-
-                setOnClickListener {
+        // Always show 11 slots for consistency
+        for (offset in -5..5) {
+            val i = currentIdx + offset
+            if (i in activeAllChars.indices) {
+                val char = activeAllChars[i]
+                val textView = TextView(this).apply {
+                    text = char.toString()
+                    setTextColor(android.graphics.Color.WHITE)
+                    textSize = estimatedTextSize
+                    gravity = Gravity.CENTER
+                    
                     if (i == currentIdx) {
-                        toggleAlternativesPanel(rootLayout, i, isLandscape)
+                        setBackgroundColor(android.graphics.Color.YELLOW)
+                        setTextColor(android.graphics.Color.BLACK)
                     } else {
-                        performLookup(i, rootLayout)
+                        setBackgroundColor(android.graphics.Color.argb(255, 65, 65, 65))
+                    }
+
+                    setOnClickListener {
+                        if (i == currentIdx) {
+                            toggleAlternativesPanel(rootLayout, i, isLandscape)
+                        } else {
+                            performLookup(i, rootLayout)
+                        }
                     }
                 }
+                panel.addView(textView, lp)
+            } else {
+                // Spacer for out-of-bounds
+                panel.addView(View(this), lp)
             }
-            panel.addView(textView)
         }
-        scroll.addView(panel)
-        return scroll
+        return panel
     }
 
     private fun toggleAlternativesPanel(rootLayout: FrameLayout, currentIdx: Int, isLandscape: Boolean) {
@@ -879,59 +889,72 @@ class OcrAccessibilityService : AccessibilityService() {
             return
         }
 
-        val scroll = if (isLandscape) ScrollView(this) else HorizontalScrollView(this)
-        scroll.isVerticalScrollBarEnabled = false
-        scroll.isHorizontalScrollBarEnabled = false
+        val rootWidth = rootLayout.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
+        val rootHeight = rootLayout.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
+        val totalSpace = if (isLandscape) rootHeight else rootWidth
+        val itemSize = totalSpace / 11 // Use 11 to match neighbor panel
+        val density = resources.displayMetrics.density
+        val estimatedTextSize = (itemSize * 0.45 / density).toFloat().coerceIn(12f, 22f)
 
         val panel = LinearLayout(this).apply {
             orientation = if (isLandscape) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
             setBackgroundColor(android.graphics.Color.argb(255, 55, 55, 55))
-            setPadding(10, 10, 10, 10)
+            setPadding(6, 6, 6, 6)
             elevation = 30f
             setOnClickListener { }
         }
 
-        val alts = activeAllAlternatives.getOrNull(currentIdx) ?: emptyList()
-        val top9 = alts.take(9)
-
-        top9.forEach { (altChar, _) ->
-            val textView = TextView(this).apply {
-                text = altChar.toString()
-                setTextColor(android.graphics.Color.WHITE)
-                textSize = 22f
-                gravity = Gravity.CENTER
-                val size = (resources.displayMetrics.density * 50).toInt()
-                layoutParams = LinearLayout.LayoutParams(size, size).apply {
-                    setMargins(4, 4, 4, 4)
-                }
-                setBackgroundColor(android.graphics.Color.argb(255, 85, 85, 85))
-
-                setOnClickListener {
-                    replaceCharacter(currentIdx, altChar, rootLayout)
-                }
-            }
-            panel.addView(textView)
+        val lp = if (isLandscape) {
+            LinearLayout.LayoutParams(itemSize, 0, 1f).apply { setMargins(2, 2, 2, 2) }
+        } else {
+            LinearLayout.LayoutParams(0, itemSize, 1f).apply { setMargins(2, 2, 2, 2) }
         }
 
-        // Stub for manual input
+        val alts = activeAllAlternatives.getOrNull(currentIdx) ?: emptyList()
+        val top10 = alts.take(10)
+
+        // Add 10 candidates (pad with spacers if needed)
+        for (i in 0 until 10) {
+            val alt = top10.getOrNull(i)
+            if (alt != null) {
+                val (altChar, _) = alt
+                val textView = TextView(this).apply {
+                    text = altChar.toString()
+                    setTextColor(android.graphics.Color.WHITE)
+                    textSize = estimatedTextSize
+                    gravity = Gravity.CENTER
+                    
+                    if (altChar == activeAllChars[currentIdx]) {
+                        setBackgroundColor(android.graphics.Color.YELLOW)
+                        setTextColor(android.graphics.Color.BLACK)
+                    } else {
+                        setBackgroundColor(android.graphics.Color.argb(255, 85, 85, 85))
+                    }
+
+                    setOnClickListener {
+                        replaceCharacter(currentIdx, altChar, rootLayout)
+                    }
+                }
+                panel.addView(textView, lp)
+            } else {
+                panel.addView(View(this), lp)
+            }
+        }
+
+        // Stub for manual input (the 11th item)
         val stubView = TextView(this).apply {
             text = "⌨"
             setTextColor(android.graphics.Color.GRAY)
-            textSize = 22f
+            textSize = estimatedTextSize
             gravity = Gravity.CENTER
-            val size = (resources.displayMetrics.density * 50).toInt()
-            layoutParams = LinearLayout.LayoutParams(size, size).apply {
-                setMargins(4, 4, 4, 4)
-            }
             setBackgroundColor(android.graphics.Color.argb(255, 40, 40, 40))
             setOnClickListener {
                 Toast.makeText(this@OcrAccessibilityService, "Manual input coming soon", Toast.LENGTH_SHORT).show()
             }
         }
-        panel.addView(stubView)
+        panel.addView(stubView, lp)
 
-        scroll.addView(panel)
-        container.addView(scroll)
+        container.addView(panel)
     }
 
     private fun replaceCharacter(index: Int, newChar: Char, rootLayout: FrameLayout) {
