@@ -112,14 +112,19 @@ class MeikiOcrEngine(private val context: Context) {
     }
 
     suspend fun recognize(bitmap: Bitmap, lineBoxes: List<Rect>): List<LineResult> = withContext(Dispatchers.Default) {
-        lineBoxes.map { box ->
+        val startTime = System.currentTimeMillis()
+        val results = lineBoxes.map { box ->
             async {
                 recognizeSingleLine(bitmap, box)
             }
         }.awaitAll().filterNotNull()
+        val totalTime = System.currentTimeMillis() - startTime
+        Log.d("MeikiOcrEngine", "Full recognition for ${lineBoxes.size} lines took ${totalTime}ms")
+        results
     }
 
     private fun recognizeSingleLine(bitmap: Bitmap, box: Rect): LineResult? {
+        val lineStartTime = System.currentTimeMillis()
         val session = recognizeSession ?: return null
         val sessionVertical = recognizeSessionVertical ?: return null
 
@@ -291,6 +296,9 @@ class MeikiOcrEngine(private val context: Context) {
             crop.recycle()
             resizedLine.recycle()
             paddedLine.recycle()
+            
+            val lineTime = System.currentTimeMillis() - lineStartTime
+            Log.d("MeikiOcrEngine", "Line recognition took ${lineTime}ms")
             
             return result
         } catch (e: Exception) {
