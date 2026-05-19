@@ -892,11 +892,11 @@ class OcrAccessibilityService : AccessibilityService() {
         val rootWidth = rootLayout.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
         val rootHeight = rootLayout.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
         val totalSpace = if (isLandscape) rootHeight else rootWidth
-        val itemSize = totalSpace / 11 // Use 11 to match neighbor panel
+        val itemSize = totalSpace / 11
         val density = resources.displayMetrics.density
         val estimatedTextSize = (itemSize * 0.45 / density).toFloat().coerceIn(12f, 22f)
 
-        val panel = LinearLayout(this).apply {
+        val mainLayout = LinearLayout(this).apply {
             orientation = if (isLandscape) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
             setBackgroundColor(android.graphics.Color.argb(255, 55, 55, 55))
             setPadding(6, 6, 6, 6)
@@ -904,44 +904,49 @@ class OcrAccessibilityService : AccessibilityService() {
             setOnClickListener { }
         }
 
-        val lp = if (isLandscape) {
-            LinearLayout.LayoutParams(itemSize, 0, 1f).apply { setMargins(2, 2, 2, 2) }
-        } else {
-            LinearLayout.LayoutParams(0, itemSize, 1f).apply { setMargins(2, 2, 2, 2) }
-        }
-
-        val alts = activeAllAlternatives.getOrNull(currentIdx) ?: emptyList()
-        val top10 = alts.take(10)
-
-        // Add 10 candidates (pad with spacers if needed)
-        for (i in 0 until 10) {
-            val alt = top10.getOrNull(i)
-            if (alt != null) {
-                val (altChar, _) = alt
-                val textView = TextView(this).apply {
-                    text = altChar.toString()
-                    setTextColor(android.graphics.Color.WHITE)
-                    textSize = estimatedTextSize
-                    gravity = Gravity.CENTER
-                    
-                    if (altChar == activeAllChars[currentIdx]) {
-                        setBackgroundColor(android.graphics.Color.YELLOW)
-                        setTextColor(android.graphics.Color.BLACK)
-                    } else {
-                        setBackgroundColor(android.graphics.Color.argb(255, 85, 85, 85))
-                    }
-
-                    setOnClickListener {
-                        replaceCharacter(currentIdx, altChar, rootLayout)
-                    }
-                }
-                panel.addView(textView, lp)
+        val scrollView = if (isLandscape) ScrollView(this) else HorizontalScrollView(this)
+        scrollView.apply {
+            isVerticalScrollBarEnabled = false
+            isHorizontalScrollBarEnabled = false
+            layoutParams = if (isLandscape) {
+                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 10f)
             } else {
-                panel.addView(View(this), lp)
+                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 10f)
             }
         }
 
-        // Stub for manual input (the 11th item)
+        val candidateList = LinearLayout(this).apply {
+            orientation = if (isLandscape) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
+        }
+
+        val alts = activeAllAlternatives.getOrNull(currentIdx) ?: emptyList()
+        val top30 = alts.take(30)
+
+        top30.forEach { (altChar, _) ->
+            val textView = TextView(this).apply {
+                text = altChar.toString()
+                setTextColor(android.graphics.Color.WHITE)
+                textSize = estimatedTextSize
+                gravity = Gravity.CENTER
+                
+                if (altChar == activeAllChars[currentIdx]) {
+                    setBackgroundColor(android.graphics.Color.YELLOW)
+                    setTextColor(android.graphics.Color.BLACK)
+                } else {
+                    setBackgroundColor(android.graphics.Color.argb(255, 85, 85, 85))
+                }
+
+                setOnClickListener {
+                    replaceCharacter(currentIdx, altChar, rootLayout)
+                }
+            }
+            val lp = LinearLayout.LayoutParams(itemSize, itemSize).apply { setMargins(2, 2, 2, 2) }
+            candidateList.addView(textView, lp)
+        }
+        scrollView.addView(candidateList)
+        mainLayout.addView(scrollView)
+
+        // Fixed Stub for manual input (the 11th visible slot)
         val stubView = TextView(this).apply {
             text = "⌨"
             setTextColor(android.graphics.Color.GRAY)
@@ -952,9 +957,14 @@ class OcrAccessibilityService : AccessibilityService() {
                 Toast.makeText(this@OcrAccessibilityService, "Manual input coming soon", Toast.LENGTH_SHORT).show()
             }
         }
-        panel.addView(stubView, lp)
+        val stubLp = if (isLandscape) {
+            LinearLayout.LayoutParams(itemSize, 0, 1f).apply { setMargins(2, 2, 2, 2) }
+        } else {
+            LinearLayout.LayoutParams(0, itemSize, 1f).apply { setMargins(2, 2, 2, 2) }
+        }
+        mainLayout.addView(stubView, stubLp)
 
-        container.addView(panel)
+        container.addView(mainLayout)
     }
 
     private fun replaceCharacter(index: Int, newChar: Char, rootLayout: FrameLayout) {
