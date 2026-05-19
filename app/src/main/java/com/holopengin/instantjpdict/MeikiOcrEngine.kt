@@ -9,6 +9,7 @@ import android.util.Log
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
+import com.google.gson.Gson
 import androidx.lifecycle.HasDefaultViewModelProviderFactory
 import java.nio.FloatBuffer
 import java.nio.LongBuffer
@@ -20,6 +21,7 @@ class MeikiOcrEngine(private val context: Context) {
     private var detectSession: OrtSession? = null
     private var recognizeSession: OrtSession? = null
     private var recognizeSessionVertical: OrtSession? = null
+    private var charVocab: IntArray? = null
 
     companion object {
         private const val DETECT_WIDTH = 960
@@ -35,8 +37,18 @@ class MeikiOcrEngine(private val context: Context) {
     init {
         try {
             detectSession = env.createSession(loadModel("meiki.text.detect.v0.1.960x544.onnx"))
-            recognizeSession = env.createSession(loadModel("meiki.text.rec.v0.960x32.onnx"))
-            recognizeSessionVertical = env.createSession(loadModel("meiki.text.rec.v0.vertical.32x480.onnx"))
+            recognizeSession = env.createSession(loadModel("meiki.text.rec.v0.960x32.with_logits.onnx"))
+            recognizeSessionVertical = env.createSession(loadModel("meiki.text.rec.v0.vertical.32x480.with_logits.onnx"))
+            
+            // Load character vocabulary mapping
+            try {
+                val vocabJson = context.assets.open("char_vocab.json").bufferedReader().use { it.readText() }
+                charVocab = Gson().fromJson(vocabJson, IntArray::class.java)
+                Log.d("MeikiOcrEngine", "Loaded vocabulary of size: ${charVocab?.size}")
+            } catch (ve: Exception) {
+                Log.e("MeikiOcrEngine", "Failed to load char_vocab.json", ve)
+            }
+            
             Log.d("MeikiOcrEngine", "Models loaded successfully")
         } catch (e: Exception) {
             Log.e("MeikiOcrEngine", "Failed to load models", e)
@@ -73,14 +85,12 @@ class MeikiOcrEngine(private val context: Context) {
             val scoresResult = results.get(outputNames.find { it.contains("scores") } ?: outputNames[1])
 
             if (boxesResult.isPresent && scoresResult.isPresent) {
-                val boxesData = boxesResult.get().value as Array<*> 
-                val scoresData = scoresResult.get().value as Array<*> 
-                val boxesArr = boxesData[0] as Array<*>
-                val scoresArr = scoresData[0] as FloatArray
+                val boxesArr = extractFloatArray2D(boxesResult.get().value) ?: emptyArray()
+                val scoresArr = extractFloatArray(scoresResult.get().value) ?: floatArrayOf()
 
                 for (i in scoresArr.indices) {
                     if (scoresArr[i] > 0.4f) {
-                        val box = boxesArr[i] as FloatArray
+                        val box = boxesArr[i]
                         detectedBoxes.add(Rect(box[0].toInt(), box[1].toInt(), box[2].toInt(), box[3].toInt()))
                     }
                 }
@@ -140,7 +150,8 @@ class MeikiOcrEngine(private val context: Context) {
                 
                 val inputs = mutableMapOf<String, OnnxTensor>()
                 val activeSession = if (isVertical) sessionVertical else session
-                val imageInputName = activeSession.inputNames.find { it.contains("image") || it.contains("input") } ?: activeSession.inputNames.iterator().next()
+                val inputNames = activeSession.inputNames.toList()
+                val imageInputName = inputNames.find { it.contains("image") || it.contains("input") } ?: inputNames.iterator().next()
                 inputs[imageInputName] = inputTensor
 
                 val sizeData = LongBuffer.wrap(longArrayOf(targetW.toLong(), targetH.toLong()))
@@ -149,32 +160,67 @@ class MeikiOcrEngine(private val context: Context) {
                 val output = activeSession.run(inputs)
 
                 val outputNames = activeSession.outputNames.toList()
-                val labelsResult = output.get(outputNames.find { it.contains("labels") } ?: outputNames[0])
-                val boxesResult = output.get(outputNames.find { it.contains("boxes") } ?: outputNames[1])
-                val scoresResult = output.get(outputNames.find { it.contains("scores") } ?: outputNames[2])
-
-                val labelsVal = labelsResult.get().value
-                val labelsArr: LongArray = when (labelsVal) {
-                    is Array<*> -> {
-                        val first = labelsVal[0]
-                        if (first is LongArray) first else (first as IntArray).map { it.toLong() }.toLongArray()
+                val outputTensors = mutableMapOf<String, OnnxTensor>()
+                for (name in outputNames) {
+                    val res = output.get(name)
+                    if (res.isPresent) {
+                        outputTensors[name] = res.get() as OnnxTensor
                     }
-                    is LongArray -> labelsVal
-                    is IntArray -> labelsVal.map { it.toLong() }.toLongArray()
-                    else -> throw Exception("Unknown labels type")
                 }
 
-                val boxesArr = (boxesResult.get().value as Array<*>)[0] as Array<FloatArray>
-                val scoresArr = (scoresResult.get().value as Array<*>)[0] as FloatArray
+                val labelsName = outputNames.find { it.contains("labels") || it.contains("char_codes") }
+                val boxesName = outputNames.find { it.contains("boxes") }
+                val scoresName = outputNames.find { it.contains("scores") }
+                val logitsName = outputNames.find { it.contains("logits") }
+                val indicesName = outputNames.find { it.contains("indices") }
+
+                val labelsVal = labelsName?.let { outputTensors[it]?.value } ?: outputTensors[outputNames[0]]?.value
+                val boxesVal = boxesName?.let { outputTensors[it]?.value } ?: outputTensors[outputNames.getOrNull(1)]?.value
+                val scoresVal = scoresName?.let { outputTensors[it]?.value } ?: outputTensors[outputNames.getOrNull(2)]?.value
+                val logitsVal = logitsName?.let { outputTensors[it]?.value }
+                val indicesVal = indicesName?.let { outputTensors[it]?.value }
+
+                val labelsArr = extractLongArray(labelsVal) ?: throw Exception("Failed to extract labels")
+                val boxesArr = extractFloatArray2D(boxesVal) ?: throw Exception("Failed to extract boxes")
+                val scoresArr = extractFloatArray(scoresVal) ?: throw Exception("Failed to extract scores")
+                val indicesArr = extractLongArray(indicesVal)
+                
+                // Extract and Reshape Logits (Full Sigmoid Output)
+                val rawLogits = extractFloatArray(logitsVal)
+                val numQueries = 48
+                val logitsMatrix = if (rawLogits != null && rawLogits.size % numQueries == 0) {
+                    val numClasses = rawLogits.size / numQueries
+                    Array(numQueries) { q ->
+                        FloatArray(numClasses) { c -> rawLogits[q * numClasses + c] }
+                    }
+                } else null
 
                 val candidates = mutableListOf<CharCandidate>()
                 for (i in scoresArr.indices) {
                     if (scoresArr[i] > REC_CONFIDENCE_THRESHOLD) {
+                        val alternatives = if (logitsMatrix != null && indicesArr != null && i < indicesArr.size) {
+                            // indicesArr[i] is the global flattened index of the i-th best detection
+                            val numClasses = rawLogits!!.size / numQueries
+                            val queryIdx = (indicesArr[i] / numClasses).toInt()
+                            
+                            if (queryIdx < logitsMatrix.size) {
+                                val qLogits = logitsMatrix[queryIdx]
+                                qLogits.withIndex()
+                                    .sortedByDescending { it.value }
+                                    .take(15)
+                                    .map { 
+                                        val char = charVocab?.getOrNull(it.index)?.toChar() ?: ' '
+                                        char to it.value 
+                                    }
+                            } else emptyList()
+                        } else emptyList()
+
                         candidates.add(
                             CharCandidate(
                                 char = labelsArr[i].toInt().toChar(),
                                 score = scoresArr[i],
-                                box = boxesArr[i] // [rx1, ry1, rx2, ry2]
+                                box = boxesArr[i],
+                                alternatives = alternatives
                             )
                         )
                     }
@@ -201,6 +247,7 @@ class MeikiOcrEngine(private val context: Context) {
                 }
                 
                 val text = filtered.joinToString("") { it.char.toString() }
+                val alternativesList = filtered.map { it.alternatives }
                 
                 val charBoxes = filtered.map { cand ->
                     val rx1 = cand.box[0]
@@ -228,7 +275,7 @@ class MeikiOcrEngine(private val context: Context) {
                     Rect(Math.round(x1), Math.round(y1), Math.round(x2), Math.round(y2))
                 }
 
-                results.add(LineResult(text, charBoxes))
+                results.add(LineResult(text, charBoxes, alternativesList))
                 Log.d("MeikiOcrEngine", "Recognized: $text")
 
                 inputs.values.forEach { it.close() }
@@ -287,6 +334,54 @@ class MeikiOcrEngine(private val context: Context) {
         return intersection / min(h1, h2)
     }
 
+    private fun extractLongArray(value: Any?): LongArray? {
+        return when (value) {
+            is LongArray -> value
+            is IntArray -> value.map { it.toLong() }.toLongArray()
+            is FloatArray -> value.map { it.toLong() }.toLongArray()
+            is DoubleArray -> value.map { it.toLong() }.toLongArray()
+            is Array<*> -> if (value.isNotEmpty()) extractLongArray(value[0]) else null
+            else -> null
+        }
+    }
+
+    private fun extractFloatArray(value: Any?): FloatArray? {
+        return when (value) {
+            is FloatArray -> value
+            is IntArray -> value.map { it.toFloat() }.toFloatArray()
+            is LongArray -> value.map { it.toFloat() }.toFloatArray()
+            is DoubleArray -> value.map { it.toFloat() }.toFloatArray()
+            is Array<*> -> if (value.isNotEmpty()) extractFloatArray(value[0]) else null
+            else -> null
+        }
+    }
+
+    private fun extractFloatArray2D(value: Any?): Array<FloatArray>? {
+        if (value !is Array<*>) return null
+        if (value.isEmpty()) return null
+        val first = value[0] ?: return null
+
+        return when (first) {
+            is FloatArray -> {
+                @Suppress("UNCHECKED_CAST")
+                value as Array<FloatArray>
+            }
+            is IntArray -> {
+                Array(value.size) { i -> (value[i] as IntArray).map { it.toFloat() }.toFloatArray() }
+            }
+            is LongArray -> {
+                Array(value.size) { i -> (value[i] as LongArray).map { it.toFloat() }.toFloatArray() }
+            }
+            is DoubleArray -> {
+                Array(value.size) { i -> (value[i] as DoubleArray).map { it.toFloat() }.toFloatArray() }
+            }
+            is Array<*> -> {
+                extractFloatArray2D(first)
+            }
+            else -> null
+        }
+    }
+
     fun close() {
         detectSession?.close()
         recognizeSession?.close()
@@ -297,11 +392,13 @@ class MeikiOcrEngine(private val context: Context) {
 
 data class LineResult(
     val text: String,
-    val charBoxes: List<Rect>
+    val charBoxes: List<Rect>,
+    val alternatives: List<List<Pair<Char, Float>>> = emptyList()
 )
 
 private data class CharCandidate(
     val char: Char,
     val score: Float,
-    val box: FloatArray
+    val box: FloatArray,
+    val alternatives: List<Pair<Char, Float>> = emptyList()
 )
