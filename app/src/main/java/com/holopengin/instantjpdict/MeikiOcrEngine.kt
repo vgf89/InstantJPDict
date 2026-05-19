@@ -419,7 +419,7 @@ class MeikiOcrEngine(private val context: Context) {
 }
 
 data class LineResult(
-    val text: String,
+    var text: String,
     val charBoxes: List<Rect>,
     val alternatives: List<List<Pair<Char, Float>>> = emptyList()
 )
