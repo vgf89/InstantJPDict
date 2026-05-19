@@ -332,57 +332,51 @@ class OcrAccessibilityService : AccessibilityService() {
         rootLayout.addView(closeButton, lp)
 
         // Run OCR in background
-        Thread {
+        serviceScope.launch {
             try {
                 if (ocrEngine.isReady()) {
-                    rootLayout.post { debugTextView.text = "Running detection..." }
-                    val lineBoxes = ocrEngine.detect(bitmap)
+                    debugTextView.text = "Running detection..."
+                    val lineBoxes = withContext(Dispatchers.IO) { ocrEngine.detect(bitmap) }
                     
-                    rootLayout.post { debugTextView.text = "Found ${lineBoxes.size} lines. Recognizing..." }
-                    val results = ocrEngine.recognize(bitmap, lineBoxes)
+                    debugTextView.text = "Found ${lineBoxes.size} lines. Recognizing..."
+                    val results = withContext(Dispatchers.IO) { ocrEngine.recognize(bitmap, lineBoxes) }
                     
-                    rootLayout.post {
-                        debugTextView.text = "Found ${results.sumOf { it.charBoxes.size }} characters."
-                        debugTextView.bringToFront()
-                        progressBar.visibility = View.GONE
-                        
-                        // Task 1: Draw line boxes with translucent black background
-                        lineBoxes.forEach { box ->
-                            val lineView = View(this@OcrAccessibilityService).apply {
-                                background = borderDrawable
-                            }
-                            val lineParams = FrameLayout.LayoutParams(box.width(), box.height()).apply {
-                                leftMargin = box.left
-                                topMargin = box.top
-                            }
-                            rootLayout.addView(lineView, lineParams)
+                    debugTextView.text = "Found ${results.sumOf { it.charBoxes.size }} characters."
+                    debugTextView.bringToFront()
+                    progressBar.visibility = View.GONE
+                    
+                    // Task 1: Draw line boxes with translucent black background
+                    lineBoxes.forEach { box ->
+                        val lineView = View(this@OcrAccessibilityService).apply {
+                            background = borderDrawable
                         }
+                        val lineParams = FrameLayout.LayoutParams(box.width(), box.height()).apply {
+                            leftMargin = box.left
+                            topMargin = box.top
+                        }
+                        rootLayout.addView(lineView, lineParams)
+                    }
 
-                        // Draw character results
-                        drawResults(rootLayout, results)
-                        
-                        // Log results
-                        results.forEach { line ->
-                            Log.i("OcrAccessibilityService", "Recognized: ${line.text}")
-                        }
+                    // Draw character results
+                    drawResults(rootLayout, results)
+                    
+                    // Log results
+                    results.forEach { line ->
+                        Log.i("OcrAccessibilityService", "Recognized: ${line.text}")
                     }
                 } else {
-                    rootLayout.post {
-                        debugTextView.text = "Error: OCR Engine not ready"
-                        progressBar.visibility = View.GONE
-                    }
+                    debugTextView.text = "Error: OCR Engine not ready"
+                    progressBar.visibility = View.GONE
                 }
             } catch (e: Exception) {
                 val errorMsg = e.message ?: e.toString()
                 Log.e("OcrAccessibilityService", "OCR Inference Error", e)
-                rootLayout.post {
-                    debugTextView.text = "Error: $errorMsg"
-                    debugTextView.bringToFront()
-                    progressBar.visibility = View.GONE
-                    Toast.makeText(this, "OCR Error: $errorMsg", Toast.LENGTH_LONG).show()
-                }
+                debugTextView.text = "Error: $errorMsg"
+                debugTextView.bringToFront()
+                progressBar.visibility = View.GONE
+                Toast.makeText(this@OcrAccessibilityService, "OCR Error: $errorMsg", Toast.LENGTH_LONG).show()
             }
-        }.start()
+        }
     }
 
     private fun drawResults(rootLayout: FrameLayout, results: List<LineResult>) {
