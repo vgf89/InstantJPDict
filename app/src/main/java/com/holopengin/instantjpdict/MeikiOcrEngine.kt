@@ -173,6 +173,9 @@ class MeikiOcrEngine(private val context: Context) {
             inputs["orig_target_sizes"] = OnnxTensor.createTensor(env, sizeData, longArrayOf(1, 2))
 
             val output = activeSession.run(inputs)
+            
+            // Clean up inputs immediately after run
+            inputs.values.forEach { it.close() }
 
             val outputNames = activeSession.outputNames.toList()
             val outputTensors = mutableMapOf<String, OnnxTensor>()
@@ -195,10 +198,15 @@ class MeikiOcrEngine(private val context: Context) {
             val logitsVal = logitsName?.let { outputTensors[it]?.value }
             val indicesVal = indicesName?.let { outputTensors[it]?.value }
 
-            val labelsArr = extractLongArray(labelsVal) ?: throw Exception("Failed to extract labels")
-            val boxesArr = extractFloatArray2D(boxesVal) ?: throw Exception("Failed to extract boxes")
-            val scoresArr = extractFloatArray(scoresVal) ?: throw Exception("Failed to extract scores")
+            val labelsArr = extractLongArray(labelsVal)
+            val boxesArr = extractFloatArray2D(boxesVal)
+            val scoresArr = extractFloatArray(scoresVal)
             val indicesArr = extractLongArray(indicesVal)
+            
+            if (labelsArr == null || boxesArr == null || scoresArr == null) {
+                Log.w("MeikiOcrEngine", "Skipping line: failed to extract mandatory outputs")
+                return null
+            }
             
             // Extract and Reshape Logits (Full Sigmoid Output)
             val rawLogits = extractFloatArray(logitsVal)
@@ -214,18 +222,20 @@ class MeikiOcrEngine(private val context: Context) {
             for (i in scoresArr.indices) {
                 if (scoresArr[i] > REC_CONFIDENCE_THRESHOLD) {
                     val alternatives = if (logitsMatrix != null && indicesArr != null && i < indicesArr.size) {
-                        val numClasses = rawLogits!!.size / numQueries
-                        val queryIdx = (indicesArr[i] / numClasses).toInt()
-                        
-                        if (queryIdx < logitsMatrix.size) {
-                            val qLogits = logitsMatrix[queryIdx]
-                            qLogits.withIndex()
-                                .sortedByDescending { it.value }
-                                .take(15)
-                                .map { 
-                                    val char = charVocab?.getOrNull(it.index)?.toChar() ?: ' '
-                                    char to it.value 
-                                }
+                        val numClasses = rawLogits?.let { it.size / numQueries } ?: 0
+                        if (numClasses > 0) {
+                            val queryIdx = (indicesArr[i] / numClasses).toInt()
+                            
+                            if (queryIdx < logitsMatrix.size) {
+                                val qLogits = logitsMatrix[queryIdx]
+                                qLogits.withIndex()
+                                    .sortedByDescending { it.value }
+                                    .take(15)
+                                    .map { 
+                                        val char = charVocab?.getOrNull(it.index)?.toChar() ?: ' '
+                                        char to it.value 
+                                    }
+                            } else emptyList()
                         } else emptyList()
                     } else emptyList()
 
@@ -291,7 +301,6 @@ class MeikiOcrEngine(private val context: Context) {
 
             val result = LineResult(text, charBoxes, alternativesList)
             
-            inputs.values.forEach { it.close() }
             output.close()
             crop.recycle()
             resizedLine.recycle()
@@ -304,6 +313,8 @@ class MeikiOcrEngine(private val context: Context) {
         } catch (e: Exception) {
             Log.e("MeikiOcrEngine", "Recognition failed for a line", e)
             return null
+        } finally {
+            // No-op - outputs are closed manually above
         }
     }
 
