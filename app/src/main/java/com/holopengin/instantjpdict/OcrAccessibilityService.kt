@@ -393,6 +393,8 @@ class OcrAccessibilityService : AccessibilityService() {
         val allChars = results.flatMap { line -> 
             line.text.indices.map { i -> line.text[i] } 
         }
+        val allAlternatives = results.flatMap { it.alternatives }
+        Log.i("OcrAccessibilityService", "drawResults: allChars.size=${allChars.size}, allAlternatives.size=${allAlternatives.size}")
 
         // --- LAYERED ARCHITECTURE ---
         // 1. Bottom layer: Margins that block the overlay from closing but do nothing else.
@@ -458,6 +460,17 @@ class OcrAccessibilityService : AccessibilityService() {
                 boxViews.add(boxView)
 
                 boxView.setOnClickListener {
+                    val currentTextViews = textViews.toList()
+                    val currentAllChars = allChars.toList()
+                    
+                    // Print top-15 candidates to logcat
+                    allAlternatives.getOrNull(currentIdx)?.let { alternatives ->
+                        val logMsg = alternatives.joinToString(", ") { (char, score) ->
+                            "$char (${String.format(java.util.Locale.US, "%.8f", score)})"
+                        }
+                        Log.i("OcrAccessibilityService", "Top 15 candidates for '${allChars[currentIdx]}': $logMsg")
+                    }
+
                     // Reset all highlights
                     resetHighlights()
                     
@@ -465,8 +478,8 @@ class OcrAccessibilityService : AccessibilityService() {
                     textView.setTextColor(android.graphics.Color.YELLOW)
                     textView.typeface = android.graphics.Typeface.DEFAULT_BOLD
 
-                    val endIdx = minOf(currentIdx + 20, allChars.size)
-                    val followingText = allChars.subList(currentIdx, endIdx).joinToString("")
+                    val endIdx = minOf(currentIdx + 20, currentAllChars.size)
+                    val followingText = currentAllChars.subList(currentIdx, endIdx).joinToString("")
                     
                     serviceScope.launch {
                         val db = AppDatabase.getDatabase(applicationContext)
@@ -557,9 +570,9 @@ class OcrAccessibilityService : AccessibilityService() {
                                 // Highlight the entire matched sequence in text
                                 for (i in 0 until maxMatchedLen) {
                                     val targetIdx = currentIdx + i
-                                    if (targetIdx < textViews.size) {
-                                        textViews[targetIdx].setTextColor(android.graphics.Color.YELLOW)
-                                        textViews[targetIdx].typeface = android.graphics.Typeface.DEFAULT_BOLD
+                                    if (targetIdx < currentTextViews.size) {
+                                        currentTextViews[targetIdx].setTextColor(android.graphics.Color.YELLOW)
+                                        currentTextViews[targetIdx].typeface = android.graphics.Typeface.DEFAULT_BOLD
                                     }
                                 }
                                 showResultsUi(rootLayout, uniqueMatches, box)
@@ -567,8 +580,10 @@ class OcrAccessibilityService : AccessibilityService() {
                         } else {
                             // Fallback highlight if no dictionary match but was tapped
                             withContext(Dispatchers.Main) {
-                                textViews[currentIdx].setTextColor(android.graphics.Color.YELLOW)
-                                textViews[currentIdx].typeface = android.graphics.Typeface.DEFAULT_BOLD
+                                if (currentIdx < currentTextViews.size) {
+                                    currentTextViews[currentIdx].setTextColor(android.graphics.Color.YELLOW)
+                                    currentTextViews[currentIdx].typeface = android.graphics.Typeface.DEFAULT_BOLD
+                                }
 
                                 val debugView = rootLayout.findViewWithTag<TextView>("debug_text")
                                 if (debugView != null) {
