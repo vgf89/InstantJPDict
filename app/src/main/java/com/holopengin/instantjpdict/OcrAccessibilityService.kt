@@ -436,6 +436,11 @@ class OcrAccessibilityService : AccessibilityService() {
                     setPadding(0, 0, 0, 0)
                     includeFontPadding = false
                     isClickable = false
+                    
+                    if (line.isVertical) {
+                        textLocale = java.util.Locale.JAPANESE
+                        fontFeatureSettings = "'vert' 1"
+                    }
                 }
                 textView.tag = currentIdx
                 charContainer.addView(textView, FrameLayout.LayoutParams(box.width(), FrameLayout.LayoutParams.MATCH_PARENT))
@@ -795,6 +800,12 @@ class OcrAccessibilityService : AccessibilityService() {
                 tag = "neighbor_char_$i"; text = activeAllChars[i].toString(); setTextColor(android.graphics.Color.WHITE); textSize = estimatedTextSize; gravity = Gravity.CENTER
                 if (i == currentIdx) { setBackgroundColor(android.graphics.Color.YELLOW); setTextColor(android.graphics.Color.BLACK) }
                 else setBackgroundColor(android.graphics.Color.argb(255, 65, 65, 65))
+                
+                if (isLandscape) {
+                    textLocale = java.util.Locale.JAPANESE
+                    fontFeatureSettings = "'vert' 1"
+                }
+
                 setOnClickListener {
                     if (currentTappedIdx == i) toggleAlternativesPanel(rootLayout, i, isLandscape)
                     else {
@@ -868,6 +879,12 @@ class OcrAccessibilityService : AccessibilityService() {
                 text = altChar.toString(); setTextColor(android.graphics.Color.WHITE); textSize = estimatedTextSize; gravity = Gravity.CENTER
                 if (altChar == activeAllChars[currentIdx]) { setBackgroundColor(android.graphics.Color.YELLOW); setTextColor(android.graphics.Color.BLACK) }
                 else setBackgroundColor(android.graphics.Color.argb(255, 85, 85, 85))
+                
+                if (isLandscape) {
+                    textLocale = java.util.Locale.JAPANESE
+                    fontFeatureSettings = "'vert' 1"
+                }
+
                 setOnClickListener { replaceCharacter(currentIdx, altChar, rootLayout) }
             }
             candidateList.addView(textView, LinearLayout.LayoutParams(itemSize, itemSize).apply { setMargins(2, 2, 2, 2) })
