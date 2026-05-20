@@ -805,8 +805,8 @@ class OcrAccessibilityService : AccessibilityService() {
                         // If alternatives are open, update them for the new character
                         val altContainer = rootLayout.findViewWithTag<FrameLayout>("alternatives_container")
                         if (altContainer != null && altContainer.childCount > 0) {
-                            altContainer.removeAllViews()
-                            toggleAlternativesPanel(rootLayout, i, isLandscape)
+                            // Don't recreate the whole container, just refresh its contents
+                            updateAlternativesPanelContent(altContainer, i, isLandscape, rootLayout)
                         }
                         
                         performLookup(i, rootLayout, skipCenter = true)
@@ -834,23 +834,88 @@ class OcrAccessibilityService : AccessibilityService() {
             isVerticalScrollBarEnabled = false; isHorizontalScrollBarEnabled = false
             layoutParams = if (isLandscape) LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 10f) else LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 10f)
         }
-        val candidateList = LinearLayout(this).apply { orientation = if (isLandscape) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL }
+        val candidateList = LinearLayout(this).apply { tag = "candidate_list_panel"; orientation = if (isLandscape) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL }
+        refreshCandidateList(candidateList, currentIdx, isLandscape, rootLayout)
+        scrollView.addView(candidateList); mainLayout.addView(scrollView)
+        
+        // Find and scroll to selected
+        scrollView.post {
+            var selectedView: View? = null
+            for (i in 0 until candidateList.childCount) {
+                val v = candidateList.getChildAt(i) as? TextView ?: continue
+                if (v.text.toString() == activeAllChars[currentIdx].toString()) {
+                    selectedView = v; break
+                }
+            }
+            selectedView?.let { view -> if (isLandscape) scrollView.scrollTo(0, view.top) else (scrollView as HorizontalScrollView).scrollTo(view.left, 0) }
+        }
+
+        val stubView = TextView(this).apply { tag = "manual_input_stub"; text = "⌨"; setTextColor(android.graphics.Color.GRAY); textSize = estimatedTextSize; gravity = Gravity.CENTER; setBackgroundColor(android.graphics.Color.argb(255, 40, 40, 40)); setOnClickListener { showManualInput(currentIdx, rootLayout) } }
+        mainLayout.addView(stubView, if (isLandscape) LinearLayout.LayoutParams(itemSize, 0, 1f).apply { setMargins(2, 2, 2, 2) } else LinearLayout.LayoutParams(0, itemSize, 1f).apply { setMargins(2, 2, 2, 2) })
+        container.addView(mainLayout)
+    }
+
+    private fun refreshCandidateList(candidateList: LinearLayout, currentIdx: Int, isLandscape: Boolean, rootLayout: FrameLayout) {
+        candidateList.removeAllViews()
+        val rootHeight = rootLayout.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
+        val rootWidth = rootLayout.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
+        val itemSize = (if (isLandscape) rootHeight else rootWidth) / 11
+        val estimatedTextSize = (itemSize * 0.45 / resources.displayMetrics.density).toFloat().coerceIn(12f, 22f)
+
         val alts = activeAllAlternatives.getOrNull(currentIdx) ?: emptyList()
-        var selectedView: View? = null
         alts.take(15).forEach { (altChar, _) ->
             val textView = TextView(this).apply {
                 text = altChar.toString(); setTextColor(android.graphics.Color.WHITE); textSize = estimatedTextSize; gravity = Gravity.CENTER
-                if (altChar == activeAllChars[currentIdx]) { setBackgroundColor(android.graphics.Color.YELLOW); setTextColor(android.graphics.Color.BLACK); selectedView = this }
+                if (altChar == activeAllChars[currentIdx]) { setBackgroundColor(android.graphics.Color.YELLOW); setTextColor(android.graphics.Color.BLACK) }
                 else setBackgroundColor(android.graphics.Color.argb(255, 85, 85, 85))
                 setOnClickListener { replaceCharacter(currentIdx, altChar, rootLayout) }
             }
             candidateList.addView(textView, LinearLayout.LayoutParams(itemSize, itemSize).apply { setMargins(2, 2, 2, 2) })
         }
-        scrollView.addView(candidateList); mainLayout.addView(scrollView)
-        selectedView?.let { view -> scrollView.post { if (isLandscape) scrollView.scrollTo(0, view.top) else (scrollView as HorizontalScrollView).scrollTo(view.left, 0) } }
-        val stubView = TextView(this).apply { text = "⌨"; setTextColor(android.graphics.Color.GRAY); textSize = estimatedTextSize; gravity = Gravity.CENTER; setBackgroundColor(android.graphics.Color.argb(255, 40, 40, 40)); setOnClickListener { showManualInput(currentIdx, rootLayout) } }
-        mainLayout.addView(stubView, if (isLandscape) LinearLayout.LayoutParams(itemSize, 0, 1f).apply { setMargins(2, 2, 2, 2) } else LinearLayout.LayoutParams(0, itemSize, 1f).apply { setMargins(2, 2, 2, 2) })
-        container.addView(mainLayout)
+    }
+
+    private fun updateAlternativesPanelContent(container: FrameLayout, currentIdx: Int, isLandscape: Boolean, rootLayout: FrameLayout) {
+        val candidateList = container.findViewWithTag<LinearLayout>("candidate_list_panel") ?: return
+        refreshCandidateList(candidateList, currentIdx, isLandscape, rootLayout)
+        
+        // Update manual input stub too
+        val stub = container.findViewWithTag<TextView>("manual_input_stub")
+        stub?.setOnClickListener { showManualInput(currentIdx, rootLayout) }
+
+        // Optional: Scroll to new selection if switching neighbors
+        val scrollView = candidateList.parent as? View ?: return
+        scrollView.post {
+            var selectedView: View? = null
+            for (i in 0 until candidateList.childCount) {
+                val v = candidateList.getChildAt(i) as? TextView ?: continue
+                if (v.text.toString() == activeAllChars[currentIdx].toString()) {
+                    selectedView = v; break
+                }
+            }
+            selectedView?.let { view ->
+                if (scrollView is ScrollView) {
+                    val scrollY = view.top - (scrollView.height / 2) + (view.height / 2)
+                    scrollView.smoothScrollTo(0, scrollY)
+                } else if (scrollView is HorizontalScrollView) {
+                    val scrollX = view.left - (scrollView.width / 2) + (view.width / 2)
+                    scrollView.smoothScrollTo(scrollX, 0)
+                }
+            }
+        }
+    }
+
+    private fun updateAlternativesHighlight(container: FrameLayout, currentChar: Char) {
+        val candidateList = container.findViewWithTag<LinearLayout>("candidate_list_panel") ?: return
+        for (i in 0 until candidateList.childCount) {
+            val v = candidateList.getChildAt(i) as? TextView ?: continue
+            if (v.text.toString() == currentChar.toString()) {
+                v.setBackgroundColor(android.graphics.Color.YELLOW)
+                v.setTextColor(android.graphics.Color.BLACK)
+            } else {
+                v.setBackgroundColor(android.graphics.Color.argb(255, 85, 85, 85))
+                v.setTextColor(android.graphics.Color.WHITE)
+            }
+        }
     }
 
     private fun replaceCharacter(index: Int, newChar: Char, rootLayout: FrameLayout) {
@@ -864,12 +929,10 @@ class OcrAccessibilityService : AccessibilityService() {
         val browserPanel = rootLayout.findViewWithTag<LinearLayout>("neighbor_scroll_panel")
         browserPanel?.findViewWithTag<TextView>("neighbor_char_$index")?.text = newChar.toString()
 
-        // Update alternatives panel to reflect new selection
+        // Update alternatives panel highlight instead of recreating
         val altContainer = rootLayout.findViewWithTag<FrameLayout>("alternatives_container")
         if (altContainer != null && altContainer.childCount > 0) {
-            altContainer.removeAllViews()
-            val isLandscape = rootLayout.width > rootLayout.height
-            toggleAlternativesPanel(rootLayout, index, isLandscape)
+            updateAlternativesHighlight(altContainer, newChar)
         }
 
         performLookup(index, rootLayout, skipCenter = true)
