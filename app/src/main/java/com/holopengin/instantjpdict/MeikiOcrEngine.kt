@@ -299,7 +299,7 @@ class MeikiOcrEngine(private val context: Context) {
                 Rect(Math.round(x1), Math.round(y1), Math.round(x2), Math.round(y2))
             }
 
-            val result = LineResult(text, charBoxes, alternativesList)
+            val result = LineResult(text, charBoxes, alternativesList, isVertical)
             
             output.close()
             crop.recycle()
@@ -421,7 +421,8 @@ class MeikiOcrEngine(private val context: Context) {
 data class LineResult(
     var text: String,
     val charBoxes: List<Rect>,
-    val alternatives: List<List<Pair<Char, Float>>> = emptyList()
+    val alternatives: List<List<Pair<Char, Float>>> = emptyList(),
+    val isVertical: Boolean = false
 )
 
 private data class CharCandidate(
