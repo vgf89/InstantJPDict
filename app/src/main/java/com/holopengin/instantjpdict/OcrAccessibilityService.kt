@@ -413,21 +413,35 @@ class OcrAccessibilityService : AccessibilityService() {
                 line.charBoxes.map { it.height() }.maxOrNull() ?: 0
             }
 
+            var lastX = -1
+            var lastY = -1
+
             for (i in line.charBoxes.indices) {
                 val originalBox = line.charBoxes[i]
                 
                 // Create a square box centered on the original detection
-                val centerX = originalBox.centerX()
-                val centerY = originalBox.centerY()
+                var centerX = originalBox.centerX()
+                var centerY = originalBox.centerY()
                 
-                // Use fixedSize to define the square box.
-                // If this is causing the offset, let's verify if originalBox is actually correct first.
+                // For the last character, extrapolate position from previous if possible
+                // to avoid tight bounding box clipping at the end of lines
+                if (i == line.charBoxes.size - 1 && i > 0) {
+                    if (line.isVertical) {
+                        centerY = lastY + fixedSize
+                    } else {
+                        centerX = lastX + fixedSize
+                    }
+                }
+
                 val box = Rect(
                     centerX - fixedSize / 2,
                     centerY - fixedSize / 2,
                     centerX + fixedSize / 2,
                     centerY + fixedSize / 2
                 )
+                
+                lastX = centerX
+                lastY = centerY
 
                 val char = line.text.getOrNull(i)?.toString() ?: ""
                 val currentIdx = charIndex++
@@ -453,7 +467,7 @@ class OcrAccessibilityService : AccessibilityService() {
                     text = char
                     setTextColor(android.graphics.Color.parseColor("#FF7777")) // Light Red
                     typeface = android.graphics.Typeface.DEFAULT
-                    setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, fixedSize.toFloat())
+                    setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, fixedSize.toFloat() * 1.05f)
                     setPadding(0, 0, 0, 0)
                     includeFontPadding = false
                     isClickable = false
@@ -582,7 +596,7 @@ class OcrAccessibilityService : AccessibilityService() {
 
     private fun resetHighlights() {
         textViews.forEach { 
-            it.setTextColor(android.graphics.Color.RED)
+            it.setTextColor(android.graphics.Color.parseColor("#FF7777"))
             it.typeface = android.graphics.Typeface.DEFAULT
         }
     }
@@ -907,7 +921,13 @@ class OcrAccessibilityService : AccessibilityService() {
                     fontFeatureSettings = "'vert' 1"
                 }
 
-                setOnClickListener { replaceCharacter(currentIdx, altChar, rootLayout) }
+                setOnClickListener { 
+                    if (altChar == activeAllChars[currentIdx]) {
+                        toggleAlternativesPanel(rootLayout, currentIdx, isLandscape)
+                    } else {
+                        replaceCharacter(currentIdx, altChar, rootLayout)
+                    }
+                }
             }
             candidateList.addView(textView, LinearLayout.LayoutParams(itemSize, itemSize).apply { setMargins(2, 2, 2, 2) })
         }
