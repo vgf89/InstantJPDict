@@ -17,6 +17,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -246,14 +250,28 @@ class MeikiOcrEngine(private val context: Context) {
 
     suspend fun recognizeStreaming(bitmap: Bitmap, lineBoxes: List<Rect>, onLineRecognized: (LineResult) -> Unit) = withContext(Dispatchers.Default) {
         val startTime = System.currentTimeMillis()
+        val semaphore = Semaphore(3)
+        val channel = Channel<LineResult>()
+
         lineBoxes.forEach { box ->
-            val result = recognizeSingleLine(bitmap, box)
-            if (result != null) {
-                withContext(Dispatchers.Main) {
-                    onLineRecognized(result)
+            launch {
+                semaphore.withPermit {
+                    val result = recognizeSingleLine(bitmap, box)
+                    if (result != null) {
+                        channel.send(result)
+                    }
                 }
             }
         }
+
+        repeat(lineBoxes.size) {
+            val result = channel.receive()
+            withContext(Dispatchers.Main) {
+                onLineRecognized(result)
+            }
+        }
+        channel.close()
+
         val totalTime = System.currentTimeMillis() - startTime
         Log.d("MeikiOcrEngine", "Streaming recognition for ${lineBoxes.size} lines took ${totalTime}ms")
     }
