@@ -801,6 +801,14 @@ class OcrAccessibilityService : AccessibilityService() {
                         val oldIdx = currentTappedIdx; currentTappedIdx = i
                         panel.findViewWithTag<View>("neighbor_char_$oldIdx")?.let { it.setBackgroundColor(android.graphics.Color.argb(255, 65, 65, 65)); (it as TextView).setTextColor(android.graphics.Color.WHITE) }
                         this.setBackgroundColor(android.graphics.Color.YELLOW); this.setTextColor(android.graphics.Color.BLACK)
+                        
+                        // If alternatives are open, update them for the new character
+                        val altContainer = rootLayout.findViewWithTag<FrameLayout>("alternatives_container")
+                        if (altContainer != null && altContainer.childCount > 0) {
+                            altContainer.removeAllViews()
+                            toggleAlternativesPanel(rootLayout, i, isLandscape)
+                        }
+                        
                         performLookup(i, rootLayout, skipCenter = true)
                     }
                 }
@@ -851,7 +859,20 @@ class OcrAccessibilityService : AccessibilityService() {
         val line = activeLineResults[info.lineIdx]
         val charArray = line.text.toCharArray(); charArray[info.charIdxInLine] = newChar; line.text = String(charArray)
         if (index < textViews.size) textViews[index].text = newChar.toString()
-        performLookup(index, rootLayout)
+        
+        // Update browser view too
+        val browserPanel = rootLayout.findViewWithTag<LinearLayout>("neighbor_scroll_panel")
+        browserPanel?.findViewWithTag<TextView>("neighbor_char_$index")?.text = newChar.toString()
+
+        // Update alternatives panel to reflect new selection
+        val altContainer = rootLayout.findViewWithTag<FrameLayout>("alternatives_container")
+        if (altContainer != null && altContainer.childCount > 0) {
+            altContainer.removeAllViews()
+            val isLandscape = rootLayout.width > rootLayout.height
+            toggleAlternativesPanel(rootLayout, index, isLandscape)
+        }
+
+        performLookup(index, rootLayout, skipCenter = true)
     }
 
     private fun showManualInput(index: Int, rootLayout: FrameLayout) {
