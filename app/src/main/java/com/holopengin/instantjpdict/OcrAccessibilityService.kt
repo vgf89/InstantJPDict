@@ -19,7 +19,10 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
 import android.widget.Button
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
@@ -46,6 +49,7 @@ class OcrAccessibilityService : AccessibilityService() {
     private var floatingParams: WindowManager.LayoutParams? = null
     private var ocrButton: Button? = null
     private var screenshotOverlay: View? = null
+    private var screenshotBitmap: Bitmap? = null
     private lateinit var ocrEngine: MeikiOcrEngine
     private lateinit var deinflector: Deinflector
     private val gson = Gson()
@@ -220,6 +224,7 @@ class OcrAccessibilityService : AccessibilityService() {
 
     private fun showScreenshotOverlay(bitmap: Bitmap) {
         if (screenshotOverlay != null) return
+        screenshotBitmap = bitmap
 
         // Task 2: Underneath system UI (try FLAG_LAYOUT_IN_SCREEN with FLAG_LAYOUT_NO_LIMITS for full screen)
         val params = WindowManager.LayoutParams().apply {
@@ -238,6 +243,10 @@ class OcrAccessibilityService : AccessibilityService() {
             // Task 2: Try to keep system UI visible
             systemUiVisibility = View.SYSTEM_UI_FLAG_LAYOUT_STABLE or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
             setOnClickListener {
+                if (findViewWithTag<View>("manual_input_blocker") != null) {
+                    closeManualInput(this)
+                    return@setOnClickListener
+                }
                 val panel = findViewWithTag<View>("correction_ui_root")
                 if (panel != null) {
                     removeView(panel)
@@ -967,7 +976,7 @@ class OcrAccessibilityService : AccessibilityService() {
             gravity = Gravity.CENTER
             setBackgroundColor(android.graphics.Color.argb(255, 40, 40, 40))
             setOnClickListener {
-                Toast.makeText(this@OcrAccessibilityService, "Manual input coming soon", Toast.LENGTH_SHORT).show()
+                showManualInput(currentIdx, rootLayout)
             }
         }
         val stubLp = if (isLandscape) {
@@ -997,6 +1006,134 @@ class OcrAccessibilityService : AccessibilityService() {
 
         // Re-run lookup
         performLookup(index, rootLayout)
+    }
+
+    private fun showManualInput(index: Int, rootLayout: FrameLayout) {
+        val bitmap = screenshotBitmap ?: return
+        val box = activeCharInfos[index].box
+        
+        // 1. Prepare Crop
+        val padding = (box.height() * 0.5).toInt()
+        val cropRect = Rect(
+            (box.left - padding).coerceAtLeast(0),
+            (box.top - padding).coerceAtLeast(0),
+            (box.right + padding).coerceAtMost(bitmap.width),
+            (box.bottom + padding).coerceAtMost(bitmap.height)
+        )
+        val cropped = Bitmap.createBitmap(bitmap, cropRect.left, cropRect.top, cropRect.width(), cropRect.height())
+
+        // 2. Dimmed Blocker
+        val blocker = FrameLayout(this).apply {
+            tag = "manual_input_blocker"
+            setBackgroundColor(android.graphics.Color.argb(180, 0, 0, 0))
+            setOnClickListener { closeManualInput(rootLayout) }
+        }
+
+        // 3. Dialog-like Panel
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(android.graphics.Color.argb(255, 35, 35, 35))
+            setPadding(60, 60, 60, 60)
+            gravity = Gravity.CENTER_HORIZONTAL
+            elevation = 50f
+            // Block clicks from reaching 'blocker'
+            setOnClickListener { }
+        }
+
+        val imageView = android.widget.ImageView(this).apply {
+            setImageBitmap(cropped)
+            val size = (resources.displayMetrics.density * 120).toInt()
+            layoutParams = LinearLayout.LayoutParams(size, size)
+            scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
+        }
+        panel.addView(imageView)
+
+        val hintText = TextView(this).apply {
+            text = "Enter character manually"
+            setTextColor(android.graphics.Color.GRAY)
+            textSize = 14f
+            setPadding(0, 30, 0, 10)
+        }
+        panel.addView(hintText)
+
+        val editText = EditText(this).apply {
+            setTextColor(android.graphics.Color.WHITE)
+            textSize = 36f
+            gravity = Gravity.CENTER
+            maxLines = 1
+            imeOptions = EditorInfo.IME_ACTION_DONE
+            inputType = android.text.InputType.TYPE_CLASS_TEXT
+            background.setTint(android.graphics.Color.CYAN)
+        }
+        panel.addView(editText, LinearLayout.LayoutParams(250, LinearLayout.LayoutParams.WRAP_CONTENT))
+
+        val confirmButton = Button(this).apply {
+            text = "Confirm"
+            setOnClickListener {
+                val text = editText.text.toString()
+                if (text.isNotEmpty()) {
+                    replaceCharacter(index, text[0], rootLayout)
+                    closeManualInput(rootLayout)
+                }
+            }
+        }
+        panel.addView(confirmButton, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = 20 })
+
+        blocker.addView(panel, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            Gravity.CENTER
+        ))
+
+        // 4. Update Window Flags to allow focus for keyboard
+        val params = screenshotOverlay?.layoutParams as? WindowManager.LayoutParams
+        if (params != null) {
+            params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
+            params.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+            windowManager?.updateViewLayout(screenshotOverlay, params)
+        }
+
+        rootLayout.addView(blocker, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.MATCH_PARENT
+        ))
+
+        editText.requestFocus()
+        editText.postDelayed({
+            val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+            imm.showSoftInput(editText, InputMethodManager.SHOW_IMPLICIT)
+        }, 100)
+
+        editText.setOnEditorActionListener { _, actionId, event ->
+            if (actionId == EditorInfo.IME_ACTION_DONE || 
+                (event != null && event.keyCode == KeyEvent.KEYCODE_ENTER && event.action == KeyEvent.ACTION_DOWN)) {
+                val text = editText.text.toString()
+                if (text.isNotEmpty()) {
+                    replaceCharacter(index, text[0], rootLayout)
+                    closeManualInput(rootLayout)
+                }
+                true
+            } else {
+                false
+            }
+        }
+    }
+
+    private fun closeManualInput(rootLayout: FrameLayout) {
+        val blocker = rootLayout.findViewWithTag<View>("manual_input_blocker") ?: return
+        rootLayout.removeView(blocker)
+
+        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
+        imm.hideSoftInputFromWindow(rootLayout.windowToken, 0)
+
+        val params = screenshotOverlay?.layoutParams as? WindowManager.LayoutParams
+        if (params != null) {
+            params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+            windowManager?.updateViewLayout(screenshotOverlay, params)
+        }
     }
 
     private fun formatTag(tag: String): String {
@@ -1165,6 +1302,7 @@ class OcrAccessibilityService : AccessibilityService() {
             }
         }
         screenshotOverlay = null
+        screenshotBitmap = null
         
         // 3. Restore the floating button to the WindowManager
         fv.visibility = View.VISIBLE
@@ -1198,6 +1336,11 @@ class OcrAccessibilityService : AccessibilityService() {
         // Task 4: Close on back button
         if (event?.keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_DOWN) {
             if (screenshotOverlay != null) {
+                val root = screenshotOverlay as FrameLayout
+                if (root.findViewWithTag<View>("manual_input_blocker") != null) {
+                    closeManualInput(root)
+                    return true
+                }
                 hideScreenshotOverlay()
                 return true
             }
