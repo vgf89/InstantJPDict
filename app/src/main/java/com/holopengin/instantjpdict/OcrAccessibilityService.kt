@@ -370,6 +370,7 @@ class OcrAccessibilityService : AccessibilityService() {
                     activeAllAlternatives = mutableListOf()
                     activeCharInfos = mutableListOf()
 
+                    val startTime = System.currentTimeMillis()
                     withContext(Dispatchers.IO) {
                         ocrEngine.recognizeStreaming(bitmap, lineBoxes) { lineResult ->
                             if (screenshotOverlay == null) return@recognizeStreaming
@@ -381,8 +382,8 @@ class OcrAccessibilityService : AccessibilityService() {
                             }
                         }
                     }
-
-                    debugTextView.text = "Recognition complete. Found ${activeAllChars.size} characters."
+                    val endTime = System.currentTimeMillis() - startTime
+                    debugTextView.text = "Found ${activeAllChars.size} characters. Time: ${endTime}ms"
                     progressBar.visibility = View.GONE
                 } else {
                     debugTextView.text = "Error: OCR Engine not ready"
