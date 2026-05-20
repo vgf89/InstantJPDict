@@ -432,7 +432,8 @@ class OcrAccessibilityService : AccessibilityService() {
                     setTextColor(android.graphics.Color.RED)
                     gravity = Gravity.CENTER
                     typeface = android.graphics.Typeface.DEFAULT
-                    setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, box.height().toFloat())
+                    val fontSize = if (line.isVertical) box.width().toFloat() else box.height().toFloat()
+                    setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, fontSize)
                     setPadding(0, 0, 0, 0)
                     includeFontPadding = false
                     isClickable = false
