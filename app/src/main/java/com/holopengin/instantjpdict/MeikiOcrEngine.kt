@@ -9,6 +9,7 @@ import android.util.Log
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
+import ai.onnxruntime.OrtSession.SessionOptions
 import com.google.gson.Gson
 import androidx.lifecycle.HasDefaultViewModelProviderFactory
 import java.nio.FloatBuffer
@@ -45,9 +46,13 @@ class MeikiOcrEngine(private val context: Context) {
 
     init {
         try {
-            detectSession = env.createSession(loadModel("meiki.text.detect.v0.1.960x544.onnx"))
-            recognizeSession = env.createSession(loadModel("meiki.text.rec.v0.960x32.with_logits.onnx"))
-            recognizeSessionVertical = env.createSession(loadModel("meiki.text.rec.v0.vertical.32x480.with_logits.onnx"))
+            val options = SessionOptions()
+            options.addNnapi()
+            options.setOptimizationLevel(SessionOptions.OptLevel.ALL_OPT)
+            
+            detectSession = env.createSession(loadModel("meiki.text.detect.v0.1.960x544.onnx"), options)
+            recognizeSession = env.createSession(loadModel("meiki.text.rec.v0.960x32.with_logits.onnx"), options)
+            recognizeSessionVertical = env.createSession(loadModel("meiki.text.rec.v0.vertical.32x480.with_logits.onnx"), options)
             
             // Load character vocabulary mapping
             try {
@@ -58,7 +63,7 @@ class MeikiOcrEngine(private val context: Context) {
                 Log.e("MeikiOcrEngine", "Failed to load char_vocab.json", ve)
             }
             
-            Log.d("MeikiOcrEngine", "Models loaded successfully")
+            Log.d("MeikiOcrEngine", "Models loaded successfully with NNAPI acceleration")
         } catch (e: Exception) {
             Log.e("MeikiOcrEngine", "Failed to load models", e)
         }
@@ -250,7 +255,7 @@ class MeikiOcrEngine(private val context: Context) {
 
     suspend fun recognizeStreaming(bitmap: Bitmap, lineBoxes: List<Rect>, onLineRecognized: (LineResult) -> Unit) = withContext(Dispatchers.Default) {
         val startTime = System.currentTimeMillis()
-        val semaphore = Semaphore(3)
+        val semaphore = Semaphore(5) // Increased from 3 to 5
         val channel = Channel<LineResult>()
 
         lineBoxes.forEach { box ->
