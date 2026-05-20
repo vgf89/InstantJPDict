@@ -17,6 +17,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.withContext
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
@@ -106,9 +107,141 @@ class MeikiOcrEngine(private val context: Context) {
             results.close()
             resized.recycle()
         }
-        // Sort detected lines by their Y-coordinate (top-to-bottom)
-        // If they were "backwards", the model likely returned them bottom-to-top.
-        return detectedBoxes.sortedBy { it.top }
+        
+        // Merge redundant, highly overlapping boxes
+        val mergedBoxes = mergeOverlappingBoxes(detectedBoxes)
+        
+        // Use custom sorting logic to handle mixed horizontal/vertical and RTL/LTR
+        return sortDetectedBoxes(mergedBoxes)
+    }
+
+    private fun mergeOverlappingBoxes(boxes: List<Rect>): List<Rect> {
+        if (boxes.size < 2) return boxes
+        
+        val result = mutableListOf<Rect>()
+        val handled = BooleanArray(boxes.size)
+        
+        // Sort by size to keep the larger/more robust box as the primary
+        val sortedBoxes = boxes.withIndex().sortedByDescending { it.value.width() * it.value.height() }
+        
+        for (i in sortedBoxes.indices) {
+            val idx = sortedBoxes[i].index
+            if (handled[idx]) continue
+            
+            val boxA = sortedBoxes[i].value
+            handled[idx] = true
+            
+            var currentMerged = boxA
+            
+            for (j in i + 1 until sortedBoxes.size) {
+                val idxB = sortedBoxes[j].index
+                if (handled[idxB]) continue
+                
+                val boxB = sortedBoxes[j].value
+                
+                if (shouldMergeBoxes(currentMerged, boxB)) {
+                    // Merge by taking the bounding box of both
+                    currentMerged = Rect(
+                        min(currentMerged.left, boxB.left),
+                        min(currentMerged.top, boxB.top),
+                        max(currentMerged.right, boxB.right),
+                        max(currentMerged.bottom, boxB.bottom)
+                    )
+                    handled[idxB] = true
+                }
+            }
+            result.add(currentMerged)
+        }
+        return result
+    }
+
+    private fun shouldMergeBoxes(a: Rect, b: Rect): Boolean {
+        val interLeft = max(a.left, b.left)
+        val interTop = max(a.top, b.top)
+        val interRight = min(a.right, b.right)
+        val interBottom = min(a.bottom, b.bottom)
+        
+        if (interLeft >= interRight || interTop >= interBottom) return false
+        
+        val interArea = (interRight - interLeft).toFloat() * (interBottom - interTop)
+        val areaA = (a.right - a.left).toFloat() * (a.bottom - a.top)
+        val areaB = (b.right - b.left).toFloat() * (b.bottom - b.top)
+        
+        // Use Intersection over Minimum (IoM) instead of IoU
+        // This handles cases where one box is much shorter than the other
+        val minArea = min(areaA, areaB)
+        val iom = interArea / minArea
+        
+        if (iom < 0.8f) return false
+
+        // Additionally, verify that they align in their "thickness" dimension
+        val isAVertical = a.height() > a.width()
+        val isBVertical = b.height() > b.width()
+        
+        if (isAVertical != isBVertical) return false
+        
+        return if (isAVertical) {
+            // Vertical lines should have similar X and Width
+            val xDiff = abs(a.centerX() - b.centerX())
+            val wDiff = abs(a.width() - b.width())
+            val avgWidth = (a.width() + b.width()) / 2f
+            xDiff < avgWidth * 0.3f && wDiff < avgWidth * 0.4f
+        } else {
+            // Horizontal lines should have similar Y and Height
+            val yDiff = abs(a.centerY() - b.centerY())
+            val hDiff = abs(a.height() - b.height())
+            val avgHeight = (a.height() + b.height()) / 2f
+            yDiff < avgHeight * 0.3f && hDiff < avgHeight * 0.4f
+        }
+    }
+
+    private fun sortDetectedBoxes(boxes: List<Rect>): List<Rect> {
+        if (boxes.isEmpty()) return emptyList()
+
+        // 1. Sort primarily by top coordinate
+        val sortedByTop = boxes.sortedBy { it.top }
+        
+        val rowGroups = mutableListOf<MutableList<Rect>>()
+        if (sortedByTop.isNotEmpty()) {
+            var currentGroup = mutableListOf<Rect>()
+            currentGroup.add(sortedByTop[0])
+            rowGroups.add(currentGroup)
+            
+            for (i in 1 until sortedByTop.size) {
+                val box = sortedByTop[i]
+                val prevBox = sortedByTop[i-1]
+                
+                // Group lines that are vertically similar.
+                // For vertical columns, they often start at similar 'top'.
+                // For horizontal text, they are on the same 'line'.
+                // We use a threshold based on the height of the line.
+                val height = if (box.height() > box.width()) box.width() else box.height()
+                val threshold = height * 0.8
+                
+                if (abs(box.top - prevBox.top) < threshold) {
+                    currentGroup.add(box)
+                } else {
+                    currentGroup = mutableListOf<Rect>()
+                    currentGroup.add(box)
+                    rowGroups.add(currentGroup)
+                }
+            }
+        }
+
+        val result = mutableListOf<Rect>()
+        for (group in rowGroups) {
+            // Within each row group:
+            // Separate horizontal and vertical lines
+            val horizontal = group.filter { it.width() >= it.height() }.sortedBy { it.left } // LTR
+            val vertical = group.filter { it.height() > it.width() }.sortedByDescending { it.right } // RTL
+            
+            // Usually, headers (horizontal) come before the main text (vertical columns)
+            // or we just output them in a stable order.
+            result.addAll(horizontal)
+            result.addAll(vertical)
+        }
+        
+        return result
     }
 
     suspend fun recognize(bitmap: Bitmap, lineBoxes: List<Rect>): List<LineResult> = withContext(Dispatchers.Default) {
