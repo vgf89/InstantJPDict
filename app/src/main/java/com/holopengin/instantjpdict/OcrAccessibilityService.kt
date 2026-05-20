@@ -405,8 +405,30 @@ class OcrAccessibilityService : AccessibilityService() {
         val margin = 50
 
         for (line in results) {
+            // Determine a fixed size for all characters in this line based on line "thickness"
+            // For horizontal, thickness is height. For vertical, thickness is width.
+            val fixedSize = if (line.isVertical) {
+                line.charBoxes.map { it.width() }.maxOrNull() ?: 0
+            } else {
+                line.charBoxes.map { it.height() }.maxOrNull() ?: 0
+            }
+
             for (i in line.charBoxes.indices) {
-                val box = line.charBoxes[i]
+                val originalBox = line.charBoxes[i]
+                
+                // Create a square box centered on the original detection
+                val centerX = originalBox.centerX()
+                val centerY = originalBox.centerY()
+                
+                // Use fixedSize to define the square box.
+                // If this is causing the offset, let's verify if originalBox is actually correct first.
+                val box = Rect(
+                    centerX - fixedSize / 2,
+                    centerY - fixedSize / 2,
+                    centerX + fixedSize / 2,
+                    centerY + fixedSize / 2
+                )
+
                 val char = line.text.getOrNull(i)?.toString() ?: ""
                 val currentIdx = charIndex++
                 
@@ -421,19 +443,17 @@ class OcrAccessibilityService : AccessibilityService() {
                 marginsLayer.addView(marginBlocker, marginParams)
 
                 val charContainer = FrameLayout(this)
-                val charParams = FrameLayout.LayoutParams(box.width(), box.height() + (box.height() * 0.8).toInt()).apply {
+                val charParams = FrameLayout.LayoutParams(fixedSize, fixedSize).apply {
                     leftMargin = box.left
-                    topMargin = box.top - (box.height() * 0.4).toInt()
+                    topMargin = box.top
                 }
                 clicksLayer.addView(charContainer, charParams)
 
-                val textView = TextView(this).apply {
+                val textView = CenteredTextView(this).apply {
                     text = char
-                    setTextColor(android.graphics.Color.RED)
-                    gravity = Gravity.CENTER
+                    setTextColor(android.graphics.Color.parseColor("#FF7777")) // Light Red
                     typeface = android.graphics.Typeface.DEFAULT
-                    val fontSize = if (line.isVertical) box.width().toFloat() else box.height().toFloat()
-                    setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, fontSize)
+                    setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, fixedSize.toFloat())
                     setPadding(0, 0, 0, 0)
                     includeFontPadding = false
                     isClickable = false
@@ -444,7 +464,8 @@ class OcrAccessibilityService : AccessibilityService() {
                     }
                 }
                 textView.tag = currentIdx
-                charContainer.addView(textView, FrameLayout.LayoutParams(box.width(), FrameLayout.LayoutParams.MATCH_PARENT))
+                val textLp = FrameLayout.LayoutParams(fixedSize, fixedSize, Gravity.CENTER)
+                charContainer.addView(textView, textLp)
                 textViews.add(textView)
 
                 val boxView = View(this).apply {
