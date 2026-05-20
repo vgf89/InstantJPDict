@@ -659,7 +659,8 @@ class OcrAccessibilityService : AccessibilityService() {
                 text = "No results found for \"${activeAllChars.getOrNull(currentTappedIdx)}\""
                 setTextColor(android.graphics.Color.GRAY)
                 gravity = Gravity.CENTER
-                setPadding(0, 100, 0, 0)
+                textSize = 16f
+                setPadding(0, 150, 0, 0)
             })
         } else {
             val scrollView = ScrollView(this).apply {
@@ -668,57 +669,106 @@ class OcrAccessibilityService : AccessibilityService() {
             }
             val scrollContent = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
-                setPadding(0, 0, 0, 100)
+                setPadding(10, 0, 10, 150)
             }
-            // ... (fill dictionary results, same as before)
+            
             for ((_, entries) in matches) {
                 val termSection = LinearLayout(this).apply {
                     orientation = LinearLayout.VERTICAL
-                    setPadding(0, 20, 0, 40)
+                    setPadding(0, 10, 0, 50)
                 }
+                
+                // Grouping by readings to combine variations
                 val entriesByReading = entries.groupBy { it.reading }
-                for ((_, readingEntries) in entriesByReading) {
-                    val entry = readingEntries.first()
-                    val isKanjiEntry = entry.onyomi != null || entry.kunyomi != null
+                
+                for ((reading, readingEntries) in entriesByReading) {
+                    val firstEntry = readingEntries.first()
+                    val isKanjiEntry = firstEntry.onyomi != null || firstEntry.kunyomi != null
+                    
                     val allGlobalTags = mutableSetOf<String>()
                     val allInfoText = mutableSetOf<String>()
+                    
+                    // Collect metadata
                     for (e in readingEntries) {
                         e.jlpt?.takeIf { it.isNotEmpty() }?.let { allInfoText.add("jlpt: N$it") }
-                        val gradeMatch = "grade:([^\\s]+)".toRegex().find(e.rules)
-                        gradeMatch?.groupValues?.get(1)?.let { allInfoText.add("grade: $it") }
+                        "grade:([^\\s]+)".toRegex().find(e.rules)?.groupValues?.get(1)?.let { allInfoText.add("grade: $it") }
+                        
                         val segments = e.rules.split(" | ")
                         val t1 = segments.getOrNull(0)?.split(" ")?.filter { it.isNotEmpty() } ?: emptyList()
                         val rs = segments.getOrNull(1)?.split(" ")?.filter { it.isNotEmpty() } ?: emptyList()
                         val t2 = segments.getOrNull(2)?.split(" ")?.filter { it.isNotEmpty() } ?: emptyList()
                         (t1 + rs + t2).forEach { tag -> if (tag.toIntOrNull() == null && !tag.startsWith("grade:")) allGlobalTags.add(tag) }
                     }
+
+                    // 1. Headword Section
+                    val headwordList = LinearLayout(this).apply {
+                        orientation = LinearLayout.VERTICAL
+                        setPadding(0, 0, 0, 10)
+                    }
+                    
+                    val kanjiVariants = readingEntries.map { it.kanji }.distinct()
+                    
                     if (isKanjiEntry) {
-                        val termHeader = LinearLayout(this).apply {
-                            orientation = LinearLayout.HORIZONTAL
-                            setPadding(0, 10, 0, 10)
-                            gravity = Gravity.CENTER_VERTICAL
+                        kanjiVariants.forEach { kanji ->
+                            val entry = readingEntries.find { it.kanji == kanji } ?: firstEntry
+                            val kanjiHeader = LinearLayout(this).apply {
+                                orientation = LinearLayout.HORIZONTAL
+                                gravity = Gravity.CENTER_VERTICAL
+                                setPadding(0, 5, 0, 5)
+                            }
+                            kanjiHeader.addView(TextView(this).apply {
+                                text = kanji
+                                setTextColor(android.graphics.Color.CYAN)
+                                textSize = 48f
+                                typeface = android.graphics.Typeface.DEFAULT_BOLD
+                                setPadding(0, 0, 30, 0)
+                            })
+                            val readingStack = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+                            entry.onyomi?.takeIf { it.isNotEmpty() }?.let { readingStack.addView(TextView(this).apply { text = "ON: ${it.replace(" ", "、")}"; setTextColor(android.graphics.Color.LTGRAY); textSize = 14f }) }
+                            entry.kunyomi?.takeIf { it.isNotEmpty() }?.let { readingStack.addView(TextView(this).apply { text = "KUN: ${it.replace(" ", "、")}"; setTextColor(android.graphics.Color.LTGRAY); textSize = 14f }) }
+                            kanjiHeader.addView(readingStack)
+                            headwordList.addView(kanjiHeader)
                         }
-                        termHeader.addView(TextView(this).apply {
-                            text = entry.kanji
-                            setTextColor(android.graphics.Color.CYAN)
-                            textSize = 48f
-                            typeface = android.graphics.Typeface.DEFAULT_BOLD
-                            setPadding(0, 0, 40, 0)
-                        })
-                        val readingContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-                        entry.onyomi?.takeIf { it.isNotEmpty() }?.let { readingContainer.addView(TextView(this).apply { text = "on: ${it.replace(" ", "、")}"; setTextColor(android.graphics.Color.LTGRAY); textSize = 14f; includeFontPadding = false }) }
-                        entry.kunyomi?.takeIf { it.isNotEmpty() }?.let { readingContainer.addView(TextView(this).apply { text = "kun: ${it.replace(" ", "、")}"; setTextColor(android.graphics.Color.LTGRAY); textSize = 14f; includeFontPadding = false }) }
-                        if (allInfoText.isNotEmpty()) { readingContainer.addView(TextView(this).apply { text = "${allInfoText.joinToString(", ")}"; setTextColor(android.graphics.Color.parseColor("#666666")); textSize = 11f; includeFontPadding = false }) }
-                        termHeader.addView(readingContainer)
-                        termSection.addView(termHeader)
                     } else {
-                        termSection.addView(createRubyView(entry.kanji, entry.reading))
+                        // For words, list all kanji variants with the same reading
+                        val headwordScroll = HorizontalScrollView(this).apply {
+                            isHorizontalScrollBarEnabled = false
+                            overScrollMode = View.OVER_SCROLL_NEVER
+                        }
+                        val flow = LinearLayout(this).apply { 
+                            orientation = LinearLayout.HORIZONTAL 
+                            setPadding(0, 5, 0, 5)
+                            gravity = Gravity.BOTTOM
+                        }
+                        kanjiVariants.forEachIndexed { i, kanji ->
+                            flow.addView(createRubyView(kanji, reading))
+                            if (i < kanjiVariants.size - 1) {
+                                flow.addView(TextView(this).apply {
+                                    text = "、"
+                                    setTextColor(android.graphics.Color.GRAY)
+                                    textSize = 24f
+                                    setPadding(0, 0, 0, 0)
+                                    gravity = Gravity.BOTTOM
+                                    includeFontPadding = false
+                                })
+                            }
+                        }
+                        headwordScroll.addView(flow)
+                        headwordList.addView(headwordScroll)
                     }
-                    val metadataContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 5, 0, 10) }
-                    termSection.addView(metadataContainer)
-                    if (!isKanjiEntry && allInfoText.isNotEmpty()) {
-                        metadataContainer.addView(TextView(this).apply { text = "${allInfoText.joinToString(", ")}"; setTextColor(android.graphics.Color.parseColor("#666666")); textSize = 11f; setPadding(20, 5, 0, 0) })
+                    termSection.addView(headwordList)
+
+                    // 2. Global Tags (POS, field, etc.)
+                    if (allGlobalTags.isNotEmpty()) {
+                        addTagsToContainer(termSection, allGlobalTags.toList(), "pos")
                     }
+                    
+                    // 3. Metadata (JLPT, Grade, Frequencies)
+                    if (allInfoText.isNotEmpty()) {
+                        renderFrequency(termSection, allInfoText.joinToString(", "))
+                    }
+
+                    // 4. Definitions
                     for (e in readingEntries) {
                         try {
                             val definitions = gson.fromJson<Any>(e.definitions, Any::class.java)
@@ -726,33 +776,86 @@ class OcrAccessibilityService : AccessibilityService() {
                                 val segments = e.rules.split(" | ")
                                 val t1 = segments.getOrNull(0)?.split(" ")?.filter { it.isNotEmpty() } ?: emptyList()
                                 val t2 = segments.getOrNull(2)?.split(" ")?.filter { it.isNotEmpty() } ?: emptyList()
+                                
                                 val senseToTags = mutableMapOf<Int, MutableList<String>>()
                                 val unnumberedTags = mutableListOf<String>()
-                                fun parseSenseTags(tagList: List<String>) {
-                                    var currentSenseNum: Int? = null
+                                fun parseTags(tagList: List<String>) {
+                                    var curr: Int? = null
                                     for (tag in tagList) {
-                                        val num = tag.toIntOrNull()
-                                        if (num != null) currentSenseNum = num
-                                        else { if (currentSenseNum != null) senseToTags.getOrPut(currentSenseNum) { mutableListOf() }.add(tag) else unnumberedTags.add(tag) }
+                                        val n = tag.toIntOrNull()
+                                        if (n != null) curr = n else { if (curr != null) senseToTags.getOrPut(curr) { mutableListOf() }.add(tag) else unnumberedTags.add(tag) }
                                     }
                                 }
-                                parseSenseTags(t1); parseSenseTags(t2)
+                                parseTags(t1); parseTags(t2)
+
                                 definitions.forEachIndexed { index, sense ->
                                     val senseNum = index + 1
-                                    val tagsForThisSense = mutableListOf<String>()
-                                    senseToTags[senseNum]?.let { tagsForThisSense.addAll(it) }
-                                    if (definitions.size == 1 && senseToTags.isNotEmpty()) senseToTags.values.forEach { tagsForThisSense.addAll(it) }
-                                    tagsForThisSense.addAll(unnumberedTags)
-                                    val finalSenseTags = tagsForThisSense.distinct().filter { it.toIntOrNull() == null && !it.startsWith("grade:") }
-                                    if (finalSenseTags.isNotEmpty()) { termSection.addView(TextView(this@OcrAccessibilityService).apply { text = finalSenseTags.joinToString(", "); setTextColor(android.graphics.Color.parseColor("#666666")); textSize = 11f; setPadding(20, 5, 0, 0) }) }
-                                    renderDefinition(termSection, sense, 0)
+                                    val senseBox = LinearLayout(this@OcrAccessibilityService).apply {
+                                        orientation = LinearLayout.VERTICAL
+                                        setPadding(20, 4, 0, 4)
+                                    }
+                                    
+                                    val tagsForSense = (senseToTags[senseNum] ?: mutableListOf<String>()) + unnumberedTags
+                                    val filteredTags = tagsForSense.distinct().filter { it.toIntOrNull() == null && !it.startsWith("grade:") }
+                                    
+                                    if (filteredTags.isNotEmpty()) {
+                                        val tagFlow = LinearLayout(this@OcrAccessibilityService).apply {
+                                            orientation = LinearLayout.HORIZONTAL
+                                            setPadding(0, 0, 0, 4)
+                                        }
+                                        filteredTags.forEach { tag ->
+                                            val tagView = TextView(this@OcrAccessibilityService).apply {
+                                                text = formatTag(tag)
+                                                setTextColor(android.graphics.Color.parseColor("#999999"))
+                                                textSize = 10f
+                                                setPadding(0, 0, 15, 0)
+                                                typeface = android.graphics.Typeface.defaultFromStyle(android.graphics.Typeface.ITALIC)
+                                            }
+                                            tagFlow.addView(tagView)
+                                        }
+                                        senseBox.addView(tagFlow)
+                                    }
+                                    
+                                    renderDefinition(senseBox, sense, 0, forceBullet = definitions.size > 1, senseIndex = senseNum)
+                                    termSection.addView(senseBox)
                                 }
-                            } else { renderDefinition(termSection, definitions) }
+                            } else {
+                                renderDefinition(termSection, definitions)
+                            }
                         } catch (ex: Exception) {
-                            termSection.addView(TextView(this).apply { text = e.definitions; setTextColor(android.graphics.Color.WHITE); textSize = 15f; setPadding(20, 10, 0, 10) })
+                            termSection.addView(TextView(this).apply { text = e.definitions; setTextColor(android.graphics.Color.WHITE); textSize = 15f; setPadding(40, 10, 0, 10) })
                         }
                     }
-                    termSection.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1).apply { topMargin = 20; bottomMargin = 20 }; setBackgroundColor(android.graphics.Color.DKGRAY); alpha = 0.3f })
+                    
+                    // 5. Grid of variations/other readings for this Kanji match
+                    val allOtherReadings = entries.map { it.reading }.distinct().filter { it != reading }
+                    if (allOtherReadings.isNotEmpty()) {
+                        val gridLabel = TextView(this).apply { text = "Other Readings"; setTextColor(android.graphics.Color.GRAY); textSize = 10f; setPadding(20, 20, 0, 10) }
+                        termSection.addView(gridLabel)
+                        
+                        val hScroll = HorizontalScrollView(this).apply { 
+                            isHorizontalScrollBarEnabled = false
+                            setPadding(20, 0, 20, 0)
+                        }
+                        val scrollContent = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                        allOtherReadings.take(10).forEach { otherReading ->
+                            scrollContent.addView(TextView(this).apply {
+                                text = otherReading
+                                setTextColor(android.graphics.Color.parseColor("#bbbbbb"))
+                                textSize = 11f
+                                setPadding(18, 8, 18, 8)
+                                background = GradientDrawable().apply { 
+                                    setStroke(1, android.graphics.Color.parseColor("#444444"))
+                                    cornerRadius = 6f 
+                                }
+                                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { rightMargin = 15 }
+                            })
+                        }
+                        hScroll.addView(scrollContent)
+                        termSection.addView(hScroll)
+                    }
+
+                    termSection.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1).apply { topMargin = 30; bottomMargin = 10 }; setBackgroundColor(android.graphics.Color.DKGRAY); alpha = 0.2f })
                 }
                 scrollContent.addView(termSection)
             }
@@ -1136,41 +1239,126 @@ class OcrAccessibilityService : AccessibilityService() {
         }
     }
 
+    private fun createTagView(tag: String, category: String = "general"): View {
+        val color = when {
+            category == "pos" || tag.startsWith("v") || tag == "adj-i" || tag == "adj-na" -> android.graphics.Color.parseColor("#3a5a7a")
+            tag == "n" || tag == "adv" || tag == "pn" -> android.graphics.Color.parseColor("#3a7a5a")
+            category == "meta" || tag.startsWith("jlpt") || tag.startsWith("grade") || tag == "★" -> android.graphics.Color.parseColor("#7a3a3a")
+            else -> android.graphics.Color.parseColor("#444444")
+        }
+        return TextView(this).apply {
+            text = formatTag(tag)
+            setTextColor(android.graphics.Color.WHITE)
+            textSize = 10f
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            setPadding(12, 2, 12, 2)
+            background = GradientDrawable().apply {
+                setColor(color)
+                cornerRadius = 6f
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(0, 0, 12, 0) }
+        }
+    }
+
+    private fun addTagsToContainer(container: LinearLayout, tags: List<String>, category: String = "general") {
+        if (tags.isEmpty()) return
+        val hScroll = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+        }
+        val tagContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(20, 8, 20, 8)
+        }
+        tags.distinct().forEach { tag ->
+            tagContainer.addView(createTagView(tag, category))
+        }
+        hScroll.addView(tagContainer)
+        container.addView(hScroll)
+    }
+
+    private fun renderFrequency(container: LinearLayout, frequencyText: String) {
+        val flow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(20, 4, 20, 4)
+        }
+        frequencyText.split(",").map { it.trim() }.filter { it.isNotEmpty() }.forEach { chip ->
+            flow.addView(TextView(this).apply {
+                text = chip
+                setTextColor(android.graphics.Color.parseColor("#888888"))
+                textSize = 9f
+                setPadding(10, 2, 10, 2)
+                background = GradientDrawable().apply {
+                    setStroke(1, android.graphics.Color.parseColor("#333333"))
+                    cornerRadius = 4f
+                }
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { setMargins(0, 0, 10, 0) }
+            })
+        }
+        container.addView(flow)
+    }
+
     private fun formatTag(tag: String): String {
         return when(tag) {
-            "v1" -> "v1"
-            "v5" -> "v5"
-            "v5k", "v5k-s" -> "v5k"
-            "v5s" -> "v5s"
-            "v5t" -> "v5t"
-            "v5n" -> "v5n"
-            "v5m" -> "v5m"
-            "v5r", "v5r-i" -> "v5r"
-            "v5w" -> "v5w"
-            "v5g" -> "v5g"
-            "v5z" -> "v5z"
-            "v5b" -> "v5b"
-            "vs", "vs-i", "vs-s" -> "vs"
-            "vi" -> "vi"
-            "vt" -> "vt"
+            "v1" -> "1-dan"
+            "v5", "v5k", "v5s", "v5t", "v5n", "v5m", "v5r", "v5w", "v5g", "v5z", "v5b" -> "5-dan"
+            "vs", "vs-i", "vs-s" -> "suru"
+            "vi" -> "intrans"
+            "vt" -> "trans"
             "adj-i" -> "adj-i"
             "adj-na" -> "adj-na"
-            "n" -> "n"
+            "n" -> "noun"
             "adv" -> "adv"
-            "pn" -> "pn"
-            "p" -> "p"
+            "pn" -> "pronoun"
+            "p" -> "particle"
+            "exp" -> "phrase"
+            "aux" -> "aux"
+            "ctr" -> "count"
+            "conj" -> "conj"
+            "num" -> "num"
+            "int" -> "intj"
+            "suf" -> "suffix"
+            "pref" -> "prefix"
+            "arch" -> "archaic"
+            "dated" -> "dated"
+            "hist" -> "hist"
+            "sl" -> "slang"
+            "col" -> "colloq"
+            "obs" -> "obsolete"
             else -> tag
         }
     }
 
-    private fun createRubyView(term: String, reading: String): View {
+    private fun createRubyView(term: String, reading: String, isMini: Boolean = false): View {
         if (term == reading) {
-            return TextView(this).apply {
+            val container = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_HORIZONTAL
+            }
+            // Add an empty space to match the height of ruby views
+            if (!isMini) {
+                container.addView(TextView(this).apply {
+                    text = " "
+                    textSize = 13f
+                    setPadding(0, 0, 0, 0)
+                    includeFontPadding = false
+                })
+            }
+            container.addView(TextView(this).apply {
                 text = term
                 setTextColor(android.graphics.Color.CYAN)
-                textSize = 28f
+                textSize = if (isMini) 20f else 32f
                 typeface = android.graphics.Typeface.DEFAULT_BOLD
-            }
+                setPadding(0, 0, 0, 0)
+                includeFontPadding = false
+            })
+            return container
         }
 
         val container = LinearLayout(this).apply {
@@ -1198,7 +1386,7 @@ class OcrAccessibilityService : AccessibilityService() {
             container.addView(TextView(this).apply {
                 text = prefix
                 setTextColor(android.graphics.Color.CYAN)
-                textSize = 28f
+                textSize = if (isMini) 20f else 32f
                 typeface = android.graphics.Typeface.DEFAULT_BOLD
                 setPadding(0, 0, 0, 0)
                 includeFontPadding = false
@@ -1213,7 +1401,7 @@ class OcrAccessibilityService : AccessibilityService() {
             rubyItem.addView(TextView(this).apply {
                 text = readingMid
                 setTextColor(android.graphics.Color.LTGRAY)
-                textSize = 12f
+                textSize = if (isMini) 10f else 13f
                 gravity = Gravity.CENTER
                 setPadding(0, 0, 0, 0)
                 includeFontPadding = false
@@ -1221,7 +1409,7 @@ class OcrAccessibilityService : AccessibilityService() {
             rubyItem.addView(TextView(this).apply {
                 text = termMid
                 setTextColor(android.graphics.Color.CYAN)
-                textSize = 28f
+                textSize = if (isMini) 20f else 32f
                 typeface = android.graphics.Typeface.DEFAULT_BOLD
                 gravity = Gravity.CENTER
                 setPadding(0, 0, 0, 0)
@@ -1234,7 +1422,7 @@ class OcrAccessibilityService : AccessibilityService() {
             container.addView(TextView(this).apply {
                 text = suffix
                 setTextColor(android.graphics.Color.CYAN)
-                textSize = 28f
+                textSize = if (isMini) 20f else 32f
                 typeface = android.graphics.Typeface.DEFAULT_BOLD
                 setPadding(0, 0, 0, 0)
                 includeFontPadding = false
@@ -1244,40 +1432,71 @@ class OcrAccessibilityService : AccessibilityService() {
         return container
     }
 
-    private fun renderDefinition(container: LinearLayout, data: Any?, level: Int = 0, forceBullet: Boolean = false) {
+    private fun renderDefinition(container: LinearLayout, data: Any?, level: Int = 0, forceBullet: Boolean = false, senseIndex: Int? = null) {
         when (data) {
             is String -> {
                 container.addView(TextView(this).apply {
-                    val shouldBullet = level == 0 || forceBullet
-                    text = if (shouldBullet) "• $data" else data
+                    val prefix = when {
+                        senseIndex != null -> {
+                            val circled = listOf("①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩")
+                            circled.getOrNull(senseIndex - 1) ?: "$senseIndex."
+                        }
+                        forceBullet || level > 0 -> "•"
+                        else -> ""
+                    }
+                    text = if (prefix.isNotEmpty()) "$prefix $data" else data
                     setTextColor(android.graphics.Color.WHITE)
-                    textSize = 16f
-                    setPadding(20 * level, 0, 0, 0)
+                    textSize = 15f
+                    setPadding(25 * level, 2, 0, 2)
+                    setLineSpacing(0f, 1.1f)
                 })
             }
             is List<*> -> {
-                for (item in data) {
-                    renderDefinition(container, item, level, forceBullet)
+                data.forEachIndexed { i, item ->
+                    renderDefinition(container, item, level, forceBullet = forceBullet || data.size > 1, senseIndex = if (i == 0) senseIndex else null)
                 }
             }
             is Map<*, *> -> {
-                // Handle Yomitan Structured Content
                 val tag = data["tag"] as? String
-                val isListItem = tag == "li"
+                val scClass = data["data-sc-class"] as? String
+                val scContent = data["data-sc-content"] as? String
                 val content = data["content"] ?: data["list"]
+
+                if (tag == "ruby") {
+                    val c = content as? List<*>
+                    if (c != null && c.size >= 2) {
+                        val term = c[0].toString()
+                        val rt = (c[1] as? Map<*, *>)?.get("content")?.toString() ?: ""
+                        container.addView(createRubyView(term, rt, isMini = true))
+                        return
+                    }
+                }
+
+                if (scClass == "example-sentence" || scContent?.startsWith("example-sentence") == true) {
+                    val exampleBox = LinearLayout(this).apply {
+                        orientation = LinearLayout.VERTICAL
+                        setPadding(40, 10, 0, 10)
+                        background = GradientDrawable().apply {
+                            setColor(android.graphics.Color.argb(15, 255, 255, 255))
+                            cornerRadius = 8f
+                        }
+                        layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = 10; bottomMargin = 10 }
+                    }
+                    renderDefinition(exampleBox, content, 0)
+                    container.addView(exampleBox)
+                    return
+                }
+
                 if (content != null) {
-                    // Carry over the bullet requirement if we are at the top level of a sense
-                    // or if this specific element is a list item.
-                    renderDefinition(container, content, level + 1, forceBullet || level == 0 || isListItem)
+                    renderDefinition(container, content, level + (if (tag == "li") 1 else 0), forceBullet = tag == "li")
                 } else {
-                    // KANJIDIC: sometimes just a map of fields
-                    data.forEach { (key, value) ->
-                         // Filter out keys we might not want to display
-                         if (key !in listOf("ucs", "strokes", "skip")) {
+                    data.forEach { (k, v) ->
+                         if (k !in listOf("tag", "content", "list", "data-sc-type", "data-sc-class", "data-sc-content", "ucs", "strokes", "skip")) {
                              container.addView(TextView(this).apply {
-                                text = "$key: $value"
-                                setTextColor(android.graphics.Color.LTGRAY)
-                                textSize = 14f
+                                text = "$k: $v"
+                                setTextColor(android.graphics.Color.GRAY)
+                                textSize = 12f
+                                setPadding(25 * level, 2, 0, 2)
                              })
                          }
                     }
