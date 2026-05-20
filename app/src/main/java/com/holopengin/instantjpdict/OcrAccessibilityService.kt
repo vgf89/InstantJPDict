@@ -54,6 +54,7 @@ class OcrAccessibilityService : AccessibilityService() {
     private lateinit var deinflector: Deinflector
     private val gson = Gson()
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    private var ocrJob: kotlinx.coroutines.Job? = null
     
     private val screenOffReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -269,14 +270,14 @@ class OcrAccessibilityService : AccessibilityService() {
         }
         rootLayout.addView(debugTextView, debugParams)
 
-        val progressBar = ProgressBar(this).apply {
+        val progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             isIndeterminate = true
         }
         val progressParams = FrameLayout.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.WRAP_CONTENT
+            WindowManager.LayoutParams.MATCH_PARENT,
+            (4 * resources.displayMetrics.density).toInt()
         ).apply {
-            gravity = Gravity.CENTER
+            gravity = Gravity.TOP
         }
         rootLayout.addView(progressBar, progressParams)
 
@@ -335,19 +336,17 @@ class OcrAccessibilityService : AccessibilityService() {
         }
         rootLayout.addView(closeButton, lp)
 
-        serviceScope.launch {
+        ocrJob = serviceScope.launch {
             try {
                 if (ocrEngine.isReady()) {
                     debugTextView.text = "Running detection..."
                     val lineBoxes = withContext(Dispatchers.IO) { ocrEngine.detect(bitmap) }
                     
                     debugTextView.text = "Found ${lineBoxes.size} lines. Recognizing..."
-                    val results = withContext(Dispatchers.IO) { ocrEngine.recognize(bitmap, lineBoxes) }
                     
-                    debugTextView.text = "Found ${results.sumOf { it.charBoxes.size }} characters."
-                    debugTextView.bringToFront()
-                    progressBar.visibility = View.GONE
-                    
+                    val linesBorderLayer = FrameLayout(this@OcrAccessibilityService)
+                    rootLayout.addView(linesBorderLayer, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+
                     lineBoxes.forEach { box ->
                         val lineView = View(this@OcrAccessibilityService).apply {
                             background = borderDrawable
@@ -356,14 +355,35 @@ class OcrAccessibilityService : AccessibilityService() {
                             leftMargin = box.left
                             topMargin = box.top
                         }
-                        rootLayout.addView(lineView, lineParams)
+                        linesBorderLayer.addView(lineView, lineParams)
                     }
 
-                    drawResults(rootLayout, results)
-                    
-                    results.forEach { line ->
-                        Log.i("OcrAccessibilityService", "Recognized: ${line.text}")
+                    val marginsLayer = FrameLayout(this@OcrAccessibilityService)
+                    val clicksLayer = FrameLayout(this@OcrAccessibilityService)
+                    rootLayout.addView(marginsLayer, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+                    rootLayout.addView(clicksLayer, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+
+                    boxViews.clear()
+                    textViews.clear()
+                    activeLineResults = mutableListOf()
+                    activeAllChars = mutableListOf()
+                    activeAllAlternatives = mutableListOf()
+                    activeCharInfos = mutableListOf()
+
+                    withContext(Dispatchers.IO) {
+                        ocrEngine.recognizeStreaming(bitmap, lineBoxes) { lineResult ->
+                            if (screenshotOverlay == null) return@recognizeStreaming
+                            // Switch to Main thread for UI updates
+                            serviceScope.launch {
+                                addLineToResults(rootLayout, marginsLayer, clicksLayer, lineResult)
+                                debugTextView.text = "Recognized ${activeLineResults.size}/${lineBoxes.size} lines..."
+                                debugTextView.bringToFront()
+                            }
+                        }
                     }
+
+                    debugTextView.text = "Recognition complete. Found ${activeAllChars.size} characters."
+                    progressBar.visibility = View.GONE
                 } else {
                     debugTextView.text = "Error: OCR Engine not ready"
                     progressBar.visibility = View.GONE
@@ -375,6 +395,141 @@ class OcrAccessibilityService : AccessibilityService() {
                 debugTextView.bringToFront()
                 progressBar.visibility = View.GONE
                 Toast.makeText(this@OcrAccessibilityService, "OCR Error: $errorMsg", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun addLineToResults(rootLayout: FrameLayout, marginsLayer: FrameLayout, clicksLayer: FrameLayout, line: LineResult) {
+        if (screenshotOverlay == null) return
+        val lineIdx = activeLineResults.size
+        (activeLineResults as MutableList).add(line)
+        activeAllChars.addAll(line.text.toList())
+        activeAllAlternatives = activeAllAlternatives + line.alternatives
+
+        val margin = 50
+        val fixedSize = if (line.isVertical) {
+            line.charBoxes.map { it.width() }.maxOrNull() ?: 0
+        } else {
+            line.charBoxes.map { it.height() }.maxOrNull() ?: 0
+        }
+
+        var lastX = -1
+        var lastY = -1
+
+        for (i in line.charBoxes.indices) {
+            val originalBox = line.charBoxes[i]
+            var centerX = originalBox.centerX()
+            var centerY = originalBox.centerY()
+            
+            if (i == line.charBoxes.size - 1 && i > 0) {
+                if (line.isVertical) centerY = lastY + fixedSize
+                else centerX = lastX + fixedSize
+            }
+
+            val box = Rect(
+                centerX - fixedSize / 2,
+                centerY - fixedSize / 2,
+                centerX + fixedSize / 2,
+                centerY + fixedSize / 2
+            )
+            
+            lastX = centerX
+            lastY = centerY
+
+            val char = line.text.getOrNull(i)?.toString() ?: ""
+            val currentIdx = activeCharInfos.size
+            (activeCharInfos as MutableList).add(CharInfo(lineIdx, i, box))
+            
+            val marginBlocker = View(this).apply {
+                isClickable = true
+                setOnClickListener { }
+            }
+            val marginParams = FrameLayout.LayoutParams(box.width() + 2 * margin, box.height() + 2 * margin).apply {
+                leftMargin = box.left - margin
+                topMargin = box.top - margin
+            }
+            marginsLayer.addView(marginBlocker, marginParams)
+
+            val charContainer = FrameLayout(this)
+            val charParams = FrameLayout.LayoutParams(fixedSize, fixedSize).apply {
+                leftMargin = box.left
+                topMargin = box.top
+            }
+            clicksLayer.addView(charContainer, charParams)
+
+            val textView = CenteredTextView(this).apply {
+                text = char
+                setTextColor(android.graphics.Color.parseColor("#FF7777"))
+                typeface = android.graphics.Typeface.DEFAULT
+                setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, fixedSize.toFloat() * 1.05f)
+                setPadding(0, 0, 0, 0)
+                includeFontPadding = false
+                isClickable = false
+                
+                if (line.isVertical) {
+                    textLocale = java.util.Locale.JAPANESE
+                    fontFeatureSettings = "'vert' 1"
+                }
+            }
+            textView.tag = currentIdx
+            charContainer.addView(textView, FrameLayout.LayoutParams(fixedSize, fixedSize, Gravity.CENTER))
+            textViews.add(textView)
+
+            val boxView = View(this).apply {
+                background = null
+                isClickable = true
+            }
+            charContainer.addView(boxView, FrameLayout.LayoutParams(box.width(), box.height(), Gravity.CENTER))
+
+            boxView.setOnClickListener {
+                performLookup(currentIdx, rootLayout)
+            }
+
+            // Append character view to correction panel if it's currently open
+            val isLandscape = rootLayout.width > rootLayout.height
+            val neighborPanel = rootLayout.findViewWithTag<LinearLayout>("neighbor_scroll_panel")
+            if (neighborPanel != null) {
+                val rootHeight = rootLayout.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
+                val rootWidth = rootLayout.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
+                val itemSize = (if (isLandscape) rootHeight else rootWidth) / 11
+                val estimatedTextSize = (itemSize * 0.45 / resources.displayMetrics.density).toFloat().coerceIn(12f, 22f)
+                val itemLp = LinearLayout.LayoutParams(itemSize, itemSize).apply { setMargins(2, 2, 2, 2) }
+                
+                val neighborTextView = TextView(this).apply {
+                    tag = "neighbor_char_$currentIdx"
+                    text = char
+                    setTextColor(android.graphics.Color.WHITE)
+                    textSize = estimatedTextSize
+                    gravity = Gravity.CENTER
+                    setBackgroundColor(android.graphics.Color.argb(255, 65, 65, 65))
+                    
+                    if (isLandscape) {
+                        textLocale = java.util.Locale.JAPANESE
+                        fontFeatureSettings = "'vert' 1"
+                    }
+                    
+                    setOnClickListener {
+                        if (currentTappedIdx == currentIdx) toggleAlternativesPanel(rootLayout, currentIdx, isLandscape)
+                        else {
+                            val oldIdx = currentTappedIdx
+                            currentTappedIdx = currentIdx
+                            neighborPanel.findViewWithTag<View>("neighbor_char_$oldIdx")?.let { 
+                                it.setBackgroundColor(android.graphics.Color.argb(255, 65, 65, 65))
+                                (it as TextView).setTextColor(android.graphics.Color.WHITE) 
+                            }
+                            this.setBackgroundColor(android.graphics.Color.YELLOW)
+                            this.setTextColor(android.graphics.Color.BLACK)
+                            
+                            val altContainer = rootLayout.findViewWithTag<FrameLayout>("alternatives_container")
+                            if (altContainer != null && altContainer.childCount > 0) {
+                                updateAlternativesPanelContent(altContainer, currentIdx, isLandscape, rootLayout)
+                            }
+                            
+                            performLookup(currentIdx, rootLayout, skipCenter = true)
+                        }
+                    }
+                }
+                neighborPanel.addView(neighborTextView, itemLp)
             }
         }
     }
@@ -1087,6 +1242,8 @@ class OcrAccessibilityService : AccessibilityService() {
     }
 
     private fun hideScreenshotOverlay() {
+        ocrJob?.cancel()
+        ocrJob = null
         val root = screenshotOverlay ?: return
         (floatingView?.parent as? android.view.ViewGroup)?.removeView(floatingView)
         if (root.isAttachedToWindow) try { windowManager?.removeViewImmediate(root) } catch (e: Exception) { Log.e("OcrAccessibilityService", "Error removing overlay", e) }
