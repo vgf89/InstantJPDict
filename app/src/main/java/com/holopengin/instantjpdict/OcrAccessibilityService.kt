@@ -88,13 +88,6 @@ class OcrAccessibilityService : AccessibilityService() {
         }
     }
 
-    private val highlightDrawable by lazy {
-        GradientDrawable().apply {
-            setStroke(4, android.graphics.Color.YELLOW)
-            cornerRadius = 4f
-        }
-    }
-
     override fun onCreate() {
         super.onCreate()
         ocrEngine = MeikiOcrEngine(this)
@@ -181,14 +174,12 @@ class OcrAccessibilityService : AccessibilityService() {
         })
 
         ocrButton?.setOnClickListener {
-            // Task 5: Toggle overlay
             if (screenshotOverlay != null) {
                 hideScreenshotOverlay()
                 return@setOnClickListener
             }
             
             floatingView?.visibility = View.GONE
-            // Give the system a moment to hide the view before taking the screenshot
             it.postDelayed({
                 triggerCapture { bitmap ->
                     showScreenshotOverlay(bitmap)
@@ -226,7 +217,6 @@ class OcrAccessibilityService : AccessibilityService() {
         if (screenshotOverlay != null) return
         screenshotBitmap = bitmap
 
-        // Task 2: Underneath system UI (try FLAG_LAYOUT_IN_SCREEN with FLAG_LAYOUT_NO_LIMITS for full screen)
         val params = WindowManager.LayoutParams().apply {
             type = WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
             format = PixelFormat.TRANSLUCENT
@@ -240,7 +230,6 @@ class OcrAccessibilityService : AccessibilityService() {
         }
 
         val rootLayout = FrameLayout(this).apply {
-            // Task 2: Try to keep system UI visible
             systemUiVisibility = View.SYSTEM_UI_FLAG_LAYOUT_STABLE or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
             setOnClickListener {
                 if (findViewWithTag<View>("manual_input_blocker") != null) {
@@ -294,7 +283,6 @@ class OcrAccessibilityService : AccessibilityService() {
         screenshotOverlay = rootLayout
         windowManager?.addView(screenshotOverlay, params)
         
-        // Task 5: Add a separate Close button in the overlay
         val closeButton = Button(this).apply {
             text = "Close OCR"
             setOnClickListener { hideScreenshotOverlay() }
@@ -321,7 +309,6 @@ class OcrAccessibilityService : AccessibilityService() {
                             lp.topMargin = newY
                             v.layoutParams = lp
                             
-                            // Update the base position so the main button appears here later
                             floatingParams?.x = newX
                             floatingParams?.y = newY
                             return true
@@ -348,7 +335,6 @@ class OcrAccessibilityService : AccessibilityService() {
         }
         rootLayout.addView(closeButton, lp)
 
-        // Run OCR in background
         serviceScope.launch {
             try {
                 if (ocrEngine.isReady()) {
@@ -362,7 +348,6 @@ class OcrAccessibilityService : AccessibilityService() {
                     debugTextView.bringToFront()
                     progressBar.visibility = View.GONE
                     
-                    // Task 1: Draw line boxes with translucent black background
                     lineBoxes.forEach { box ->
                         val lineView = View(this@OcrAccessibilityService).apply {
                             background = borderDrawable
@@ -374,10 +359,8 @@ class OcrAccessibilityService : AccessibilityService() {
                         rootLayout.addView(lineView, lineParams)
                     }
 
-                    // Draw character results
                     drawResults(rootLayout, results)
                     
-                    // Log results
                     results.forEach { line ->
                         Log.i("OcrAccessibilityService", "Recognized: ${line.text}")
                     }
@@ -412,12 +395,6 @@ class OcrAccessibilityService : AccessibilityService() {
         }
         activeCharInfos = infos
 
-        Log.i("OcrAccessibilityService", "drawResults: allChars.size=${activeAllChars.size}, allAlternatives.size=${activeAllAlternatives.size}")
-
-        // --- LAYERED ARCHITECTURE ---
-        // 1. Bottom layer: Margins that block the overlay from closing but do nothing else.
-        // 2. Top layer: The actual characters and their click listeners.
-        
         val marginsLayer = FrameLayout(this)
         val clicksLayer = FrameLayout(this)
         
@@ -425,7 +402,7 @@ class OcrAccessibilityService : AccessibilityService() {
         rootLayout.addView(clicksLayer, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         
         var charIndex = 0
-        val margin = 50 // Safe zone margin
+        val margin = 50
 
         for (line in results) {
             for (i in line.charBoxes.indices) {
@@ -433,10 +410,9 @@ class OcrAccessibilityService : AccessibilityService() {
                 val char = line.text.getOrNull(i)?.toString() ?: ""
                 val currentIdx = charIndex++
                 
-                // Add margin to the background layer
                 val marginBlocker = View(this).apply {
                     isClickable = true
-                    setOnClickListener { } // Block clicks from reaching rootLayout
+                    setOnClickListener { }
                 }
                 val marginParams = FrameLayout.LayoutParams(box.width() + 2 * margin, box.height() + 2 * margin).apply {
                     leftMargin = box.left - margin
@@ -444,7 +420,6 @@ class OcrAccessibilityService : AccessibilityService() {
                 }
                 marginsLayer.addView(marginBlocker, marginParams)
 
-                // Add character interaction to the foreground layer
                 val charContainer = FrameLayout(this)
                 val charParams = FrameLayout.LayoutParams(box.width(), box.height() + (box.height() * 0.8).toInt()).apply {
                     leftMargin = box.left
@@ -467,10 +442,9 @@ class OcrAccessibilityService : AccessibilityService() {
                 textViews.add(textView)
 
                 val boxView = View(this).apply {
-                    background = null // Entirely transparent
+                    background = null
                     isClickable = true
                 }
-                // Center the clickable box vertically in the container to match character position
                 val boxViewParams = FrameLayout.LayoutParams(box.width(), box.height()).apply {
                     gravity = Gravity.CENTER
                 }
@@ -484,22 +458,19 @@ class OcrAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun performLookup(currentIdx: Int, rootLayout: FrameLayout) {
+    private fun performLookup(currentIdx: Int, rootLayout: FrameLayout, skipCenter: Boolean = false) {
         currentTappedIdx = currentIdx
         val tappedBox = activeCharInfos[currentIdx].box
 
-        // Print top-15 candidates to logcat
         activeAllAlternatives.getOrNull(currentIdx)?.let { alternatives ->
             val logMsg = alternatives.joinToString(", ") { (char, score) ->
                 "$char (${String.format(java.util.Locale.US, "%.8f", score)})"
             }
-            Log.i("OcrAccessibilityService", "Top 15 candidates for '${activeAllChars[currentIdx]}': $logMsg")
+            Log.i("OcrAccessibilityService", "Top 15 candidates: $logMsg")
         }
 
-        // Reset all highlights
         resetHighlights()
 
-        // Immediate feedback for the first character
         if (currentIdx < textViews.size) {
             textViews[currentIdx].setTextColor(android.graphics.Color.YELLOW)
             textViews[currentIdx].typeface = android.graphics.Typeface.DEFAULT_BOLD
@@ -513,9 +484,8 @@ class OcrAccessibilityService : AccessibilityService() {
             val allMatches = mutableListOf<Pair<String, List<com.holopengin.instantjpdict.data.DictionaryEntry>>>()
             var maxMatchedLen = 0
 
-            // 1. Pre-calculate all candidate terms to minimize DB round-trips
-            val candidatesByLength = mutableListOf<Pair<Int, List<Pair<String, List<String>?>>>>()
             val allTermsToSearch = mutableSetOf<String>()
+            val candidatesByLength = mutableListOf<Pair<Int, List<Pair<String, List<String>?>>>>()
 
             for (len in followingText.length downTo 1) {
                 val queryTextRaw = followingText.substring(0, len)
@@ -528,101 +498,57 @@ class OcrAccessibilityService : AccessibilityService() {
                 ).distinct()
 
                 val deinflections = deinflector.deinflect(queryText)
-
                 val lengthCandidates = mutableListOf<Pair<String, List<String>?>>()
-                variants.forEach {
-                    lengthCandidates.add(it to null)
-                    allTermsToSearch.add(it)
-                }
-                deinflections.forEach {
-                    if (it.term != queryText) {
-                        lengthCandidates.add(it.term to it.type)
-                        allTermsToSearch.add(it.term)
-                    }
-                }
+                variants.forEach { lengthCandidates.add(it to null); allTermsToSearch.add(it) }
+                deinflections.forEach { if (it.term != queryText) { lengthCandidates.add(it.term to it.type); allTermsToSearch.add(it.term) } }
                 candidatesByLength.add(len to lengthCandidates)
             }
 
-            // 2. Single Batch Query
             val dbResults = withContext(Dispatchers.IO) {
                 db.dictionaryDao().findByTexts(allTermsToSearch.toList())
             }
 
-            // Group results by the search term (kanji or reading) for fast lookup
             val resultsByTerm = mutableMapOf<String, MutableList<com.holopengin.instantjpdict.data.DictionaryEntry>>()
             dbResults.forEach { entry ->
                 if (entry.kanji in allTermsToSearch) resultsByTerm.getOrPut(entry.kanji) { mutableListOf() }.add(entry)
                 if (entry.reading in allTermsToSearch) resultsByTerm.getOrPut(entry.reading) { mutableListOf() }.add(entry)
             }
 
-            // 3. Process results in order of length (longest first)
             for ((len, candidates) in candidatesByLength) {
                 var foundInThisLen = false
-
                 for ((term, requiredTypes) in candidates) {
                     val termEntries = resultsByTerm[term] ?: continue
-
                     val filteredResults = if (requiredTypes == null) {
-                        // Variant/Direct match: Apply standard Kanji filter
-                        val queryTextRaw = followingText.substring(0, len)
-                        val queryText = JapaneseUtil.normalize(queryTextRaw)
+                        val queryText = JapaneseUtil.normalize(followingText.substring(0, len))
                         termEntries.filter { entry ->
                             val isKanjiEntry = entry.onyomi != null || entry.kunyomi != null
                             !isKanjiEntry || entry.kanji == queryText
                         }
                     } else {
-                        // Deinflection match: Apply type filter
                         termEntries.filter { entry ->
                             val entryTags = entry.rules.split(" ")
-                            requiredTypes.isEmpty() ||
-                                    requiredTypes.any { it in entryTags } ||
+                            requiredTypes.isEmpty() || requiredTypes.any { it in entryTags } ||
                                     (entryTags.any { it.startsWith("v") } && requiredTypes.any { it.startsWith("v") })
                         }
                     }
-
                     if (filteredResults.isNotEmpty()) {
                         allMatches.add(term to filteredResults.distinctBy { it.id })
                         foundInThisLen = true
                     }
                 }
-
-                if (foundInThisLen && maxMatchedLen == 0) {
-                    maxMatchedLen = len
-                }
+                if (foundInThisLen && maxMatchedLen == 0) maxMatchedLen = len
             }
 
             val uniqueMatches = allMatches.distinctBy { it.first }
             withContext(Dispatchers.Main) {
-                if (uniqueMatches.isNotEmpty()) {
-                    // Highlight the entire matched sequence in text
-                    for (i in 0 until maxMatchedLen) {
-                        val targetIdx = currentIdx + i
-                        if (targetIdx < textViews.size) {
-                            textViews[targetIdx].setTextColor(android.graphics.Color.YELLOW)
-                            textViews[targetIdx].typeface = android.graphics.Typeface.DEFAULT_BOLD
-                        }
+                for (i in 0 until maxMatchedLen) {
+                    val targetIdx = currentIdx + i
+                    if (targetIdx < textViews.size) {
+                        textViews[targetIdx].setTextColor(android.graphics.Color.YELLOW)
+                        textViews[targetIdx].typeface = android.graphics.Typeface.DEFAULT_BOLD
                     }
-                    showResultsUi(rootLayout, uniqueMatches, tappedBox)
-                } else {
-                    // Fallback highlight if no dictionary match but was tapped
-                    if (currentIdx < textViews.size) {
-                        textViews[currentIdx].setTextColor(android.graphics.Color.YELLOW)
-                        textViews[currentIdx].typeface = android.graphics.Typeface.DEFAULT_BOLD
-                    }
-
-                    val debugView = rootLayout.findViewWithTag<TextView>("debug_text")
-                    if (debugView != null) {
-                        debugView.text = "No entry found"
-                        debugView.postDelayed({
-                            val currentStatus = debugView.text.toString()
-                            if (currentStatus == "No entry found") {
-                                val count = activeAllChars.size
-                                debugView.text = "Found $count characters."
-                            }
-                        }, 2000)
-                    }
-                    showResultsUi(rootLayout, emptyList(), tappedBox)
                 }
+                showResultsUi(rootLayout, uniqueMatches, tappedBox, skipCenter)
             }
         }
     }
@@ -634,955 +560,400 @@ class OcrAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun showResultsUi(rootLayout: FrameLayout, matches: List<Pair<String, List<com.holopengin.instantjpdict.data.DictionaryEntry>>>, tappedBox: Rect) {
-        rootLayout.findViewWithTag<View>("correction_ui_root")?.let { rootLayout.removeView(it) }
+    private fun showResultsUi(rootLayout: FrameLayout, matches: List<Pair<String, List<com.holopengin.instantjpdict.data.DictionaryEntry>>>, tappedBox: Rect, skipCenter: Boolean = false) {
+        val existingRoot = rootLayout.findViewWithTag<LinearLayout>("correction_ui_root")
+        
+        if (existingRoot != null) {
+            val dictionaryContainer = existingRoot.findViewWithTag<LinearLayout>("dictionary_content_container")
+            if (dictionaryContainer != null) updateDictionaryPanel(dictionaryContainer, matches)
+            
+            val neighborPanel = existingRoot.findViewWithTag<LinearLayout>("neighbor_scroll_panel")
+            if (neighborPanel != null) updateNeighborHighlights(neighborPanel)
+            
+            if (!skipCenter) {
+                val neighborScrollView = existingRoot.findViewWithTag<View>("neighbor_scroll_view")
+                if (neighborScrollView != null) centerNeighborScrollView(neighborScrollView, currentTappedIdx)
+            }
+            return
+        }
 
         val rootWidth = rootLayout.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
         val rootHeight = rootLayout.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
         val isLandscape = rootWidth > rootHeight
-        
-        // Determine panel sizes
         val panelWidth = if (isLandscape) (rootWidth * 0.4).toInt() else FrameLayout.LayoutParams.MATCH_PARENT
         val panelHeight = if (isLandscape) FrameLayout.LayoutParams.MATCH_PARENT else (rootHeight * 0.4).toInt()
 
-        // Dictionary Panel (the original container)
         val dictionaryPanel = LinearLayout(this).apply {
+            tag = "dictionary_content_container"
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(android.graphics.Color.argb(245, 25, 25, 25))
             setPadding(40, 40, 40, 40)
             elevation = 20f
             setOnClickListener { }
         }
-
-        if (matches.isEmpty()) {
-            dictionaryPanel.addView(TextView(this).apply {
-                text = "No results found for \"${activeAllChars.getOrNull(currentTappedIdx)}\""
-                setTextColor(android.graphics.Color.GRAY)
-                gravity = Gravity.CENTER
-                textSize = 16f
-                setPadding(0, 150, 0, 0)
-            })
-        } else {
-            val scrollView = ScrollView(this).apply {
-                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
-                isVerticalScrollBarEnabled = false
-            }
-            val scrollContent = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                setPadding(10, 0, 10, 150)
-            }
-            
-            for ((_, entries) in matches) {
-                val termSection = LinearLayout(this).apply {
-                    orientation = LinearLayout.VERTICAL
-                    setPadding(0, 10, 0, 50)
-                }
-                
-                // Grouping by readings to combine variations
-                val entriesByReading = entries.groupBy { it.reading }
-                
-                for ((reading, readingEntries) in entriesByReading) {
-                    val firstEntry = readingEntries.first()
-                    val isKanjiEntry = firstEntry.onyomi != null || firstEntry.kunyomi != null
-                    
-                    val allGlobalTags = mutableSetOf<String>()
-                    val allInfoText = mutableSetOf<String>()
-                    
-                    // Collect metadata
-                    for (e in readingEntries) {
-                        e.jlpt?.takeIf { it.isNotEmpty() }?.let { allInfoText.add("jlpt: N$it") }
-                        "grade:([^\\s]+)".toRegex().find(e.rules)?.groupValues?.get(1)?.let { allInfoText.add("grade: $it") }
-                        
-                        val segments = e.rules.split(" | ")
-                        val t1 = segments.getOrNull(0)?.split(" ")?.filter { it.isNotEmpty() } ?: emptyList()
-                        val rs = segments.getOrNull(1)?.split(" ")?.filter { it.isNotEmpty() } ?: emptyList()
-                        val t2 = segments.getOrNull(2)?.split(" ")?.filter { it.isNotEmpty() } ?: emptyList()
-                        (t1 + rs + t2).forEach { tag -> if (tag.toIntOrNull() == null && !tag.startsWith("grade:")) allGlobalTags.add(tag) }
-                    }
-
-                    // 1. Headword Section
-                    val headwordList = LinearLayout(this).apply {
-                        orientation = LinearLayout.VERTICAL
-                        setPadding(0, 0, 0, 10)
-                    }
-                    
-                    val kanjiVariants = readingEntries.map { it.kanji }.distinct()
-                    
-                    if (isKanjiEntry) {
-                        kanjiVariants.forEach { kanji ->
-                            val entry = readingEntries.find { it.kanji == kanji } ?: firstEntry
-                            val kanjiHeader = LinearLayout(this).apply {
-                                orientation = LinearLayout.HORIZONTAL
-                                gravity = Gravity.CENTER_VERTICAL
-                                setPadding(0, 5, 0, 5)
-                            }
-                            kanjiHeader.addView(TextView(this).apply {
-                                text = kanji
-                                setTextColor(android.graphics.Color.CYAN)
-                                textSize = 48f
-                                typeface = android.graphics.Typeface.DEFAULT_BOLD
-                                setPadding(0, 0, 30, 0)
-                            })
-                            val readingStack = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-                            entry.onyomi?.takeIf { it.isNotEmpty() }?.let { readingStack.addView(TextView(this).apply { text = "ON: ${it.replace(" ", "、")}"; setTextColor(android.graphics.Color.LTGRAY); textSize = 14f }) }
-                            entry.kunyomi?.takeIf { it.isNotEmpty() }?.let { readingStack.addView(TextView(this).apply { text = "KUN: ${it.replace(" ", "、")}"; setTextColor(android.graphics.Color.LTGRAY); textSize = 14f }) }
-                            kanjiHeader.addView(readingStack)
-                            headwordList.addView(kanjiHeader)
-                        }
-                    } else {
-                        // For words, list all kanji variants with the same reading
-                        val headwordScroll = HorizontalScrollView(this).apply {
-                            isHorizontalScrollBarEnabled = false
-                            overScrollMode = View.OVER_SCROLL_NEVER
-                        }
-                        val flow = LinearLayout(this).apply { 
-                            orientation = LinearLayout.HORIZONTAL 
-                            setPadding(0, 5, 0, 5)
-                            gravity = Gravity.BOTTOM
-                        }
-                        kanjiVariants.forEachIndexed { i, kanji ->
-                            flow.addView(createRubyView(kanji, reading))
-                            if (i < kanjiVariants.size - 1) {
-                                flow.addView(TextView(this).apply {
-                                    text = "、"
-                                    setTextColor(android.graphics.Color.GRAY)
-                                    textSize = 24f
-                                    setPadding(0, 0, 0, 0)
-                                    gravity = Gravity.BOTTOM
-                                    includeFontPadding = false
-                                })
-                            }
-                        }
-                        headwordScroll.addView(flow)
-                        headwordList.addView(headwordScroll)
-                    }
-                    termSection.addView(headwordList)
-
-                    // 2. Global Tags (POS, field, etc.)
-                    if (allGlobalTags.isNotEmpty()) {
-                        addTagsToContainer(termSection, allGlobalTags.toList(), "pos")
-                    }
-                    
-                    // 3. Metadata (JLPT, Grade, Frequencies)
-                    if (allInfoText.isNotEmpty()) {
-                        renderFrequency(termSection, allInfoText.joinToString(", "))
-                    }
-
-                    // 4. Definitions
-                    for (e in readingEntries) {
-                        try {
-                            val definitions = gson.fromJson<Any>(e.definitions, Any::class.java)
-                            if (definitions is List<*>) {
-                                val segments = e.rules.split(" | ")
-                                val t1 = segments.getOrNull(0)?.split(" ")?.filter { it.isNotEmpty() } ?: emptyList()
-                                val t2 = segments.getOrNull(2)?.split(" ")?.filter { it.isNotEmpty() } ?: emptyList()
-                                
-                                val senseToTags = mutableMapOf<Int, MutableList<String>>()
-                                val unnumberedTags = mutableListOf<String>()
-                                fun parseTags(tagList: List<String>) {
-                                    var curr: Int? = null
-                                    for (tag in tagList) {
-                                        val n = tag.toIntOrNull()
-                                        if (n != null) curr = n else { if (curr != null) senseToTags.getOrPut(curr) { mutableListOf() }.add(tag) else unnumberedTags.add(tag) }
-                                    }
-                                }
-                                parseTags(t1); parseTags(t2)
-
-                                definitions.forEachIndexed { index, sense ->
-                                    val senseNum = index + 1
-                                    val senseBox = LinearLayout(this@OcrAccessibilityService).apply {
-                                        orientation = LinearLayout.VERTICAL
-                                        setPadding(20, 4, 0, 4)
-                                    }
-                                    
-                                    val tagsForSense = (senseToTags[senseNum] ?: mutableListOf<String>()) + unnumberedTags
-                                    val filteredTags = tagsForSense.distinct().filter { it.toIntOrNull() == null && !it.startsWith("grade:") }
-                                    
-                                    if (filteredTags.isNotEmpty()) {
-                                        val tagFlow = LinearLayout(this@OcrAccessibilityService).apply {
-                                            orientation = LinearLayout.HORIZONTAL
-                                            setPadding(0, 0, 0, 4)
-                                        }
-                                        filteredTags.forEach { tag ->
-                                            val tagView = TextView(this@OcrAccessibilityService).apply {
-                                                text = formatTag(tag)
-                                                setTextColor(android.graphics.Color.parseColor("#999999"))
-                                                textSize = 10f
-                                                setPadding(0, 0, 15, 0)
-                                                typeface = android.graphics.Typeface.defaultFromStyle(android.graphics.Typeface.ITALIC)
-                                            }
-                                            tagFlow.addView(tagView)
-                                        }
-                                        senseBox.addView(tagFlow)
-                                    }
-                                    
-                                    renderDefinition(senseBox, sense, 0, forceBullet = definitions.size > 1, senseIndex = senseNum)
-                                    termSection.addView(senseBox)
-                                }
-                            } else {
-                                renderDefinition(termSection, definitions)
-                            }
-                        } catch (ex: Exception) {
-                            termSection.addView(TextView(this).apply { text = e.definitions; setTextColor(android.graphics.Color.WHITE); textSize = 15f; setPadding(40, 10, 0, 10) })
-                        }
-                    }
-                    
-                    // 5. Grid of variations/other readings for this Kanji match
-                    val allOtherReadings = entries.map { it.reading }.distinct().filter { it != reading }
-                    if (allOtherReadings.isNotEmpty()) {
-                        val gridLabel = TextView(this).apply { text = "Other Readings"; setTextColor(android.graphics.Color.GRAY); textSize = 10f; setPadding(20, 20, 0, 10) }
-                        termSection.addView(gridLabel)
-                        
-                        val hScroll = HorizontalScrollView(this).apply { 
-                            isHorizontalScrollBarEnabled = false
-                            setPadding(20, 0, 20, 0)
-                        }
-                        val scrollContent = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-                        allOtherReadings.take(10).forEach { otherReading ->
-                            scrollContent.addView(TextView(this).apply {
-                                text = otherReading
-                                setTextColor(android.graphics.Color.parseColor("#bbbbbb"))
-                                textSize = 11f
-                                setPadding(18, 8, 18, 8)
-                                background = GradientDrawable().apply { 
-                                    setStroke(1, android.graphics.Color.parseColor("#444444"))
-                                    cornerRadius = 6f 
-                                }
-                                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { rightMargin = 15 }
-                            })
-                        }
-                        hScroll.addView(scrollContent)
-                        termSection.addView(hScroll)
-                    }
-
-                    termSection.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1).apply { topMargin = 30; bottomMargin = 10 }; setBackgroundColor(android.graphics.Color.DKGRAY); alpha = 0.2f })
-                }
-                scrollContent.addView(termSection)
-            }
-            scrollView.addView(scrollContent)
-            dictionaryPanel.addView(scrollView)
-        }
-
-        // --- NEW CORRECTION UI ---
+        updateDictionaryPanel(dictionaryPanel, matches)
 
         val mainContainer = LinearLayout(this).apply {
             tag = "correction_ui_root"
             orientation = if (isLandscape) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
             gravity = if (isLandscape) {
                 if (lastLandscapeGravity == Gravity.END) {
-                    val overlaps = tappedBox.right > rootWidth - panelWidth
-                    if (overlaps) lastLandscapeGravity = Gravity.START
+                    if (tappedBox.right > rootWidth - panelWidth) lastLandscapeGravity = Gravity.START
                 } else {
-                    val overlaps = tappedBox.left < panelWidth
-                    if (overlaps) lastLandscapeGravity = Gravity.END
+                    if (tappedBox.left < panelWidth) lastLandscapeGravity = Gravity.END
                 }
                 lastLandscapeGravity
             } else {
                 if (lastPortraitGravity == Gravity.BOTTOM) {
-                    val overlaps = tappedBox.bottom > rootHeight - panelHeight
-                    if (overlaps) lastPortraitGravity = Gravity.TOP
+                    if (tappedBox.bottom > rootHeight - panelHeight) lastPortraitGravity = Gravity.TOP
                 } else {
-                    val overlaps = tappedBox.top < panelHeight
-                    if (overlaps) lastPortraitGravity = Gravity.BOTTOM
+                    if (tappedBox.top < panelHeight) lastPortraitGravity = Gravity.BOTTOM
                 }
                 lastPortraitGravity
             }
         }
 
-        val correctionPanel = createCorrectionPanel(currentTappedIdx, isLandscape, rootLayout).apply {
-            layoutParams = if (isLandscape) {
-                LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.MATCH_PARENT)
-            } else {
-                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-            }
-        }
+        val correctionPanel = createCorrectionPanel(currentTappedIdx, isLandscape, rootLayout, skipCenter)
         val alternativesPanelContainer = FrameLayout(this).apply {
             tag = "alternatives_container"
-            layoutParams = if (isLandscape) {
-                LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.MATCH_PARENT)
-            } else {
-                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-            }
+            layoutParams = if (isLandscape) LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.MATCH_PARENT)
+            else LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
         }
 
         if (isLandscape) {
             if (lastLandscapeGravity == Gravity.END) {
-                mainContainer.addView(alternativesPanelContainer)
-                mainContainer.addView(correctionPanel)
-                mainContainer.addView(dictionaryPanel, LinearLayout.LayoutParams(panelWidth, panelHeight))
+                mainContainer.addView(alternativesPanelContainer); mainContainer.addView(correctionPanel); mainContainer.addView(dictionaryPanel, LinearLayout.LayoutParams(panelWidth, panelHeight))
             } else {
-                mainContainer.addView(dictionaryPanel, LinearLayout.LayoutParams(panelWidth, panelHeight))
-                mainContainer.addView(correctionPanel)
-                mainContainer.addView(alternativesPanelContainer)
+                mainContainer.addView(dictionaryPanel, LinearLayout.LayoutParams(panelWidth, panelHeight)); mainContainer.addView(correctionPanel); mainContainer.addView(alternativesPanelContainer)
             }
         } else {
             if (lastPortraitGravity == Gravity.BOTTOM) {
-                mainContainer.addView(alternativesPanelContainer)
-                mainContainer.addView(correctionPanel)
-                mainContainer.addView(dictionaryPanel, LinearLayout.LayoutParams(panelWidth, panelHeight))
+                mainContainer.addView(alternativesPanelContainer); mainContainer.addView(correctionPanel); mainContainer.addView(dictionaryPanel, LinearLayout.LayoutParams(panelWidth, panelHeight))
             } else {
-                mainContainer.addView(dictionaryPanel, LinearLayout.LayoutParams(panelWidth, panelHeight))
-                mainContainer.addView(correctionPanel)
-                mainContainer.addView(alternativesPanelContainer)
+                mainContainer.addView(dictionaryPanel, LinearLayout.LayoutParams(panelWidth, panelHeight)); mainContainer.addView(correctionPanel); mainContainer.addView(alternativesPanelContainer)
             }
         }
 
         val rootParams = FrameLayout.LayoutParams(
             if (isLandscape) FrameLayout.LayoutParams.WRAP_CONTENT else FrameLayout.LayoutParams.MATCH_PARENT,
             if (isLandscape) FrameLayout.LayoutParams.MATCH_PARENT else FrameLayout.LayoutParams.WRAP_CONTENT
-        ).apply {
-            gravity = mainContainer.gravity
-        }
+        ).apply { gravity = mainContainer.gravity }
 
         rootLayout.addView(mainContainer, rootParams)
     }
 
-    private fun createCorrectionPanel(currentIdx: Int, isLandscape: Boolean, rootLayout: FrameLayout): View {
-        val rootWidth = rootLayout.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
-        val rootHeight = rootLayout.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
-        val totalSpace = if (isLandscape) rootHeight else rootWidth
-        val itemSize = totalSpace / 11
-        val density = resources.displayMetrics.density
-        val estimatedTextSize = (itemSize * 0.45 / density).toFloat().coerceIn(12f, 22f)
-
-        val panel = LinearLayout(this).apply {
-            orientation = if (isLandscape) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
-            setBackgroundColor(android.graphics.Color.argb(255, 45, 45, 45))
-            setPadding(6, 6, 6, 6)
-            elevation = 25f
-            setOnClickListener { }
+    private fun updateDictionaryPanel(container: LinearLayout, matches: List<Pair<String, List<com.holopengin.instantjpdict.data.DictionaryEntry>>>) {
+        container.removeAllViews()
+        if (matches.isEmpty()) {
+            container.addView(TextView(this).apply {
+                text = "No results found"
+                setTextColor(android.graphics.Color.GRAY)
+                gravity = Gravity.CENTER
+                textSize = 16f
+                setPadding(0, 150, 0, 0)
+            })
+            return
         }
 
-        val lp = if (isLandscape) {
-            LinearLayout.LayoutParams(itemSize, 0, 1f).apply { setMargins(2, 2, 2, 2) }
-        } else {
-            LinearLayout.LayoutParams(0, itemSize, 1f).apply { setMargins(2, 2, 2, 2) }
+        val scrollView = ScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
+            isVerticalScrollBarEnabled = false
+        }
+        val scrollContent = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(10, 0, 10, 150)
         }
 
-        // Always show 11 slots for consistency
-        for (offset in -5..5) {
-            val i = currentIdx + offset
-            if (i in activeAllChars.indices) {
-                val char = activeAllChars[i]
-                val textView = TextView(this).apply {
-                    text = char.toString()
-                    setTextColor(android.graphics.Color.WHITE)
-                    textSize = estimatedTextSize
-                    gravity = Gravity.CENTER
-                    
-                    if (i == currentIdx) {
-                        setBackgroundColor(android.graphics.Color.YELLOW)
-                        setTextColor(android.graphics.Color.BLACK)
-                    } else {
-                        setBackgroundColor(android.graphics.Color.argb(255, 65, 65, 65))
+        for ((_, entries) in matches) {
+            val termSection = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 10, 0, 50) }
+            val entriesByReading = entries.groupBy { it.reading }
+
+            for ((reading, readingEntries) in entriesByReading) {
+                val firstEntry = readingEntries.first()
+                val isKanjiEntry = firstEntry.onyomi != null || firstEntry.kunyomi != null
+                val allGlobalTags = mutableSetOf<String>()
+                val allInfoText = mutableSetOf<String>()
+
+                for (e in readingEntries) {
+                    e.jlpt?.takeIf { it.isNotEmpty() }?.let { allInfoText.add("jlpt: N$it") }
+                    "grade:([^\\s]+)".toRegex().find(e.rules)?.groupValues?.get(1)?.let { allInfoText.add("grade: $it") }
+                    val segments = e.rules.split(" | ")
+                    val t1 = segments.getOrNull(0)?.split(" ")?.filter { it.isNotEmpty() } ?: emptyList()
+                    val rs = segments.getOrNull(1)?.split(" ")?.filter { it.isNotEmpty() } ?: emptyList()
+                    val t2 = segments.getOrNull(2)?.split(" ")?.filter { it.isNotEmpty() } ?: emptyList()
+                    (t1 + rs + t2).forEach { tag -> if (tag.toIntOrNull() == null && !tag.startsWith("grade:")) allGlobalTags.add(tag) }
+                }
+
+                val headwordList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 0, 0, 10) }
+                val kanjiVariants = readingEntries.map { it.kanji }.distinct()
+
+                if (isKanjiEntry) {
+                    kanjiVariants.forEach { kanji ->
+                        val entry = readingEntries.find { it.kanji == kanji } ?: firstEntry
+                        val kanjiHeader = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, 5, 0, 5) }
+                        kanjiHeader.addView(TextView(this).apply { text = kanji; setTextColor(android.graphics.Color.CYAN); textSize = 48f; typeface = android.graphics.Typeface.DEFAULT_BOLD; setPadding(0, 0, 30, 0) })
+                        val readingStack = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+                        entry.onyomi?.takeIf { it.isNotEmpty() }?.let { readingStack.addView(TextView(this).apply { text = "ON: ${it.replace(" ", "、")}"; setTextColor(android.graphics.Color.LTGRAY); textSize = 14f }) }
+                        entry.kunyomi?.takeIf { it.isNotEmpty() }?.let { readingStack.addView(TextView(this).apply { text = "KUN: ${it.replace(" ", "、")}"; setTextColor(android.graphics.Color.LTGRAY); textSize = 14f }) }
+                        kanjiHeader.addView(readingStack)
+                        headwordList.addView(kanjiHeader)
                     }
-
-                    setOnClickListener {
-                        if (i == currentIdx) {
-                            toggleAlternativesPanel(rootLayout, i, isLandscape)
-                        } else {
-                            performLookup(i, rootLayout)
+                } else {
+                    val headwordScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; overScrollMode = View.OVER_SCROLL_NEVER }
+                    val flow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 5, 0, 5); gravity = Gravity.BOTTOM }
+                    kanjiVariants.forEachIndexed { i, kanji ->
+                        flow.addView(createRubyView(kanji, reading))
+                        if (i < kanjiVariants.size - 1) {
+                            flow.addView(TextView(this).apply { text = "、"; setTextColor(android.graphics.Color.GRAY); textSize = 24f; gravity = Gravity.BOTTOM; includeFontPadding = false })
                         }
                     }
+                    headwordScroll.addView(flow); headwordList.addView(headwordScroll)
                 }
-                panel.addView(textView, lp)
+                termSection.addView(headwordList)
+                if (allGlobalTags.isNotEmpty()) addTagsToContainer(termSection, allGlobalTags.toList(), "pos")
+                if (allInfoText.isNotEmpty()) renderFrequency(termSection, allInfoText.joinToString(", "))
+
+                for (e in readingEntries) {
+                    try {
+                        val definitions = gson.fromJson<Any>(e.definitions, Any::class.java)
+                        if (definitions is List<*>) {
+                            val segments = e.rules.split(" | ")
+                            val t1 = segments.getOrNull(0)?.split(" ")?.filter { it.isNotEmpty() } ?: emptyList()
+                            val t2 = segments.getOrNull(2)?.split(" ")?.filter { it.isNotEmpty() } ?: emptyList()
+                            val senseToTags = mutableMapOf<Int, MutableList<String>>()
+                            val unnumberedTags = mutableListOf<String>()
+                            fun parseTags(tagList: List<String>) {
+                                var curr: Int? = null
+                                for (tag in tagList) { val n = tag.toIntOrNull(); if (n != null) curr = n else { if (curr != null) senseToTags.getOrPut(curr) { mutableListOf() }.add(tag) else unnumberedTags.add(tag) } }
+                            }
+                            parseTags(t1); parseTags(t2)
+                            definitions.forEachIndexed { index, sense ->
+                                val senseNum = index + 1
+                                val senseBox = LinearLayout(this@OcrAccessibilityService).apply { orientation = LinearLayout.VERTICAL; setPadding(20, 4, 0, 4) }
+                                val tagsForSense = (senseToTags[senseNum] ?: mutableListOf<String>()) + unnumberedTags
+                                val filteredTags = tagsForSense.distinct().filter { it.toIntOrNull() == null && !it.startsWith("grade:") }
+                                if (filteredTags.isNotEmpty()) {
+                                    val tagFlow = LinearLayout(this@OcrAccessibilityService).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, 4) }
+                                    filteredTags.forEach { tag -> tagFlow.addView(TextView(this@OcrAccessibilityService).apply { text = formatTag(tag); setTextColor(android.graphics.Color.parseColor("#999999")); textSize = 10f; setPadding(0, 0, 15, 0); typeface = android.graphics.Typeface.defaultFromStyle(android.graphics.Typeface.ITALIC) }) }
+                                    senseBox.addView(tagFlow)
+                                }
+                                renderDefinition(senseBox, sense, 0, forceBullet = definitions.size > 1, senseIndex = senseNum)
+                                termSection.addView(senseBox)
+                            }
+                        } else renderDefinition(termSection, definitions)
+                    } catch (ex: Exception) {
+                        termSection.addView(TextView(this).apply { text = e.definitions; setTextColor(android.graphics.Color.WHITE); textSize = 15f; setPadding(40, 10, 0, 10) })
+                    }
+                }
+                termSection.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1).apply { topMargin = 30; bottomMargin = 10 }; setBackgroundColor(android.graphics.Color.DKGRAY); alpha = 0.2f })
+            }
+            scrollContent.addView(termSection)
+        }
+        scrollView.addView(scrollContent); container.addView(scrollView)
+    }
+
+    private fun updateNeighborHighlights(panel: LinearLayout) {
+        for (i in 0 until panel.childCount) {
+            val view = panel.getChildAt(i) as? TextView ?: continue
+            if (i == currentTappedIdx) {
+                view.setBackgroundColor(android.graphics.Color.YELLOW)
+                view.setTextColor(android.graphics.Color.BLACK)
             } else {
-                // Spacer for out-of-bounds
-                panel.addView(View(this), lp)
+                view.setBackgroundColor(android.graphics.Color.argb(255, 65, 65, 65))
+                view.setTextColor(android.graphics.Color.WHITE)
             }
         }
-        return panel
+    }
+
+    private fun centerNeighborScrollView(scrollView: View, currentIdx: Int) {
+        val panel = scrollView.findViewWithTag<LinearLayout>("neighbor_scroll_panel") ?: return
+        val targetView = panel.getChildAt(currentIdx) ?: return
+        scrollView.post {
+            if (scrollView is ScrollView) scrollView.scrollTo(0, targetView.top - (scrollView.height / 2) + (targetView.height / 2))
+            else if (scrollView is HorizontalScrollView) scrollView.scrollTo(targetView.left - (scrollView.width / 2) + (targetView.width / 2), 0)
+        }
+    }
+
+    private fun createCorrectionPanel(currentIdx: Int, isLandscape: Boolean, rootLayout: FrameLayout, skipCenter: Boolean = false): View {
+        val rootHeight = rootLayout.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
+        val rootWidth = rootLayout.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
+        val itemSize = (if (isLandscape) rootHeight else rootWidth) / 11
+        val estimatedTextSize = (itemSize * 0.45 / resources.displayMetrics.density).toFloat().coerceIn(12f, 22f)
+
+        val outerContainer = FrameLayout(this).apply { setBackgroundColor(android.graphics.Color.argb(255, 45, 45, 45)); elevation = 25f }
+        val scrollView = if (isLandscape) ScrollView(this) else HorizontalScrollView(this)
+        scrollView.apply {
+            tag = "neighbor_scroll_view"; isVerticalScrollBarEnabled = false; isHorizontalScrollBarEnabled = false
+            layoutParams = if (isLandscape) FrameLayout.LayoutParams(itemSize + 12, FrameLayout.LayoutParams.MATCH_PARENT) else FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, itemSize + 12)
+        }
+
+        val panel = LinearLayout(this).apply { tag = "neighbor_scroll_panel"; orientation = if (isLandscape) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL; setPadding(6, 6, 6, 6) }
+        val itemLp = LinearLayout.LayoutParams(itemSize, itemSize).apply { setMargins(2, 2, 2, 2) }
+
+        for (i in activeAllChars.indices) {
+            val textView = TextView(this).apply {
+                tag = "neighbor_char_$i"; text = activeAllChars[i].toString(); setTextColor(android.graphics.Color.WHITE); textSize = estimatedTextSize; gravity = Gravity.CENTER
+                if (i == currentIdx) { setBackgroundColor(android.graphics.Color.YELLOW); setTextColor(android.graphics.Color.BLACK) }
+                else setBackgroundColor(android.graphics.Color.argb(255, 65, 65, 65))
+                setOnClickListener {
+                    if (currentTappedIdx == i) toggleAlternativesPanel(rootLayout, i, isLandscape)
+                    else {
+                        val oldIdx = currentTappedIdx; currentTappedIdx = i
+                        panel.findViewWithTag<View>("neighbor_char_$oldIdx")?.let { it.setBackgroundColor(android.graphics.Color.argb(255, 65, 65, 65)); (it as TextView).setTextColor(android.graphics.Color.WHITE) }
+                        this.setBackgroundColor(android.graphics.Color.YELLOW); this.setTextColor(android.graphics.Color.BLACK)
+                        performLookup(i, rootLayout, skipCenter = true)
+                    }
+                }
+            }
+            panel.addView(textView, itemLp)
+        }
+        scrollView.addView(panel); outerContainer.addView(scrollView)
+        if (!skipCenter) centerNeighborScrollView(scrollView, currentIdx)
+        return outerContainer
     }
 
     private fun toggleAlternativesPanel(rootLayout: FrameLayout, currentIdx: Int, isLandscape: Boolean) {
         val container = rootLayout.findViewWithTag<FrameLayout>("alternatives_container") ?: return
-        if (container.childCount > 0) {
-            container.removeAllViews()
-            return
-        }
-
-        val rootWidth = rootLayout.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
+        if (container.childCount > 0) { container.removeAllViews(); return }
         val rootHeight = rootLayout.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
-        val totalSpace = if (isLandscape) rootHeight else rootWidth
-        val itemSize = totalSpace / 11
-        val density = resources.displayMetrics.density
-        val estimatedTextSize = (itemSize * 0.45 / density).toFloat().coerceIn(12f, 22f)
+        val rootWidth = rootLayout.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
+        val itemSize = (if (isLandscape) rootHeight else rootWidth) / 11
+        val estimatedTextSize = (itemSize * 0.45 / resources.displayMetrics.density).toFloat().coerceIn(12f, 22f)
 
-        val mainLayout = LinearLayout(this).apply {
-            orientation = if (isLandscape) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
-            setBackgroundColor(android.graphics.Color.argb(255, 55, 55, 55))
-            setPadding(6, 6, 6, 6)
-            elevation = 30f
-            setOnClickListener { }
-        }
-
+        val mainLayout = LinearLayout(this).apply { orientation = if (isLandscape) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL; setBackgroundColor(android.graphics.Color.argb(255, 55, 55, 55)); setPadding(6, 6, 6, 6); elevation = 30f; setOnClickListener { } }
         val scrollView = if (isLandscape) ScrollView(this) else HorizontalScrollView(this)
         scrollView.apply {
-            isVerticalScrollBarEnabled = false
-            isHorizontalScrollBarEnabled = false
-            layoutParams = if (isLandscape) {
-                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 10f)
-            } else {
-                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 10f)
-            }
+            isVerticalScrollBarEnabled = false; isHorizontalScrollBarEnabled = false
+            layoutParams = if (isLandscape) LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 10f) else LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 10f)
         }
-
-        val candidateList = LinearLayout(this).apply {
-            orientation = if (isLandscape) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
-        }
-
+        val candidateList = LinearLayout(this).apply { orientation = if (isLandscape) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL }
         val alts = activeAllAlternatives.getOrNull(currentIdx) ?: emptyList()
-        val top15 = alts.take(15)
-
         var selectedView: View? = null
-        top15.forEach { (altChar, _) ->
+        alts.take(15).forEach { (altChar, _) ->
             val textView = TextView(this).apply {
-                text = altChar.toString()
-                setTextColor(android.graphics.Color.WHITE)
-                textSize = estimatedTextSize
-                gravity = Gravity.CENTER
-                
-                if (altChar == activeAllChars[currentIdx]) {
-                    setBackgroundColor(android.graphics.Color.YELLOW)
-                    setTextColor(android.graphics.Color.BLACK)
-                    selectedView = this
-                } else {
-                    setBackgroundColor(android.graphics.Color.argb(255, 85, 85, 85))
-                }
-
-                setOnClickListener {
-                    replaceCharacter(currentIdx, altChar, rootLayout)
-                }
+                text = altChar.toString(); setTextColor(android.graphics.Color.WHITE); textSize = estimatedTextSize; gravity = Gravity.CENTER
+                if (altChar == activeAllChars[currentIdx]) { setBackgroundColor(android.graphics.Color.YELLOW); setTextColor(android.graphics.Color.BLACK); selectedView = this }
+                else setBackgroundColor(android.graphics.Color.argb(255, 85, 85, 85))
+                setOnClickListener { replaceCharacter(currentIdx, altChar, rootLayout) }
             }
-            val lp = LinearLayout.LayoutParams(itemSize, itemSize).apply { setMargins(2, 2, 2, 2) }
-            candidateList.addView(textView, lp)
+            candidateList.addView(textView, LinearLayout.LayoutParams(itemSize, itemSize).apply { setMargins(2, 2, 2, 2) })
         }
-        scrollView.addView(candidateList)
-        mainLayout.addView(scrollView)
-
-        // Scroll to selected if it exists
-        selectedView?.let { view ->
-            scrollView.post {
-                if (isLandscape) {
-                    scrollView.scrollTo(0, view.top)
-                } else {
-                    (scrollView as HorizontalScrollView).scrollTo(view.left, 0)
-                }
-            }
-        }
-
-        // Fixed Stub for manual input (the 11th visible slot)
-        val stubView = TextView(this).apply {
-            text = "⌨"
-            setTextColor(android.graphics.Color.GRAY)
-            textSize = estimatedTextSize
-            gravity = Gravity.CENTER
-            setBackgroundColor(android.graphics.Color.argb(255, 40, 40, 40))
-            setOnClickListener {
-                showManualInput(currentIdx, rootLayout)
-            }
-        }
-        val stubLp = if (isLandscape) {
-            LinearLayout.LayoutParams(itemSize, 0, 1f).apply { setMargins(2, 2, 2, 2) }
-        } else {
-            LinearLayout.LayoutParams(0, itemSize, 1f).apply { setMargins(2, 2, 2, 2) }
-        }
-        mainLayout.addView(stubView, stubLp)
-
+        scrollView.addView(candidateList); mainLayout.addView(scrollView)
+        selectedView?.let { view -> scrollView.post { if (isLandscape) scrollView.scrollTo(0, view.top) else (scrollView as HorizontalScrollView).scrollTo(view.left, 0) } }
+        val stubView = TextView(this).apply { text = "⌨"; setTextColor(android.graphics.Color.GRAY); textSize = estimatedTextSize; gravity = Gravity.CENTER; setBackgroundColor(android.graphics.Color.argb(255, 40, 40, 40)); setOnClickListener { showManualInput(currentIdx, rootLayout) } }
+        mainLayout.addView(stubView, if (isLandscape) LinearLayout.LayoutParams(itemSize, 0, 1f).apply { setMargins(2, 2, 2, 2) } else LinearLayout.LayoutParams(0, itemSize, 1f).apply { setMargins(2, 2, 2, 2) })
         container.addView(mainLayout)
     }
 
     private fun replaceCharacter(index: Int, newChar: Char, rootLayout: FrameLayout) {
         activeAllChars[index] = newChar
-        
-        // Update the LineResult object
         val info = activeCharInfos[index]
         val line = activeLineResults[info.lineIdx]
-        val charArray = line.text.toCharArray()
-        charArray[info.charIdxInLine] = newChar
-        line.text = String(charArray)
-
-        // Update the UI TextView
-        if (index < textViews.size) {
-            textViews[index].text = newChar.toString()
-        }
-
-        // Re-run lookup
+        val charArray = line.text.toCharArray(); charArray[info.charIdxInLine] = newChar; line.text = String(charArray)
+        if (index < textViews.size) textViews[index].text = newChar.toString()
         performLookup(index, rootLayout)
     }
 
     private fun showManualInput(index: Int, rootLayout: FrameLayout) {
         val bitmap = screenshotBitmap ?: return
         val box = activeCharInfos[index].box
-        
-        // 1. Prepare Crop
         val padding = (box.height() * 0.5).toInt()
-        val cropRect = Rect(
-            (box.left - padding).coerceAtLeast(0),
-            (box.top - padding).coerceAtLeast(0),
-            (box.right + padding).coerceAtMost(bitmap.width),
-            (box.bottom + padding).coerceAtMost(bitmap.height)
-        )
+        val cropRect = Rect((box.left - padding).coerceAtLeast(0), (box.top - padding).coerceAtLeast(0), (box.right + padding).coerceAtMost(bitmap.width), (box.bottom + padding).coerceAtMost(bitmap.height))
         val cropped = Bitmap.createBitmap(bitmap, cropRect.left, cropRect.top, cropRect.width(), cropRect.height())
-
-        // 2. Dimmed Blocker
-        val blocker = FrameLayout(this).apply {
-            tag = "manual_input_blocker"
-            setBackgroundColor(android.graphics.Color.argb(180, 0, 0, 0))
-            setOnClickListener { closeManualInput(rootLayout) }
-        }
-
-        // 3. Dialog-like Panel
-        val panel = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(android.graphics.Color.argb(255, 35, 35, 35))
-            setPadding(60, 60, 60, 60)
-            gravity = Gravity.CENTER_HORIZONTAL
-            elevation = 50f
-            // Block clicks from reaching 'blocker'
-            setOnClickListener { }
-        }
-
-        val imageView = android.widget.ImageView(this).apply {
-            setImageBitmap(cropped)
-            val size = (resources.displayMetrics.density * 120).toInt()
-            layoutParams = LinearLayout.LayoutParams(size, size)
-            scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
-        }
-        panel.addView(imageView)
-
-        val hintText = TextView(this).apply {
-            text = "Enter character manually"
-            setTextColor(android.graphics.Color.GRAY)
-            textSize = 14f
-            setPadding(0, 30, 0, 10)
-        }
-        panel.addView(hintText)
-
-        val editText = EditText(this).apply {
-            setTextColor(android.graphics.Color.WHITE)
-            textSize = 36f
-            gravity = Gravity.CENTER
-            maxLines = 1
-            imeOptions = EditorInfo.IME_ACTION_DONE
-            inputType = android.text.InputType.TYPE_CLASS_TEXT
-            background.setTint(android.graphics.Color.CYAN)
-        }
+        val blocker = FrameLayout(this).apply { tag = "manual_input_blocker"; setBackgroundColor(android.graphics.Color.argb(180, 0, 0, 0)); setOnClickListener { closeManualInput(rootLayout) } }
+        val panel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(android.graphics.Color.argb(255, 35, 35, 35)); setPadding(60, 60, 60, 60); gravity = Gravity.CENTER_HORIZONTAL; elevation = 50f; setOnClickListener { } }
+        panel.addView(android.widget.ImageView(this).apply { setImageBitmap(cropped); val size = (resources.displayMetrics.density * 120).toInt(); layoutParams = LinearLayout.LayoutParams(size, size); scaleType = android.widget.ImageView.ScaleType.FIT_CENTER })
+        panel.addView(TextView(this).apply { text = "Enter character manually"; setTextColor(android.graphics.Color.GRAY); textSize = 14f; setPadding(0, 30, 0, 10) })
+        val editText = EditText(this).apply { setTextColor(android.graphics.Color.WHITE); textSize = 36f; gravity = Gravity.CENTER; maxLines = 1; imeOptions = EditorInfo.IME_ACTION_DONE; inputType = android.text.InputType.TYPE_CLASS_TEXT; background.setTint(android.graphics.Color.CYAN) }
         panel.addView(editText, LinearLayout.LayoutParams(250, LinearLayout.LayoutParams.WRAP_CONTENT))
-
-        val confirmButton = Button(this).apply {
-            text = "Confirm"
-            setOnClickListener {
-                val text = editText.text.toString()
-                if (text.isNotEmpty()) {
-                    replaceCharacter(index, text[0], rootLayout)
-                    closeManualInput(rootLayout)
-                }
-            }
-        }
-        panel.addView(confirmButton, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.WRAP_CONTENT,
-            LinearLayout.LayoutParams.WRAP_CONTENT
-        ).apply { topMargin = 20 })
-
-        blocker.addView(panel, FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-            Gravity.CENTER
-        ))
-
-        // 4. Update Window Flags to allow focus for keyboard
+        panel.addView(Button(this).apply { text = "Confirm"; setOnClickListener { val text = editText.text.toString(); if (text.isNotEmpty()) { replaceCharacter(index, text[0], rootLayout); closeManualInput(rootLayout) } } }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = 20 })
+        blocker.addView(panel, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.CENTER))
         val params = screenshotOverlay?.layoutParams as? WindowManager.LayoutParams
-        if (params != null) {
-            params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
-            params.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
-            windowManager?.updateViewLayout(screenshotOverlay, params)
-        }
-
-        rootLayout.addView(blocker, FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.MATCH_PARENT,
-            FrameLayout.LayoutParams.MATCH_PARENT
-        ))
-
+        if (params != null) { params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv(); params.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE; windowManager?.updateViewLayout(screenshotOverlay, params) }
+        rootLayout.addView(blocker, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         editText.requestFocus()
-        editText.postDelayed({
-            val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-            imm.showSoftInput(editText, InputMethodManager.SHOW_IMPLICIT)
-        }, 100)
-
-        editText.setOnEditorActionListener { _, actionId, event ->
-            if (actionId == EditorInfo.IME_ACTION_DONE || 
-                (event != null && event.keyCode == KeyEvent.KEYCODE_ENTER && event.action == KeyEvent.ACTION_DOWN)) {
-                val text = editText.text.toString()
-                if (text.isNotEmpty()) {
-                    replaceCharacter(index, text[0], rootLayout)
-                    closeManualInput(rootLayout)
-                }
-                true
-            } else {
-                false
-            }
-        }
+        editText.postDelayed({ (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).showSoftInput(editText, InputMethodManager.SHOW_IMPLICIT) }, 100)
+        editText.setOnEditorActionListener { _, actionId, event -> if (actionId == EditorInfo.IME_ACTION_DONE || (event != null && event.keyCode == KeyEvent.KEYCODE_ENTER && event.action == KeyEvent.ACTION_DOWN)) { val text = editText.text.toString(); if (text.isNotEmpty()) { replaceCharacter(index, text[0], rootLayout); closeManualInput(rootLayout) }; true } else false }
     }
 
     private fun closeManualInput(rootLayout: FrameLayout) {
         val blocker = rootLayout.findViewWithTag<View>("manual_input_blocker") ?: return
         rootLayout.removeView(blocker)
-
-        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
-        imm.hideSoftInputFromWindow(rootLayout.windowToken, 0)
-
+        (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(rootLayout.windowToken, 0)
         val params = screenshotOverlay?.layoutParams as? WindowManager.LayoutParams
-        if (params != null) {
-            params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-            windowManager?.updateViewLayout(screenshotOverlay, params)
-        }
+        if (params != null) { params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE; windowManager?.updateViewLayout(screenshotOverlay, params) }
     }
 
     private fun createTagView(tag: String, category: String = "general"): View {
-        val color = when {
-            category == "pos" || tag.startsWith("v") || tag == "adj-i" || tag == "adj-na" -> android.graphics.Color.parseColor("#3a5a7a")
-            tag == "n" || tag == "adv" || tag == "pn" -> android.graphics.Color.parseColor("#3a7a5a")
-            category == "meta" || tag.startsWith("jlpt") || tag.startsWith("grade") || tag == "★" -> android.graphics.Color.parseColor("#7a3a3a")
-            else -> android.graphics.Color.parseColor("#444444")
-        }
-        return TextView(this).apply {
-            text = formatTag(tag)
-            setTextColor(android.graphics.Color.WHITE)
-            textSize = 10f
-            typeface = android.graphics.Typeface.DEFAULT_BOLD
-            setPadding(12, 2, 12, 2)
-            background = GradientDrawable().apply {
-                setColor(color)
-                cornerRadius = 6f
-            }
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { setMargins(0, 0, 12, 0) }
-        }
+        val color = when { category == "pos" || tag.startsWith("v") || tag == "adj-i" || tag == "adj-na" -> android.graphics.Color.parseColor("#3a5a7a"); tag == "n" || tag == "adv" || tag == "pn" -> android.graphics.Color.parseColor("#3a7a5a"); category == "meta" || tag.startsWith("jlpt") || tag.startsWith("grade") || tag == "★" -> android.graphics.Color.parseColor("#7a3a3a"); else -> android.graphics.Color.parseColor("#444444") }
+        return TextView(this).apply { text = formatTag(tag); setTextColor(android.graphics.Color.WHITE); textSize = 10f; typeface = android.graphics.Typeface.DEFAULT_BOLD; setPadding(12, 2, 12, 2); background = GradientDrawable().apply { setColor(color); cornerRadius = 6f }; layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { setMargins(0, 0, 12, 0) } }
     }
 
     private fun addTagsToContainer(container: LinearLayout, tags: List<String>, category: String = "general") {
         if (tags.isEmpty()) return
-        val hScroll = HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false
-            overScrollMode = View.OVER_SCROLL_NEVER
-        }
-        val tagContainer = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(20, 8, 20, 8)
-        }
-        tags.distinct().forEach { tag ->
-            tagContainer.addView(createTagView(tag, category))
-        }
-        hScroll.addView(tagContainer)
-        container.addView(hScroll)
+        val tagContainer = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(20, 8, 20, 8) }
+        tags.distinct().forEach { tag -> tagContainer.addView(createTagView(tag, category)) }
+        val hScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; overScrollMode = View.OVER_SCROLL_NEVER }; hScroll.addView(tagContainer); container.addView(hScroll)
     }
 
     private fun renderFrequency(container: LinearLayout, frequencyText: String) {
-        val flow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(20, 4, 20, 4)
-        }
-        frequencyText.split(",").map { it.trim() }.filter { it.isNotEmpty() }.forEach { chip ->
-            flow.addView(TextView(this).apply {
-                text = chip
-                setTextColor(android.graphics.Color.parseColor("#888888"))
-                textSize = 9f
-                setPadding(10, 2, 10, 2)
-                background = GradientDrawable().apply {
-                    setStroke(1, android.graphics.Color.parseColor("#333333"))
-                    cornerRadius = 4f
-                }
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT
-                ).apply { setMargins(0, 0, 10, 0) }
-            })
-        }
+        val flow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(20, 4, 20, 4) }
+        frequencyText.split(",").map { it.trim() }.filter { it.isNotEmpty() }.forEach { chip -> flow.addView(TextView(this).apply { text = chip; setTextColor(android.graphics.Color.parseColor("#888888")); textSize = 9f; setPadding(10, 2, 10, 2); background = GradientDrawable().apply { setStroke(1, android.graphics.Color.parseColor("#333333")); cornerRadius = 4f }; layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { setMargins(0, 0, 10, 0) } }) }
         container.addView(flow)
     }
 
-    private fun formatTag(tag: String): String {
-        return when(tag) {
-            "v1" -> "1-dan"
-            "v5", "v5k", "v5s", "v5t", "v5n", "v5m", "v5r", "v5w", "v5g", "v5z", "v5b" -> "5-dan"
-            "vs", "vs-i", "vs-s" -> "suru"
-            "vi" -> "intrans"
-            "vt" -> "trans"
-            "adj-i" -> "adj-i"
-            "adj-na" -> "adj-na"
-            "n" -> "noun"
-            "adv" -> "adv"
-            "pn" -> "pronoun"
-            "p" -> "particle"
-            "exp" -> "phrase"
-            "aux" -> "aux"
-            "ctr" -> "count"
-            "conj" -> "conj"
-            "num" -> "num"
-            "int" -> "intj"
-            "suf" -> "suffix"
-            "pref" -> "prefix"
-            "arch" -> "archaic"
-            "dated" -> "dated"
-            "hist" -> "hist"
-            "sl" -> "slang"
-            "col" -> "colloq"
-            "obs" -> "obsolete"
-            else -> tag
-        }
-    }
+    private fun formatTag(tag: String): String = when(tag) { "v1" -> "1-dan"; "v5", "v5k", "v5s", "v5t", "v5n", "v5m", "v5r", "v5w", "v5g", "v5z", "v5b" -> "5-dan"; "vs", "vs-i", "vs-s" -> "suru"; "vi" -> "intrans"; "vt" -> "trans"; "adj-i" -> "adj-i"; "adj-na" -> "adj-na"; "n" -> "noun"; "adv" -> "adv"; "pn" -> "pronoun"; "p" -> "particle"; "exp" -> "phrase"; "aux" -> "aux"; "ctr" -> "count"; "conj" -> "conj"; "num" -> "num"; "int" -> "intj"; "suf" -> "suffix"; "pref" -> "prefix"; "arch" -> "archaic"; "dated" -> "dated"; "hist" -> "hist"; "sl" -> "slang"; "col" -> "colloq"; "obs" -> "obsolete"; else -> tag }
 
     private fun createRubyView(term: String, reading: String, isMini: Boolean = false): View {
         if (term == reading) {
-            val container = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                gravity = Gravity.CENTER_HORIZONTAL
-            }
-            // Add an empty space to match the height of ruby views
-            if (!isMini) {
-                container.addView(TextView(this).apply {
-                    text = " "
-                    textSize = 13f
-                    setPadding(0, 0, 0, 0)
-                    includeFontPadding = false
-                })
-            }
-            container.addView(TextView(this).apply {
-                text = term
-                setTextColor(android.graphics.Color.CYAN)
-                textSize = if (isMini) 20f else 32f
-                typeface = android.graphics.Typeface.DEFAULT_BOLD
-                setPadding(0, 0, 0, 0)
-                includeFontPadding = false
-            })
+            val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL }
+            if (!isMini) container.addView(TextView(this).apply { text = " "; textSize = 13f; setPadding(0, 0, 0, 0); includeFontPadding = false })
+            container.addView(TextView(this).apply { text = term; setTextColor(android.graphics.Color.CYAN); textSize = if (isMini) 20f else 32f; typeface = android.graphics.Typeface.DEFAULT_BOLD; setPadding(0, 0, 0, 0); includeFontPadding = false })
             return container
         }
-
-        val container = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.BOTTOM
-        }
-
-        var prefixLen = 0
-        while (prefixLen < term.length && prefixLen < reading.length && term[prefixLen] == reading[prefixLen]) {
-            prefixLen++
-        }
-
-        var suffixLen = 0
-        while (suffixLen < (term.length - prefixLen) && suffixLen < (reading.length - prefixLen) && 
-               term[term.length - 1 - suffixLen] == reading[reading.length - 1 - suffixLen]) {
-            suffixLen++
-        }
-
-        val prefix = term.substring(0, prefixLen)
-        val termMid = term.substring(prefixLen, term.length - suffixLen)
-        val readingMid = reading.substring(prefixLen, reading.length - suffixLen)
-        val suffix = term.substring(term.length - suffixLen)
-
-        if (prefix.isNotEmpty()) {
-            container.addView(TextView(this).apply {
-                text = prefix
-                setTextColor(android.graphics.Color.CYAN)
-                textSize = if (isMini) 20f else 32f
-                typeface = android.graphics.Typeface.DEFAULT_BOLD
-                setPadding(0, 0, 0, 0)
-                includeFontPadding = false
-            })
-        }
-
+        val container = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.BOTTOM }
+        var prefixLen = 0; while (prefixLen < term.length && prefixLen < reading.length && term[prefixLen] == reading[prefixLen]) prefixLen++
+        var suffixLen = 0; while (suffixLen < (term.length - prefixLen) && suffixLen < (reading.length - prefixLen) && term[term.length - 1 - suffixLen] == reading[reading.length - 1 - suffixLen]) suffixLen++
+        val prefix = term.substring(0, prefixLen); val termMid = term.substring(prefixLen, term.length - suffixLen); val readingMid = reading.substring(prefixLen, reading.length - suffixLen); val suffix = term.substring(term.length - suffixLen)
+        if (prefix.isNotEmpty()) container.addView(TextView(this).apply { text = prefix; setTextColor(android.graphics.Color.CYAN); textSize = if (isMini) 20f else 32f; typeface = android.graphics.Typeface.DEFAULT_BOLD; setPadding(0, 0, 0, 0); includeFontPadding = false })
         if (termMid.isNotEmpty()) {
-            val rubyItem = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                gravity = Gravity.CENTER_HORIZONTAL
-            }
-            rubyItem.addView(TextView(this).apply {
-                text = readingMid
-                setTextColor(android.graphics.Color.LTGRAY)
-                textSize = if (isMini) 10f else 13f
-                gravity = Gravity.CENTER
-                setPadding(0, 0, 0, 0)
-                includeFontPadding = false
-            })
-            rubyItem.addView(TextView(this).apply {
-                text = termMid
-                setTextColor(android.graphics.Color.CYAN)
-                textSize = if (isMini) 20f else 32f
-                typeface = android.graphics.Typeface.DEFAULT_BOLD
-                gravity = Gravity.CENTER
-                setPadding(0, 0, 0, 0)
-                includeFontPadding = false
-            })
+            val rubyItem = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL }
+            rubyItem.addView(TextView(this).apply { text = readingMid; setTextColor(android.graphics.Color.LTGRAY); textSize = if (isMini) 10f else 13f; gravity = Gravity.CENTER; setPadding(0, 0, 0, 0); includeFontPadding = false })
+            rubyItem.addView(TextView(this).apply { text = termMid; setTextColor(android.graphics.Color.CYAN); textSize = if (isMini) 20f else 32f; typeface = android.graphics.Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER; setPadding(0, 0, 0, 0); includeFontPadding = false })
             container.addView(rubyItem)
         }
-
-        if (suffix.isNotEmpty()) {
-            container.addView(TextView(this).apply {
-                text = suffix
-                setTextColor(android.graphics.Color.CYAN)
-                textSize = if (isMini) 20f else 32f
-                typeface = android.graphics.Typeface.DEFAULT_BOLD
-                setPadding(0, 0, 0, 0)
-                includeFontPadding = false
-            })
-        }
-
+        if (suffix.isNotEmpty()) container.addView(TextView(this).apply { text = suffix; setTextColor(android.graphics.Color.CYAN); textSize = if (isMini) 20f else 32f; typeface = android.graphics.Typeface.DEFAULT_BOLD; setPadding(0, 0, 0, 0); includeFontPadding = false })
         return container
     }
 
     private fun renderDefinition(container: LinearLayout, data: Any?, level: Int = 0, forceBullet: Boolean = false, senseIndex: Int? = null) {
         when (data) {
-            is String -> {
-                container.addView(TextView(this).apply {
-                    val prefix = when {
-                        senseIndex != null -> {
-                            val circled = listOf("①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩")
-                            circled.getOrNull(senseIndex - 1) ?: "$senseIndex."
-                        }
-                        forceBullet || level > 0 -> "•"
-                        else -> ""
-                    }
-                    text = if (prefix.isNotEmpty()) "$prefix $data" else data
-                    setTextColor(android.graphics.Color.WHITE)
-                    textSize = 15f
-                    setPadding(25 * level, 2, 0, 2)
-                    setLineSpacing(0f, 1.1f)
-                })
-            }
-            is List<*> -> {
-                data.forEachIndexed { i, item ->
-                    renderDefinition(container, item, level, forceBullet = forceBullet || data.size > 1, senseIndex = if (i == 0) senseIndex else null)
-                }
-            }
+            is String -> container.addView(TextView(this).apply { val prefix = when { senseIndex != null -> listOf("①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩").getOrNull(senseIndex - 1) ?: "$senseIndex." ; forceBullet || level > 0 -> "•"; else -> "" }; text = if (prefix.isNotEmpty()) "$prefix $data" else data; setTextColor(android.graphics.Color.WHITE); textSize = 15f; setPadding(25 * level, 2, 0, 2); setLineSpacing(0f, 1.1f) })
+            is List<*> -> data.forEachIndexed { i, item -> renderDefinition(container, item, level, forceBullet = forceBullet || data.size > 1, senseIndex = if (i == 0) senseIndex else null) }
             is Map<*, *> -> {
-                val tag = data["tag"] as? String
-                val scClass = data["data-sc-class"] as? String
-                val scContent = data["data-sc-content"] as? String
-                val content = data["content"] ?: data["list"]
-
-                if (tag == "ruby") {
-                    val c = content as? List<*>
-                    if (c != null && c.size >= 2) {
-                        val term = c[0].toString()
-                        val rt = (c[1] as? Map<*, *>)?.get("content")?.toString() ?: ""
-                        container.addView(createRubyView(term, rt, isMini = true))
-                        return
-                    }
-                }
-
+                val tag = data["tag"] as? String; val scClass = data["data-sc-class"] as? String; val scContent = data["data-sc-content"] as? String; val content = data["content"] ?: data["list"]
+                if (tag == "ruby") { (content as? List<*>)?.let { if (it.size >= 2) { container.addView(createRubyView(it[0].toString(), (it[1] as? Map<*, *>)?.get("content")?.toString() ?: "", isMini = true)); return } } }
                 if (scClass == "example-sentence" || scContent?.startsWith("example-sentence") == true) {
-                    val exampleBox = LinearLayout(this).apply {
-                        orientation = LinearLayout.VERTICAL
-                        setPadding(40, 10, 0, 10)
-                        background = GradientDrawable().apply {
-                            setColor(android.graphics.Color.argb(15, 255, 255, 255))
-                            cornerRadius = 8f
-                        }
-                        layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = 10; bottomMargin = 10 }
-                    }
-                    renderDefinition(exampleBox, content, 0)
-                    container.addView(exampleBox)
-                    return
+                    val exampleBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 10, 0, 10); background = GradientDrawable().apply { setColor(android.graphics.Color.argb(15, 255, 255, 255)); cornerRadius = 8f }; layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = 10; bottomMargin = 10 } }
+                    renderDefinition(exampleBox, content, 0); container.addView(exampleBox); return
                 }
-
-                if (content != null) {
-                    renderDefinition(container, content, level + (if (tag == "li") 1 else 0), forceBullet = tag == "li")
-                } else {
-                    data.forEach { (k, v) ->
-                         if (k !in listOf("tag", "content", "list", "data-sc-type", "data-sc-class", "data-sc-content", "ucs", "strokes", "skip")) {
-                             container.addView(TextView(this).apply {
-                                text = "$k: $v"
-                                setTextColor(android.graphics.Color.GRAY)
-                                textSize = 12f
-                                setPadding(25 * level, 2, 0, 2)
-                             })
-                         }
-                    }
-                }
+                if (content != null) renderDefinition(container, content, level + (if (tag == "li") 1 else 0), forceBullet = tag == "li")
+                else data.forEach { (k, v) -> if (k !in listOf("tag", "content", "list", "data-sc-type", "data-sc-class", "data-sc-content", "ucs", "strokes", "skip")) container.addView(TextView(this).apply { text = "$k: $v"; setTextColor(android.graphics.Color.GRAY); textSize = 12f; setPadding(25 * level, 2, 0, 2) }) }
             }
         }
     }
 
     private fun hideScreenshotOverlay() {
         val root = screenshotOverlay ?: return
-        val fv = floatingView ?: return
-        
-        // 1. Remove floating button from its current parent (the overlay)
-        (fv.parent as? android.view.ViewGroup)?.removeView(fv)
-        
-        // 2. Remove the overlay from WindowManager
-        if (root.isAttachedToWindow) {
-            try {
-                windowManager?.removeViewImmediate(root)
-            } catch (e: Exception) {
-                Log.e("OcrAccessibilityService", "Error removing screenshot overlay", e)
-            }
-        }
-        screenshotOverlay = null
-        screenshotBitmap = null
-        
-        // 3. Restore the floating button to the WindowManager
-        fv.visibility = View.VISIBLE
-        
-        try {
-            windowManager?.updateViewLayout(fv, floatingParams)
-        } catch (e: Exception) {
-            Log.e("OcrAccessibilityService", "Error restoring floating button to WindowManager", e)
-        }
-
-        boxViews.clear()
-        textViews.clear()
+        (floatingView?.parent as? android.view.ViewGroup)?.removeView(floatingView)
+        if (root.isAttachedToWindow) try { windowManager?.removeViewImmediate(root) } catch (e: Exception) { Log.e("OcrAccessibilityService", "Error removing overlay", e) }
+        screenshotOverlay = null; screenshotBitmap = null; floatingView?.visibility = View.VISIBLE
+        try { windowManager?.updateViewLayout(floatingView, floatingParams) } catch (e: Exception) { Log.e("OcrAccessibilityService", "Error restoring button", e) }
+        boxViews.clear(); textViews.clear()
     }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        if (event == null) return
-        
-        // Task 4: Close overlay if status bar is pulled down or app loses focus
-        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
-            if (screenshotOverlay != null) {
-                if (event.packageName == "com.android.systemui") {
-                    hideScreenshotOverlay()
-                }
-            }
-        }
-    }
-
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) { if (event?.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && screenshotOverlay != null && event.packageName == "com.android.systemui") hideScreenshotOverlay() }
     override fun onInterrupt() {}
-
-    override fun onKeyEvent(event: KeyEvent?): Boolean {
-        // Task 4: Close on back button
-        if (event?.keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_DOWN) {
-            if (screenshotOverlay != null) {
-                val root = screenshotOverlay as FrameLayout
-                if (root.findViewWithTag<View>("manual_input_blocker") != null) {
-                    closeManualInput(root)
-                    return true
-                }
-                hideScreenshotOverlay()
-                return true
-            }
-        }
-        return super.onKeyEvent(event)
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        // Task 4 cleanup
-        try {
-            unregisterReceiver(screenOffReceiver)
-        } catch (e: Exception) {
-            // Ignore if not registered
-        }
-        
-        hideScreenshotOverlay()
-        
-        floatingView?.let { 
-            if (it.isAttachedToWindow) {
-                windowManager?.removeView(it)
-            }
-        }
-        ocrEngine.close()
-    }
+    override fun onKeyEvent(event: KeyEvent?): Boolean { if (event?.keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_DOWN && screenshotOverlay != null) { val root = screenshotOverlay as FrameLayout; if (root.findViewWithTag<View>("manual_input_blocker") != null) closeManualInput(root) else hideScreenshotOverlay(); return true }; return super.onKeyEvent(event) }
+    override fun onDestroy() { super.onDestroy(); try { unregisterReceiver(screenOffReceiver) } catch (e: Exception) {} ; hideScreenshotOverlay(); floatingView?.let { if (it.isAttachedToWindow) windowManager?.removeView(it) }; ocrEngine.close() }
 }
