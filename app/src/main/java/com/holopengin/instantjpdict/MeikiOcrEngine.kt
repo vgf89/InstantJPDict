@@ -244,6 +244,20 @@ class MeikiOcrEngine(private val context: Context) {
         return result
     }
 
+    suspend fun recognizeStreaming(bitmap: Bitmap, lineBoxes: List<Rect>, onLineRecognized: (LineResult) -> Unit) = withContext(Dispatchers.Default) {
+        val startTime = System.currentTimeMillis()
+        lineBoxes.forEach { box ->
+            val result = recognizeSingleLine(bitmap, box)
+            if (result != null) {
+                withContext(Dispatchers.Main) {
+                    onLineRecognized(result)
+                }
+            }
+        }
+        val totalTime = System.currentTimeMillis() - startTime
+        Log.d("MeikiOcrEngine", "Streaming recognition for ${lineBoxes.size} lines took ${totalTime}ms")
+    }
+
     suspend fun recognize(bitmap: Bitmap, lineBoxes: List<Rect>): List<LineResult> = withContext(Dispatchers.Default) {
         val startTime = System.currentTimeMillis()
         val results = lineBoxes.map { box ->
