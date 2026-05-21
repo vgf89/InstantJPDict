@@ -230,7 +230,73 @@ class OcrAccessibilityService : AccessibilityService() {
             layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
         }
 
-        val rootLayout = FrameLayout(this).apply {
+        var scale = 1f
+        var transX = 0f
+        var transY = 0f
+        var lastFocusX = 0f
+        var lastFocusY = 0f
+        var initialTouchX = 0f
+        var initialTouchY = 0f
+        var isScaling = false
+        var hasPanned = false
+
+        val rootLayout = object : FrameLayout(this) {
+            private fun isTouchOnView(tag: String, ev: MotionEvent): Boolean {
+                val v = findViewWithTag<View>(tag) ?: return false
+                if (v.visibility != View.VISIBLE) return false
+                val rect = Rect()
+                v.getGlobalVisibleRect(rect)
+                return rect.contains(ev.rawX.toInt(), ev.rawY.toInt())
+            }
+
+            private fun updateFocusState(ev: MotionEvent) {
+                var sumX = 0f
+                var sumY = 0f
+                val count = ev.pointerCount
+                val isPointerUp = ev.actionMasked == MotionEvent.ACTION_POINTER_UP
+                val div = if (isPointerUp) count - 1 else count
+                if (div > 0) {
+                    for (i in 0 until count) {
+                        if (isPointerUp && i == ev.actionIndex) continue
+                        sumX += ev.getX(i)
+                        sumY += ev.getY(i)
+                    }
+                }
+                val fx = if (div > 0) sumX / div else 0f
+                val fy = if (div > 0) sumY / div else 0f
+
+                when (ev.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        initialTouchX = fx; initialTouchY = fy
+                        lastFocusX = fx; lastFocusY = fy
+                        isScaling = false; hasPanned = false
+                    }
+                    MotionEvent.ACTION_POINTER_DOWN -> {
+                        isScaling = true
+                        lastFocusX = fx; lastFocusY = fy
+                    }
+                }
+            }
+
+            override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
+                if (isTouchOnView("correction_ui_root", ev)) return false
+                if (isTouchOnView("manual_input_blocker", ev)) return false
+                if (isTouchOnView("close_button", ev)) return false
+
+                updateFocusState(ev)
+
+                when (ev.actionMasked) {
+                    MotionEvent.ACTION_MOVE -> {
+                        val dx = abs(ev.x - initialTouchX)
+                        val dy = abs(ev.y - initialTouchY)
+                        if (ev.pointerCount > 1 || dx > 10 || dy > 10) return true
+                    }
+                    MotionEvent.ACTION_POINTER_DOWN -> return true
+                }
+                return super.onInterceptTouchEvent(ev)
+            }
+        }.apply {
+            setBackgroundColor(android.graphics.Color.argb(140, 0, 0, 0))
             systemUiVisibility = View.SYSTEM_UI_FLAG_LAYOUT_STABLE or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
             setOnClickListener {
                 if (findViewWithTag<View>("manual_input_blocker") != null) {
@@ -260,16 +326,6 @@ class OcrAccessibilityService : AccessibilityService() {
                 scaleType = android.widget.ImageView.ScaleType.FIT_XY
             }
             contentContainer.addView(imageView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
-
-            var scale = 1f
-            var transX = 0f
-            var transY = 0f
-            var lastFocusX = 0f
-            var lastFocusY = 0f
-            var initialTouchX = 0f
-            var initialTouchY = 0f
-            var isScaling = false
-            var hasPanned = false
 
             val gestureDetector = android.view.ScaleGestureDetector(this@OcrAccessibilityService, object : android.view.ScaleGestureDetector.SimpleOnScaleGestureListener() {
                 override fun onScale(detector: android.view.ScaleGestureDetector): Boolean {
@@ -403,6 +459,7 @@ class OcrAccessibilityService : AccessibilityService() {
         windowManager?.addView(screenshotOverlay, params)
         
         val closeButton = Button(this).apply {
+            tag = "close_button"
             text = "Close OCR"
             setOnClickListener { hideScreenshotOverlay() }
             setOnTouchListener(object : View.OnTouchListener {
