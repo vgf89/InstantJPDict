@@ -247,11 +247,129 @@ class OcrAccessibilityService : AccessibilityService() {
             }
         }
 
-        val imageView = android.widget.ImageView(this).apply {
-            setImageBitmap(bitmap)
-            scaleType = android.widget.ImageView.ScaleType.FIT_XY
-        }
-        rootLayout.addView(imageView)
+            // Viewport container to support Pan & Zoom for image AND results
+            val contentContainer = FrameLayout(this).apply {
+                tag = "content_container"
+                pivotX = 0f
+                pivotY = 0f
+            }
+            rootLayout.addView(contentContainer, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            
+            val imageView = android.widget.ImageView(this).apply {
+                setImageBitmap(bitmap)
+                scaleType = android.widget.ImageView.ScaleType.FIT_XY
+            }
+            contentContainer.addView(imageView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+
+            var scale = 1f
+            var transX = 0f
+            var transY = 0f
+            var lastFocusX = 0f
+            var lastFocusY = 0f
+            var initialTouchX = 0f
+            var initialTouchY = 0f
+            var isScaling = false
+            var hasPanned = false
+
+            val gestureDetector = android.view.ScaleGestureDetector(this@OcrAccessibilityService, object : android.view.ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                override fun onScale(detector: android.view.ScaleGestureDetector): Boolean {
+                    val oldScale = scale
+                    scale = (scale * detector.scaleFactor).coerceIn(1f, 5f)
+                    val factor = scale / oldScale
+
+                    contentContainer.scaleX = scale
+                    contentContainer.scaleY = scale
+
+                    // Zoom around the focus point. 
+                    // Note: transX/Y already include the focus shift pan from the current event
+                    // because we update them in the touch listener before calling gestureDetector.onTouchEvent
+                    transX = detector.focusX - (detector.focusX - transX) * factor
+                    transY = detector.focusY - (detector.focusY - transY) * factor
+                    
+                    contentContainer.translationX = transX
+                    contentContainer.translationY = transY
+                    return true
+                }
+            })
+
+            rootLayout.setOnTouchListener { v, event ->
+                // Calculate current focus (midpoint of all active pointers)
+                var sumX = 0f
+                var sumY = 0f
+                val count = event.pointerCount
+                val isPointerUp = event.actionMasked == MotionEvent.ACTION_POINTER_UP
+                val div = if (isPointerUp) count - 1 else count
+                
+                if (div > 0) {
+                    for (i in 0 until count) {
+                        if (isPointerUp && i == event.actionIndex) continue
+                        sumX += event.getX(i)
+                        sumY += event.getY(i)
+                    }
+                }
+                val focusX = if (div > 0) sumX / div else 0f
+                val focusY = if (div > 0) sumY / div else 0f
+
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        initialTouchX = focusX
+                        initialTouchY = focusY
+                        lastFocusX = focusX
+                        lastFocusY = focusY
+                        isScaling = false
+                        hasPanned = false
+                    }
+                    MotionEvent.ACTION_POINTER_DOWN -> {
+                        isScaling = true
+                        lastFocusX = focusX
+                        lastFocusY = focusY
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        val dx = focusX - lastFocusX
+                        val dy = focusY - lastFocusY
+
+                        if (!isScaling && !hasPanned && (abs(focusX - initialTouchX) > 10 || abs(focusY - initialTouchY) > 10)) {
+                            hasPanned = true
+                        }
+
+                        // We pan if we are either in a 1-finger pan mode (!isScaling) 
+                        // or if we have multiple fingers down (allowing pan-while-zoom)
+                        if ((hasPanned && !isScaling) || count > 1) {
+                            transX += dx
+                            transY += dy
+                        }
+                        
+                        lastFocusX = focusX
+                        lastFocusY = focusY
+                    }
+                    MotionEvent.ACTION_POINTER_UP -> {
+                        lastFocusX = focusX
+                        lastFocusY = focusY
+                    }
+                }
+
+                gestureDetector.onTouchEvent(event)
+                
+                if (event.actionMasked == MotionEvent.ACTION_MOVE) {
+                    if ((hasPanned && !isScaling) || count > 1) {
+                        contentContainer.translationX = transX
+                        contentContainer.translationY = transY
+                    }
+                } else if (event.actionMasked == MotionEvent.ACTION_UP) {
+                    // Only performClick if we didn't pan or zoom
+                    if (!hasPanned && !isScaling) {
+                        val dx = focusX - initialTouchX
+                        val dy = focusY - initialTouchY
+                        if (abs(dx) < 10 && abs(dy) < 10) {
+                            v.performClick()
+                        }
+                    }
+                }
+                true
+            }
+        
+        // Note: Lines and results should be added to `contentContainer` instead of `rootLayout`
+        // ... (This would require refactoring the OCR injection points)
 
         val debugTextView = TextView(this).apply {
             tag = "debug_text"
@@ -345,7 +463,7 @@ class OcrAccessibilityService : AccessibilityService() {
                     debugTextView.text = "Found ${lineBoxes.size} lines. Recognizing..."
                     
                     val linesBorderLayer = FrameLayout(this@OcrAccessibilityService)
-                    rootLayout.addView(linesBorderLayer, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+                    rootLayout.findViewWithTag<FrameLayout>("content_container")?.addView(linesBorderLayer, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
 
                     lineBoxes.forEach { box ->
                         val lineView = View(this@OcrAccessibilityService).apply {
@@ -360,8 +478,8 @@ class OcrAccessibilityService : AccessibilityService() {
 
                     val marginsLayer = FrameLayout(this@OcrAccessibilityService)
                     val clicksLayer = FrameLayout(this@OcrAccessibilityService)
-                    rootLayout.addView(marginsLayer, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
-                    rootLayout.addView(clicksLayer, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+                    rootLayout.findViewWithTag<FrameLayout>("content_container")?.addView(marginsLayer, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+                    rootLayout.findViewWithTag<FrameLayout>("content_container")?.addView(clicksLayer, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
 
                     boxViews.clear()
                     textViews.clear()
@@ -551,11 +669,12 @@ class OcrAccessibilityService : AccessibilityService() {
         }
         activeCharInfos = infos
 
+        val contentContainer = rootLayout.findViewWithTag<FrameLayout>("content_container") ?: rootLayout
         val marginsLayer = FrameLayout(this)
         val clicksLayer = FrameLayout(this)
         
-        rootLayout.addView(marginsLayer, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
-        rootLayout.addView(clicksLayer, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        contentContainer.addView(marginsLayer, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        contentContainer.addView(clicksLayer, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         
         var charIndex = 0
         val margin = 50
