@@ -510,6 +510,7 @@ class OcrAccessibilityService : AccessibilityService() {
                     val lp = v.layoutParams as FrameLayout.LayoutParams
                     when (event.action) {
                         MotionEvent.ACTION_DOWN -> {
+                            v.parent.requestDisallowInterceptTouchEvent(true)
                             initialX = lp.leftMargin.toFloat()
                             initialY = lp.topMargin.toFloat()
                             initialTouchX = event.rawX
