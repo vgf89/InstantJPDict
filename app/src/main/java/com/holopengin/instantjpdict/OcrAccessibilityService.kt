@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.Bitmap
+import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.graphics.drawable.GradientDrawable
@@ -123,7 +124,18 @@ class OcrAccessibilityService : AccessibilityService() {
 
         val frameLayout = FrameLayout(this)
         ocrButton = Button(this).apply {
-            text = "OCR"
+            text = "辞典"
+            setTextColor(Color.argb(100, 0, 255, 255))
+            val size = (44 * resources.displayMetrics.density).toInt()
+            layoutParams = FrameLayout.LayoutParams(size, size)
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.argb(70, 0, 0, 0))
+                setStroke((1 * resources.displayMetrics.density).toInt(), Color.argb(100, 0, 255, 255))
+            }
+            setPadding(0, 0, 0, 0)
+            textSize = 13f
+            isAllCaps = false
         }
         frameLayout.addView(ocrButton)
         
@@ -477,7 +489,16 @@ class OcrAccessibilityService : AccessibilityService() {
         
         val closeButton = Button(this).apply {
             tag = "close_button"
-            text = "Close OCR"
+            text = "辞典"
+            setTextColor(Color.CYAN)
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.BLACK)
+                setStroke((1 * resources.displayMetrics.density).toInt(), Color.CYAN)
+            }
+            setPadding(0, 0, 0, 0)
+            textSize = 13f
+            isAllCaps = false
             setOnClickListener { hideScreenshotOverlay() }
             setOnTouchListener(object : View.OnTouchListener {
                 private var initialX = 0f
@@ -519,10 +540,8 @@ class OcrAccessibilityService : AccessibilityService() {
                 }
             })
         }
-        val lp = FrameLayout.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.WRAP_CONTENT
-        ).apply {
+        val size = (44 * resources.displayMetrics.density).toInt()
+        val lp = FrameLayout.LayoutParams(size, size).apply {
             leftMargin = floatingParams?.x ?: 100
             topMargin = floatingParams?.y ?: 100
         }
