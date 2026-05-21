@@ -5,6 +5,11 @@ import android.graphics.Canvas
 import android.util.AttributeSet
 import android.widget.TextView
 
+/**
+ * A TextView that centers a single character precisely within its bounds using FontMetrics.
+ * This avoids the standard TextView's baseline-based positioning which can be inconsistent
+ * for character overlays.
+ */
 class CenteredTextView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
@@ -15,18 +20,19 @@ class CenteredTextView @JvmOverloads constructor(
         val textStr = text.toString()
         if (textStr.isEmpty()) return
 
+        // Use FontMetrics to calculate the precise vertical center of the font.
+        // 'ascent' (distance from baseline to top, negative) and 'descent' (distance from baseline to bottom, positive)
+        // define the standard vertical extent of the glyphs.
         val metrics = paint.fontMetrics
-        // Visual center of the glyph relative to its baseline
-        val glyphCenterOffset = (metrics.ascent + metrics.descent) / 2f
         
-        // Target vertical center of the view
-        val targetY = (height / 2f) - glyphCenterOffset
+        // The baseline should be positioned such that (ascent + descent) / 2 is at view center.
+        // This centers the character's visual body rather than its full line height.
+        val baselineOffsetY = (height / 2f) - (metrics.ascent + metrics.descent) / 2f
         
-        // Target horizontal center
-        val targetX = (width / 2f) - (paint.measureText(textStr) / 2f)
+        // Center horizontally based on the measured width of the specific string
+        val x = (width / 2f) - (paint.measureText(textStr) / 2f)
 
-        // Ensure the paint has the correct color from the TextView
         paint.color = currentTextColor
-        canvas.drawText(textStr, targetX, targetY, paint)
+        canvas.drawText(textStr, x, baselineOffsetY, paint)
     }
 }

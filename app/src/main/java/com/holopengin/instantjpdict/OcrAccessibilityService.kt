@@ -637,7 +637,7 @@ class OcrAccessibilityService : AccessibilityService() {
                 text = char
                 setTextColor(android.graphics.Color.parseColor("#FF7777"))
                 typeface = android.graphics.Typeface.DEFAULT
-                setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, fixedSize.toFloat() * 1.05f)
+                setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, fixedSize.toFloat() * 0.90f)
                 setPadding(0, 0, 0, 0)
                 includeFontPadding = false
                 isClickable = false
@@ -799,7 +799,7 @@ class OcrAccessibilityService : AccessibilityService() {
                     text = char
                     setTextColor(android.graphics.Color.parseColor("#FF7777")) // Light Red
                     typeface = android.graphics.Typeface.DEFAULT
-                    setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, fixedSize.toFloat() * 1.05f)
+                    setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, fixedSize.toFloat() * 0.90f)
                     setPadding(0, 0, 0, 0)
                     includeFontPadding = false
                     isClickable = false
