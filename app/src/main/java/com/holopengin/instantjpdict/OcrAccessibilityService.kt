@@ -156,8 +156,12 @@ class OcrAccessibilityService : AccessibilityService() {
                         return true
                     }
                     MotionEvent.ACTION_MOVE -> {
-                        val newX = initialX + (event.rawX - initialTouchX).roundToInt()
-                        val newY = initialY + (event.rawY - initialTouchY).roundToInt()
+                        val displayMetrics = resources.displayMetrics
+                        val maxX = displayMetrics.widthPixels - v.width
+                        val maxY = displayMetrics.heightPixels - v.height
+
+                        val newX = (initialX + (event.rawX - initialTouchX).roundToInt()).coerceIn(0, maxX)
+                        val newY = (initialY + (event.rawY - initialTouchY).roundToInt()).coerceIn(0, maxY)
                         params.x = newX
                         params.y = newY
                         
@@ -518,8 +522,12 @@ class OcrAccessibilityService : AccessibilityService() {
                             return true
                         }
                         MotionEvent.ACTION_MOVE -> {
-                            val newX = (initialX + (event.rawX - initialTouchX)).roundToInt()
-                            val newY = (initialY + (event.rawY - initialTouchY)).roundToInt()
+                            val displayMetrics = resources.displayMetrics
+                            val maxX = displayMetrics.widthPixels - v.width
+                            val maxY = displayMetrics.heightPixels - v.height
+
+                            val newX = (initialX + (event.rawX - initialTouchX)).roundToInt().coerceIn(0, maxX)
+                            val newY = (initialY + (event.rawY - initialTouchY)).roundToInt().coerceIn(0, maxY)
                             lp.leftMargin = newX
                             lp.topMargin = newY
                             v.layoutParams = lp
