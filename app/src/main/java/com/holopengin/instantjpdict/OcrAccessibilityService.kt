@@ -1,8 +1,6 @@
 package com.holopengin.instantjpdict
 
 import android.accessibilityservice.AccessibilityService
-import android.accessibilityservice.AccessibilityService.ScreenshotResult
-import android.accessibilityservice.AccessibilityService.TakeScreenshotCallback
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -50,7 +48,7 @@ class OcrAccessibilityService : AccessibilityService() {
     private var ocrButton: Button? = null
     private var screenshotOverlay: View? = null
     private var screenshotBitmap: Bitmap? = null
-    private lateinit var ocrEngine: MeikiOcrEngine
+    private lateinit var ocrEngine: OcrEngine
     private lateinit var deinflector: Deinflector
     private val gson = Gson()
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
@@ -92,7 +90,7 @@ class OcrAccessibilityService : AccessibilityService() {
 
     override fun onCreate() {
         super.onCreate()
-        ocrEngine = MeikiOcrEngine(this)
+        ocrEngine = OcrEngine(this)
         deinflector = Deinflector(this)
         
         val filter = IntentFilter().apply {
