@@ -11,7 +11,6 @@ import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import ai.onnxruntime.OrtSession.SessionOptions
 import com.google.gson.Gson
-import androidx.lifecycle.HasDefaultViewModelProviderFactory
 import java.nio.FloatBuffer
 import java.nio.LongBuffer
 import kotlinx.coroutines.Dispatchers
@@ -26,7 +25,7 @@ import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
-class MeikiOcrEngine(private val context: Context) {
+class OcrEngine(private val context: Context) {
     private val env: OrtEnvironment = OrtEnvironment.getEnvironment()
     private var detectSession: OrtSession? = null
     private var recognizeSession: OrtSession? = null
