@@ -80,6 +80,7 @@ class OcrAccessibilityService : AccessibilityService() {
     private var activeAllAlternatives: List<List<Pair<Char, Float>>> = emptyList()
     private data class CharInfo(val lineIdx: Int, val charIdxInLine: Int, val box: Rect)
     private var activeCharInfos: List<CharInfo> = emptyList()
+    private var activeLineBoxes: List<Rect> = emptyList()
     private var currentTappedIdx: Int = -1
 
     private val borderDrawable by lazy {
@@ -303,13 +304,31 @@ class OcrAccessibilityService : AccessibilityService() {
                     closeManualInput(this)
                     return@setOnClickListener
                 }
+
                 val panel = findViewWithTag<View>("correction_ui_root")
                 if (panel != null) {
                     removeView(panel)
                     resetHighlights()
-                } else {
-                    hideScreenshotOverlay()
+                    return@setOnClickListener
                 }
+
+                // Screen-space margin check: if click is within 20dp of any character box, ignore it
+                val s = scale
+                val tx = transX
+                val ty = transY
+                val ix = (initialTouchX - tx) / s
+                val iy = (initialTouchY - ty) / s
+                val m = (20 * resources.displayMetrics.density) / s
+                
+                val isNear = activeCharInfos.any { info ->
+                    val b = info.box
+                    ix >= b.left - m && ix <= b.right + m && iy >= b.top - m && iy <= b.bottom + m
+                } || activeLineBoxes.any { b ->
+                    ix >= b.left - m && ix <= b.right + m && iy >= b.top - m && iy <= b.bottom + m
+                }
+                if (isNear) return@setOnClickListener
+
+                hideScreenshotOverlay()
             }
         }
 
@@ -516,6 +535,7 @@ class OcrAccessibilityService : AccessibilityService() {
                 if (ocrEngine.isReady()) {
                     debugTextView.text = "Running detection..."
                     val lineBoxes = withContext(Dispatchers.IO) { ocrEngine.detect(bitmap) }
+                    activeLineBoxes = lineBoxes
                     
                     debugTextView.text = "Found ${lineBoxes.size} lines. Recognizing..."
                     
@@ -533,9 +553,7 @@ class OcrAccessibilityService : AccessibilityService() {
                         linesBorderLayer.addView(lineView, lineParams)
                     }
 
-                    val marginsLayer = FrameLayout(this@OcrAccessibilityService)
                     val clicksLayer = FrameLayout(this@OcrAccessibilityService)
-                    rootLayout.findViewWithTag<FrameLayout>("content_container")?.addView(marginsLayer, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
                     rootLayout.findViewWithTag<FrameLayout>("content_container")?.addView(clicksLayer, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
 
                     boxViews.clear()
@@ -551,7 +569,7 @@ class OcrAccessibilityService : AccessibilityService() {
                             if (screenshotOverlay == null) return@recognizeStreaming
                             // Switch to Main thread for UI updates
                             serviceScope.launch {
-                                addLineToResults(rootLayout, marginsLayer, clicksLayer, lineResult)
+                                addLineToResults(rootLayout, clicksLayer, lineResult)
                                 debugTextView.text = "Recognized ${activeLineResults.size}/${lineBoxes.size} lines..."
                                 debugTextView.bringToFront()
                             }
@@ -575,14 +593,13 @@ class OcrAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun addLineToResults(rootLayout: FrameLayout, marginsLayer: FrameLayout, clicksLayer: FrameLayout, line: LineResult) {
+    private fun addLineToResults(rootLayout: FrameLayout, clicksLayer: FrameLayout, line: LineResult) {
         if (screenshotOverlay == null) return
         val lineIdx = activeLineResults.size
         (activeLineResults as MutableList).add(line)
         activeAllChars.addAll(line.text.toList())
         activeAllAlternatives = activeAllAlternatives + line.alternatives
 
-        val margin = 50
         val fixedSize = if (line.isVertical) {
             line.charBoxes.map { it.width() }.maxOrNull() ?: 0
         } else {
@@ -616,16 +633,6 @@ class OcrAccessibilityService : AccessibilityService() {
             val currentIdx = activeCharInfos.size
             (activeCharInfos as MutableList).add(CharInfo(lineIdx, i, box))
             
-            val marginBlocker = View(this).apply {
-                isClickable = true
-                setOnClickListener { }
-            }
-            val marginParams = FrameLayout.LayoutParams(box.width() + 2 * margin, box.height() + 2 * margin).apply {
-                leftMargin = box.left - margin
-                topMargin = box.top - margin
-            }
-            marginsLayer.addView(marginBlocker, marginParams)
-
             val charContainer = FrameLayout(this)
             val charParams = FrameLayout.LayoutParams(fixedSize, fixedSize).apply {
                 leftMargin = box.left
@@ -727,14 +734,11 @@ class OcrAccessibilityService : AccessibilityService() {
         activeCharInfos = infos
 
         val contentContainer = rootLayout.findViewWithTag<FrameLayout>("content_container") ?: rootLayout
-        val marginsLayer = FrameLayout(this)
         val clicksLayer = FrameLayout(this)
         
-        contentContainer.addView(marginsLayer, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         contentContainer.addView(clicksLayer, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         
         var charIndex = 0
-        val margin = 50
 
         for (line in results) {
             // Determine a fixed size for all characters in this line based on line "thickness"
@@ -778,16 +782,6 @@ class OcrAccessibilityService : AccessibilityService() {
                 val char = line.text.getOrNull(i)?.toString() ?: ""
                 val currentIdx = charIndex++
                 
-                val marginBlocker = View(this).apply {
-                    isClickable = true
-                    setOnClickListener { }
-                }
-                val marginParams = FrameLayout.LayoutParams(box.width() + 2 * margin, box.height() + 2 * margin).apply {
-                    leftMargin = box.left - margin
-                    topMargin = box.top - margin
-                }
-                marginsLayer.addView(marginBlocker, marginParams)
-
                 val charContainer = FrameLayout(this)
                 val charParams = FrameLayout.LayoutParams(fixedSize, fixedSize).apply {
                     leftMargin = box.left
@@ -1425,6 +1419,7 @@ class OcrAccessibilityService : AccessibilityService() {
         (floatingView?.parent as? android.view.ViewGroup)?.removeView(floatingView)
         if (root.isAttachedToWindow) try { windowManager?.removeViewImmediate(root) } catch (e: Exception) { Log.e("OcrAccessibilityService", "Error removing overlay", e) }
         screenshotOverlay = null; screenshotBitmap = null; floatingView?.visibility = View.VISIBLE
+        activeLineBoxes = emptyList()
         try { windowManager?.updateViewLayout(floatingView, floatingParams) } catch (e: Exception) { Log.e("OcrAccessibilityService", "Error restoring button", e) }
         boxViews.clear(); textViews.clear()
     }
