@@ -120,6 +120,12 @@ class OcrAccessibilityService : AccessibilityService() {
         }
     }
 
+    private val chunkBorderDrawable by lazy {
+        GradientDrawable().apply {
+            setStroke((1 * resources.displayMetrics.density).toInt(), android.graphics.Color.GREEN)
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         ocrEngine = OcrEngine(this)
@@ -611,6 +617,9 @@ class OcrAccessibilityService : AccessibilityService() {
                     val clicksLayer = FrameLayout(this@OcrAccessibilityService).apply { tag = "clicks_layer" }
                     contentContainer.addView(clicksLayer, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
 
+                    val chunksBorderLayer = FrameLayout(this@OcrAccessibilityService).apply { tag = "chunks_border_layer" }
+                    contentContainer.addView(chunksBorderLayer, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+
                     // Pre-create line containers to maintain Z-order and simplify updates
                     lineBoxes.forEachIndexed { i, _ ->
                         val lineContainer = FrameLayout(this@OcrAccessibilityService).apply { tag = "line_clicks_$i" }
@@ -656,6 +665,18 @@ class OcrAccessibilityService : AccessibilityService() {
         if (screenshotOverlay == null) return
         activeLineResults[lineIdx] = line
         updateGlobalData()
+
+        val chunksBorderLayer = rootLayout.findViewWithTag<FrameLayout>("chunks_border_layer")
+        line.chunkBoxes.forEach { chunkBox ->
+            val chunkView = View(this).apply {
+                background = chunkBorderDrawable
+            }
+            val chunkParams = FrameLayout.LayoutParams(chunkBox.width(), chunkBox.height()).apply {
+                leftMargin = chunkBox.left
+                topMargin = chunkBox.top
+            }
+            chunksBorderLayer?.addView(chunkView, chunkParams)
+        }
 
         val lineContainer = clicksLayer.findViewWithTag<FrameLayout>("line_clicks_$lineIdx") ?: clicksLayer
 
