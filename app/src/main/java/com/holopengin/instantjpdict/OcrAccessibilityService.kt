@@ -70,17 +70,48 @@ class OcrAccessibilityService : AccessibilityService() {
     }
     
     private val boxViews = mutableListOf<View>()
-    private val textViews = mutableListOf<TextView>()
+    private val textViews = mutableMapOf<Pair<Int, Int>, TextView>()
     private var lastLandscapeGravity = Gravity.END
     private var lastPortraitGravity = Gravity.BOTTOM
 
-    private var activeLineResults: List<LineResult> = emptyList()
+    private var activeLineResults: MutableList<LineResult?> = mutableListOf()
     private var activeAllChars: MutableList<Char> = mutableListOf()
-    private var activeAllAlternatives: List<List<Pair<Char, Float>>> = emptyList()
-    private data class CharInfo(val lineIdx: Int, val charIdxInLine: Int, val box: Rect)
-    private var activeCharInfos: List<CharInfo> = emptyList()
+    private var activeAllAlternatives: MutableList<List<Pair<Char, Float>>> = mutableListOf()
     private var activeLineBoxes: List<Rect> = emptyList()
     private var currentTappedIdx: Int = -1
+    private var currentTappedLineIdx: Int = -1
+    private var currentTappedCharIdxInLine: Int = -1
+
+    private fun getGlobalIdx(lIdx: Int, cIdx: Int): Int {
+        var res = 0
+        for (i in 0 until lIdx) {
+            res += activeLineResults.getOrNull(i)?.text?.length ?: 0
+        }
+        return res + cIdx
+    }
+
+    private fun getCoordsFromGlobalIdx(globalIdx: Int): Pair<Int, Int>? {
+        var current = 0
+        activeLineResults.forEachIndexed { lIdx, line ->
+            if (line != null) {
+                val len = line.text.length
+                if (globalIdx < current + len) return Pair(lIdx, globalIdx - current)
+                current += len
+            }
+        }
+        return null
+    }
+
+    private fun updateGlobalData() {
+        activeAllChars.clear()
+        activeAllAlternatives.clear()
+        activeLineResults.forEach { line ->
+            if (line != null) {
+                activeAllChars.addAll(line.text.toList())
+                activeAllAlternatives.addAll(line.alternatives)
+            }
+        }
+    }
 
     private val borderDrawable by lazy {
         GradientDrawable().apply {
@@ -334,9 +365,10 @@ class OcrAccessibilityService : AccessibilityService() {
                 val iy = (initialTouchY - ty) / s
                 val m = (20 * resources.displayMetrics.density) / s
                 
-                val isNear = activeCharInfos.any { info ->
-                    val b = info.box
-                    ix >= b.left - m && ix <= b.right + m && iy >= b.top - m && iy <= b.bottom + m
+                val isNear = activeLineResults.filterNotNull().any { line ->
+                    line.charBoxes.any { b ->
+                        ix >= b.left - m && ix <= b.right + m && iy >= b.top - m && iy <= b.bottom + m
+                    }
                 } || activeLineBoxes.any { b ->
                     ix >= b.left - m && ix <= b.right + m && iy >= b.top - m && iy <= b.bottom + m
                 }
@@ -457,9 +489,6 @@ class OcrAccessibilityService : AccessibilityService() {
                 true
             }
         
-        // Note: Lines and results should be added to `contentContainer` instead of `rootLayout`
-        // ... (This would require refactoring the OCR injection points)
-
         val debugTextView = TextView(this).apply {
             tag = "debug_text"
             setTextColor(android.graphics.Color.YELLOW)
@@ -566,7 +595,7 @@ class OcrAccessibilityService : AccessibilityService() {
                     debugTextView.text = "Found ${lineBoxes.size} lines. Recognizing..."
                     
                     val linesBorderLayer = FrameLayout(this@OcrAccessibilityService)
-                    rootLayout.findViewWithTag<FrameLayout>("content_container")?.addView(linesBorderLayer, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+                    contentContainer.addView(linesBorderLayer, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
 
                     lineBoxes.forEach { box ->
                         val lineView = View(this@OcrAccessibilityService).apply {
@@ -579,24 +608,28 @@ class OcrAccessibilityService : AccessibilityService() {
                         linesBorderLayer.addView(lineView, lineParams)
                     }
 
-                    val clicksLayer = FrameLayout(this@OcrAccessibilityService)
-                    rootLayout.findViewWithTag<FrameLayout>("content_container")?.addView(clicksLayer, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+                    val clicksLayer = FrameLayout(this@OcrAccessibilityService).apply { tag = "clicks_layer" }
+                    contentContainer.addView(clicksLayer, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+
+                    // Pre-create line containers to maintain Z-order and simplify updates
+                    lineBoxes.forEachIndexed { i, _ ->
+                        val lineContainer = FrameLayout(this@OcrAccessibilityService).apply { tag = "line_clicks_$i" }
+                        clicksLayer.addView(lineContainer, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+                    }
 
                     boxViews.clear()
                     textViews.clear()
-                    activeLineResults = mutableListOf()
+                    activeLineResults = MutableList(lineBoxes.size) { null }
                     activeAllChars = mutableListOf()
                     activeAllAlternatives = mutableListOf()
-                    activeCharInfos = mutableListOf()
 
                     val startTime = System.currentTimeMillis()
                     withContext(Dispatchers.IO) {
-                        ocrEngine.recognizeStreaming(bitmap, lineBoxes) { lineResult ->
+                        ocrEngine.recognizeStreaming(bitmap, lineBoxes) { index, lineResult ->
                             if (screenshotOverlay == null) return@recognizeStreaming
-                            // Switch to Main thread for UI updates
                             serviceScope.launch {
-                                addLineToResults(rootLayout, clicksLayer, lineResult)
-                                debugTextView.text = "Recognized ${activeLineResults.size}/${lineBoxes.size} lines..."
+                                addLineToResults(rootLayout, clicksLayer, index, lineResult)
+                                debugTextView.text = "Recognized ${activeLineResults.count { it != null }}/${lineBoxes.size} lines..."
                                 debugTextView.bringToFront()
                             }
                         }
@@ -619,12 +652,12 @@ class OcrAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun addLineToResults(rootLayout: FrameLayout, clicksLayer: FrameLayout, line: LineResult) {
+    private fun addLineToResults(rootLayout: FrameLayout, clicksLayer: FrameLayout, lineIdx: Int, line: LineResult) {
         if (screenshotOverlay == null) return
-        val lineIdx = activeLineResults.size
-        (activeLineResults as MutableList).add(line)
-        activeAllChars.addAll(line.text.toList())
-        activeAllAlternatives = activeAllAlternatives + line.alternatives
+        activeLineResults[lineIdx] = line
+        updateGlobalData()
+
+        val lineContainer = clicksLayer.findViewWithTag<FrameLayout>("line_clicks_$lineIdx") ?: clicksLayer
 
         val fixedSize = if (line.isVertical) {
             line.charBoxes.map { it.width() }.maxOrNull() ?: 0
@@ -656,15 +689,13 @@ class OcrAccessibilityService : AccessibilityService() {
             lastY = centerY
 
             val char = line.text.getOrNull(i)?.toString() ?: ""
-            val currentIdx = activeCharInfos.size
-            (activeCharInfos as MutableList).add(CharInfo(lineIdx, i, box))
             
             val charContainer = FrameLayout(this)
             val charParams = FrameLayout.LayoutParams(fixedSize, fixedSize).apply {
                 leftMargin = box.left
                 topMargin = box.top
             }
-            clicksLayer.addView(charContainer, charParams)
+            lineContainer.addView(charContainer, charParams)
 
             val textView = CenteredTextView(this).apply {
                 text = char
@@ -680,9 +711,8 @@ class OcrAccessibilityService : AccessibilityService() {
                     fontFeatureSettings = "'vert' 1"
                 }
             }
-            textView.tag = currentIdx
+            textViews[Pair(lineIdx, i)] = textView
             charContainer.addView(textView, FrameLayout.LayoutParams(fixedSize, fixedSize, Gravity.CENTER))
-            textViews.add(textView)
 
             val boxView = View(this).apply {
                 background = null
@@ -691,171 +721,107 @@ class OcrAccessibilityService : AccessibilityService() {
             charContainer.addView(boxView, FrameLayout.LayoutParams(box.width(), box.height(), Gravity.CENTER))
 
             boxView.setOnClickListener {
-                performLookup(currentIdx, rootLayout)
+                performLookup(lineIdx, i, rootLayout)
             }
+        }
+        updateNeighborPanelForLine(rootLayout, lineIdx, line)
+    }
 
-            // Append character view to correction panel if it's currently open
-            val isLandscape = rootLayout.width > rootLayout.height
-            val neighborPanel = rootLayout.findViewWithTag<LinearLayout>("neighbor_scroll_panel")
-            if (neighborPanel != null) {
-                val rootHeight = rootLayout.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
-                val rootWidth = rootLayout.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
-                val itemSize = (if (isLandscape) rootHeight else rootWidth) / 11
-                val estimatedTextSize = (itemSize * 0.45 / resources.displayMetrics.density).toFloat().coerceIn(12f, 22f)
-                val itemLp = LinearLayout.LayoutParams(itemSize, itemSize).apply { setMargins(2, 2, 2, 2) }
-                
-                val neighborTextView = TextView(this).apply {
-                    tag = "neighbor_char_$currentIdx"
-                    text = char
-                    setTextColor(android.graphics.Color.WHITE)
-                    textSize = estimatedTextSize
-                    gravity = Gravity.CENTER
-                    setBackgroundColor(android.graphics.Color.argb(255, 65, 65, 65))
-                    
+    private fun updateNeighborPanelForLine(rootLayout: FrameLayout, lineIdx: Int, line: LineResult) {
+        val neighborPanel = rootLayout.findViewWithTag<LinearLayout>("neighbor_scroll_panel") ?: return
+        val neighborScrollView = rootLayout.findViewWithTag<View>("neighbor_scroll_view") ?: return
+        val lineContainer = neighborPanel.findViewWithTag<LinearLayout>("line_neighbor_$lineIdx") ?: return
+        
+        val isLandscape = rootLayout.width > rootLayout.height
+        
+        val isAbove = lineIdx < currentTappedLineIdx
+        val oldDim = if (isAbove) (if (isLandscape) lineContainer.height else lineContainer.width) else 0
+
+        fillLineNeighborContainer(lineContainer, lineIdx, line, isLandscape, rootLayout)
+        
+        if (isAbove) {
+            lineContainer.post {
+                val newDim = if (isLandscape) lineContainer.height else lineContainer.width
+                val diff = newDim - oldDim
+                if (diff != 0) {
                     if (isLandscape) {
-                        textLocale = java.util.Locale.JAPANESE
-                        fontFeatureSettings = "'vert' 1"
-                    }
-                    
-                    setOnClickListener {
-                        if (currentTappedIdx == currentIdx) toggleAlternativesPanel(rootLayout, currentIdx, isLandscape)
-                        else {
-                            val oldIdx = currentTappedIdx
-                            currentTappedIdx = currentIdx
-                            neighborPanel.findViewWithTag<View>("neighbor_char_$oldIdx")?.let { 
-                                it.setBackgroundColor(android.graphics.Color.argb(255, 65, 65, 65))
-                                (it as TextView).setTextColor(android.graphics.Color.WHITE) 
-                            }
-                            this.setBackgroundColor(android.graphics.Color.YELLOW)
-                            this.setTextColor(android.graphics.Color.BLACK)
-                            
-                            val altContainer = rootLayout.findViewWithTag<FrameLayout>("alternatives_container")
-                            if (altContainer != null && altContainer.childCount > 0) {
-                                updateAlternativesPanelContent(altContainer, currentIdx, isLandscape, rootLayout)
-                            }
-                            
-                            performLookup(currentIdx, rootLayout, skipCenter = true)
-                        }
-                    }
-                }
-                neighborPanel.addView(neighborTextView, itemLp)
-            }
-        }
-    }
-
-    private fun drawResults(rootLayout: FrameLayout, results: List<LineResult>) {
-        boxViews.clear()
-        textViews.clear()
-
-        activeLineResults = results
-        activeAllChars = results.flatMap { line -> line.text.toList() }.toMutableList()
-        activeAllAlternatives = results.flatMap { it.alternatives }
-        
-        val infos = mutableListOf<CharInfo>()
-        results.forEachIndexed { lineIdx, line ->
-            line.charBoxes.indices.forEach { charIdx ->
-                infos.add(CharInfo(lineIdx, charIdx, line.charBoxes[charIdx]))
-            }
-        }
-        activeCharInfos = infos
-
-        val contentContainer = rootLayout.findViewWithTag<FrameLayout>("content_container") ?: rootLayout
-        val clicksLayer = FrameLayout(this)
-        
-        contentContainer.addView(clicksLayer, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
-        
-        var charIndex = 0
-
-        for (line in results) {
-            // Determine a fixed size for all characters in this line based on line "thickness"
-            // For horizontal, thickness is height. For vertical, thickness is width.
-            val fixedSize = if (line.isVertical) {
-                line.charBoxes.map { it.width() }.maxOrNull() ?: 0
-            } else {
-                line.charBoxes.map { it.height() }.maxOrNull() ?: 0
-            }
-
-            var lastX = -1
-            var lastY = -1
-
-            for (i in line.charBoxes.indices) {
-                val originalBox = line.charBoxes[i]
-                
-                // Create a square box centered on the original detection
-                var centerX = originalBox.centerX()
-                var centerY = originalBox.centerY()
-                
-                // For the last character, extrapolate position from previous if possible
-                // to avoid tight bounding box clipping at the end of lines
-                if (i == line.charBoxes.size - 1 && i > 0) {
-                    if (line.isVertical) {
-                        centerY = lastY + fixedSize
+                        (neighborScrollView as ScrollView).scrollBy(0, diff)
                     } else {
-                        centerX = lastX + fixedSize
+                        (neighborScrollView as HorizontalScrollView).scrollBy(diff, 0)
                     }
-                }
-
-                val box = Rect(
-                    centerX - fixedSize / 2,
-                    centerY - fixedSize / 2,
-                    centerX + fixedSize / 2,
-                    centerY + fixedSize / 2
-                )
-                
-                lastX = centerX
-                lastY = centerY
-
-                val char = line.text.getOrNull(i)?.toString() ?: ""
-                val currentIdx = charIndex++
-                
-                val charContainer = FrameLayout(this)
-                val charParams = FrameLayout.LayoutParams(fixedSize, fixedSize).apply {
-                    leftMargin = box.left
-                    topMargin = box.top
-                }
-                clicksLayer.addView(charContainer, charParams)
-
-                val textView = CenteredTextView(this).apply {
-                    text = char
-                    setTextColor(android.graphics.Color.parseColor("#FF7777")) // Light Red
-                    typeface = android.graphics.Typeface.DEFAULT
-                    setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, fixedSize.toFloat() * 0.90f)
-                    setPadding(0, 0, 0, 0)
-                    includeFontPadding = false
-                    isClickable = false
-                    
-                    if (line.isVertical) {
-                        textLocale = java.util.Locale.JAPANESE
-                        fontFeatureSettings = "'vert' 1"
-                    }
-                }
-                textView.tag = currentIdx
-                val textLp = FrameLayout.LayoutParams(fixedSize, fixedSize, Gravity.CENTER)
-                charContainer.addView(textView, textLp)
-                textViews.add(textView)
-
-                val boxView = View(this).apply {
-                    background = null
-                    isClickable = true
-                }
-                val boxViewParams = FrameLayout.LayoutParams(box.width(), box.height()).apply {
-                    gravity = Gravity.CENTER
-                }
-                charContainer.addView(boxView, boxViewParams)
-                boxViews.add(boxView)
-
-                boxView.setOnClickListener {
-                    performLookup(currentIdx, rootLayout)
                 }
             }
         }
     }
 
-    private fun performLookup(currentIdx: Int, rootLayout: FrameLayout, skipCenter: Boolean = false) {
-        currentTappedIdx = currentIdx
-        val tappedBox = activeCharInfos[currentIdx].box
+    private fun fillLineNeighborContainer(lineContainer: LinearLayout, lineIdx: Int, line: LineResult, isLandscape: Boolean, rootLayout: FrameLayout) {
+        lineContainer.removeAllViews()
+        val rootHeight = rootLayout.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
+        val rootWidth = rootLayout.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
+        val itemSize = (if (isLandscape) rootHeight else rootWidth) / 11
+        val estimatedTextSize = (itemSize * 0.45 / resources.displayMetrics.density).toFloat().coerceIn(12f, 22f)
+        val itemLp = LinearLayout.LayoutParams(itemSize, itemSize).apply { setMargins(2, 2, 2, 2) }
 
-        activeAllAlternatives.getOrNull(currentIdx)?.let { alternatives ->
+        for (i in line.text.indices) {
+            val char = line.text[i].toString()
+            val neighborTextView = TextView(this).apply {
+                tag = "neighbor_char_$lineIdx-$i"
+                text = char
+                setTextColor(android.graphics.Color.WHITE)
+                textSize = estimatedTextSize
+                gravity = Gravity.CENTER
+                setBackgroundColor(android.graphics.Color.argb(255, 65, 65, 65))
+                
+                if (isLandscape) {
+                    textLocale = java.util.Locale.JAPANESE
+                    fontFeatureSettings = "'vert' 1"
+                }
+                
+                if (lineIdx == currentTappedLineIdx && i == currentTappedCharIdxInLine) {
+                    setBackgroundColor(android.graphics.Color.YELLOW)
+                    setTextColor(android.graphics.Color.BLACK)
+                }
+                
+                setOnClickListener {
+                    if (currentTappedLineIdx == lineIdx && currentTappedCharIdxInLine == i) {
+                        toggleAlternativesPanel(rootLayout, lineIdx, i, isLandscape)
+                    } else {
+                        val oldLineIdx = currentTappedLineIdx
+                        val oldCharIdx = currentTappedCharIdxInLine
+                        currentTappedLineIdx = lineIdx
+                        currentTappedCharIdxInLine = i
+                        
+                        val oldPanel = rootLayout.findViewWithTag<LinearLayout>("neighbor_scroll_panel")
+                        oldPanel?.findViewWithTag<View>("neighbor_char_$oldLineIdx-$oldCharIdx")?.let { 
+                            it.setBackgroundColor(android.graphics.Color.argb(255, 65, 65, 65))
+                            (it as TextView).setTextColor(android.graphics.Color.WHITE) 
+                        }
+                        
+                        this.setBackgroundColor(android.graphics.Color.YELLOW)
+                        this.setTextColor(android.graphics.Color.BLACK)
+                        
+                        val altContainer = rootLayout.findViewWithTag<FrameLayout>("alternatives_container")
+                        if (altContainer != null && altContainer.childCount > 0) {
+                            updateAlternativesPanelContent(altContainer, lineIdx, i, isLandscape, rootLayout)
+                        }
+                        
+                        performLookup(lineIdx, i, rootLayout, skipCenter = true)
+                    }
+                }
+            }
+            lineContainer.addView(neighborTextView, itemLp)
+        }
+    }
+
+    private fun performLookup(lineIdx: Int, charIdx: Int, rootLayout: FrameLayout, skipCenter: Boolean = false) {
+        currentTappedLineIdx = lineIdx
+        currentTappedCharIdxInLine = charIdx
+        currentTappedIdx = getGlobalIdx(lineIdx, charIdx)
+
+        val line = activeLineResults.getOrNull(lineIdx) ?: return
+        val tappedBox = line.charBoxes.getOrNull(charIdx) ?: Rect()
+
+        activeLineResults.getOrNull(lineIdx)?.alternatives?.getOrNull(charIdx)?.let { alternatives ->
             val logMsg = alternatives.joinToString(", ") { (char, score) ->
                 "$char (${String.format(java.util.Locale.US, "%.8f", score)})"
             }
@@ -864,13 +830,13 @@ class OcrAccessibilityService : AccessibilityService() {
 
         resetHighlights()
 
-        if (currentIdx < textViews.size) {
-            textViews[currentIdx].setTextColor(android.graphics.Color.YELLOW)
-            textViews[currentIdx].typeface = android.graphics.Typeface.DEFAULT_BOLD
+        textViews[Pair(lineIdx, charIdx)]?.let {
+            it.setTextColor(android.graphics.Color.YELLOW)
+            it.typeface = android.graphics.Typeface.DEFAULT_BOLD
         }
 
-        val endIdx = kotlin.math.min(currentIdx + 20, activeAllChars.size)
-        val followingText = activeAllChars.subList(currentIdx, endIdx).joinToString("")
+        val endIdx = kotlin.math.min(currentTappedIdx + 20, activeAllChars.size)
+        val followingText = activeAllChars.subList(currentTappedIdx, endIdx).joinToString("")
 
         serviceScope.launch {
             val db = AppDatabase.getDatabase(applicationContext)
@@ -935,10 +901,11 @@ class OcrAccessibilityService : AccessibilityService() {
             val uniqueMatches = allMatches.distinctBy { it.first }
             withContext(Dispatchers.Main) {
                 for (i in 0 until maxMatchedLen) {
-                    val targetIdx = currentIdx + i
-                    if (targetIdx < textViews.size) {
-                        textViews[targetIdx].setTextColor(android.graphics.Color.YELLOW)
-                        textViews[targetIdx].typeface = android.graphics.Typeface.DEFAULT_BOLD
+                    val targetGlobalIdx = currentTappedIdx + i
+                    val coords = getCoordsFromGlobalIdx(targetGlobalIdx)
+                    if (coords != null) {
+                        textViews[coords]?.setTextColor(android.graphics.Color.YELLOW)
+                        textViews[coords]?.typeface = android.graphics.Typeface.DEFAULT_BOLD
                     }
                 }
                 showResultsUi(rootLayout, uniqueMatches, tappedBox, skipCenter)
@@ -947,7 +914,7 @@ class OcrAccessibilityService : AccessibilityService() {
     }
 
     private fun resetHighlights() {
-        textViews.forEach { 
+        textViews.values.forEach { 
             it.setTextColor(android.graphics.Color.parseColor("#FF7777"))
             it.typeface = android.graphics.Typeface.DEFAULT
         }
@@ -965,7 +932,7 @@ class OcrAccessibilityService : AccessibilityService() {
             
             if (!skipCenter) {
                 val neighborScrollView = existingRoot.findViewWithTag<View>("neighbor_scroll_view")
-                if (neighborScrollView != null) centerNeighborScrollView(neighborScrollView, currentTappedIdx)
+                if (neighborScrollView != null) centerNeighborScrollView(neighborScrollView, currentTappedLineIdx, currentTappedCharIdxInLine)
             }
             return
         }
@@ -1006,7 +973,7 @@ class OcrAccessibilityService : AccessibilityService() {
             }
         }
 
-        val correctionPanel = createCorrectionPanel(currentTappedIdx, isLandscape, rootLayout, skipCenter)
+        val correctionPanel = createCorrectionPanel(currentTappedLineIdx, currentTappedCharIdxInLine, isLandscape, rootLayout, skipCenter)
         val alternativesPanelContainer = FrameLayout(this).apply {
             tag = "alternatives_container"
             layoutParams = if (isLandscape) LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.MATCH_PARENT)
@@ -1146,32 +1113,40 @@ class OcrAccessibilityService : AccessibilityService() {
     }
 
     private fun updateNeighborHighlights(panel: LinearLayout) {
-        for (i in 0 until panel.childCount) {
-            val view = panel.getChildAt(i) as? TextView ?: continue
-            if (i == currentTappedIdx) {
-                view.setBackgroundColor(android.graphics.Color.YELLOW)
-                view.setTextColor(android.graphics.Color.BLACK)
-            } else {
-                view.setBackgroundColor(android.graphics.Color.argb(255, 65, 65, 65))
-                view.setTextColor(android.graphics.Color.WHITE)
+        activeLineResults.forEachIndexed { lIdx, line ->
+            val lineContainer = panel.findViewWithTag<LinearLayout>("line_neighbor_$lIdx") ?: return@forEachIndexed
+            for (i in 0 until lineContainer.childCount) {
+                val view = lineContainer.getChildAt(i) as? TextView ?: continue
+                if (lIdx == currentTappedLineIdx && i == currentTappedCharIdxInLine) {
+                    view.setBackgroundColor(android.graphics.Color.YELLOW)
+                    view.setTextColor(android.graphics.Color.BLACK)
+                } else {
+                    view.setBackgroundColor(android.graphics.Color.argb(255, 65, 65, 65))
+                    view.setTextColor(android.graphics.Color.WHITE)
+                }
             }
         }
     }
 
-    private fun centerNeighborScrollView(scrollView: View, currentIdx: Int) {
+    private fun centerNeighborScrollView(scrollView: View, lIdx: Int, cIdx: Int) {
         val panel = scrollView.findViewWithTag<LinearLayout>("neighbor_scroll_panel") ?: return
-        val targetView = panel.getChildAt(currentIdx) ?: return
+        val lineContainer = panel.findViewWithTag<LinearLayout>("line_neighbor_$lIdx") ?: return
+        val targetView = lineContainer.getChildAt(cIdx) ?: return
         scrollView.post {
-            if (scrollView is ScrollView) scrollView.scrollTo(0, targetView.top - (scrollView.height / 2) + (targetView.height / 2))
-            else if (scrollView is HorizontalScrollView) scrollView.scrollTo(targetView.left - (scrollView.width / 2) + (targetView.width / 2), 0)
+            if (scrollView is ScrollView) {
+                val top = lineContainer.top + targetView.top
+                scrollView.scrollTo(0, top - (scrollView.height / 2) + (targetView.height / 2))
+            } else if (scrollView is HorizontalScrollView) {
+                val left = lineContainer.left + targetView.left
+                scrollView.scrollTo(left - (scrollView.width / 2) + (targetView.width / 2), 0)
+            }
         }
     }
 
-    private fun createCorrectionPanel(currentIdx: Int, isLandscape: Boolean, rootLayout: FrameLayout, skipCenter: Boolean = false): View {
+    private fun createCorrectionPanel(tappedLIdx: Int, tappedCIdx: Int, isLandscape: Boolean, rootLayout: FrameLayout, skipCenter: Boolean = false): View {
         val rootHeight = rootLayout.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
         val rootWidth = rootLayout.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
         val itemSize = (if (isLandscape) rootHeight else rootWidth) / 11
-        val estimatedTextSize = (itemSize * 0.45 / resources.displayMetrics.density).toFloat().coerceIn(12f, 22f)
 
         val outerContainer = FrameLayout(this).apply { setBackgroundColor(android.graphics.Color.argb(255, 45, 45, 45)); elevation = 25f }
         val scrollView = if (isLandscape) ScrollView(this) else HorizontalScrollView(this)
@@ -1181,45 +1156,24 @@ class OcrAccessibilityService : AccessibilityService() {
         }
 
         val panel = LinearLayout(this).apply { tag = "neighbor_scroll_panel"; orientation = if (isLandscape) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL; setPadding(6, 6, 6, 6) }
-        val itemLp = LinearLayout.LayoutParams(itemSize, itemSize).apply { setMargins(2, 2, 2, 2) }
 
-        for (i in activeAllChars.indices) {
-            val textView = TextView(this).apply {
-                tag = "neighbor_char_$i"; text = activeAllChars[i].toString(); setTextColor(android.graphics.Color.WHITE); textSize = estimatedTextSize; gravity = Gravity.CENTER
-                if (i == currentIdx) { setBackgroundColor(android.graphics.Color.YELLOW); setTextColor(android.graphics.Color.BLACK) }
-                else setBackgroundColor(android.graphics.Color.argb(255, 65, 65, 65))
-                
-                if (isLandscape) {
-                    textLocale = java.util.Locale.JAPANESE
-                    fontFeatureSettings = "'vert' 1"
-                }
-
-                setOnClickListener {
-                    if (currentTappedIdx == i) toggleAlternativesPanel(rootLayout, i, isLandscape)
-                    else {
-                        val oldIdx = currentTappedIdx; currentTappedIdx = i
-                        panel.findViewWithTag<View>("neighbor_char_$oldIdx")?.let { it.setBackgroundColor(android.graphics.Color.argb(255, 65, 65, 65)); (it as TextView).setTextColor(android.graphics.Color.WHITE) }
-                        this.setBackgroundColor(android.graphics.Color.YELLOW); this.setTextColor(android.graphics.Color.BLACK)
-                        
-                        // If alternatives are open, update them for the new character
-                        val altContainer = rootLayout.findViewWithTag<FrameLayout>("alternatives_container")
-                        if (altContainer != null && altContainer.childCount > 0) {
-                            // Don't recreate the whole container, just refresh its contents
-                            updateAlternativesPanelContent(altContainer, i, isLandscape, rootLayout)
-                        }
-                        
-                        performLookup(i, rootLayout, skipCenter = true)
-                    }
-                }
+        activeLineResults.forEachIndexed { lIdx, line ->
+            val lineContainer = LinearLayout(this).apply {
+                tag = "line_neighbor_$lIdx"
+                orientation = if (isLandscape) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
             }
-            panel.addView(textView, itemLp)
+            panel.addView(lineContainer)
+            if (line != null) {
+                fillLineNeighborContainer(lineContainer, lIdx, line, isLandscape, rootLayout)
+            }
         }
+
         scrollView.addView(panel); outerContainer.addView(scrollView)
-        if (!skipCenter) centerNeighborScrollView(scrollView, currentIdx)
+        if (!skipCenter) centerNeighborScrollView(scrollView, tappedLIdx, tappedCIdx)
         return outerContainer
     }
 
-    private fun toggleAlternativesPanel(rootLayout: FrameLayout, currentIdx: Int, isLandscape: Boolean) {
+    private fun toggleAlternativesPanel(rootLayout: FrameLayout, lIdx: Int, cIdx: Int, isLandscape: Boolean) {
         val container = rootLayout.findViewWithTag<FrameLayout>("alternatives_container") ?: return
         if (container.childCount > 0) { container.removeAllViews(); return }
         val rootHeight = rootLayout.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
@@ -1234,38 +1188,43 @@ class OcrAccessibilityService : AccessibilityService() {
             layoutParams = if (isLandscape) LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 10f) else LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 10f)
         }
         val candidateList = LinearLayout(this).apply { tag = "candidate_list_panel"; orientation = if (isLandscape) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL }
-        refreshCandidateList(candidateList, currentIdx, isLandscape, rootLayout)
+        refreshCandidateList(candidateList, lIdx, cIdx, isLandscape, rootLayout)
         scrollView.addView(candidateList); mainLayout.addView(scrollView)
         
         // Find and scroll to selected
         scrollView.post {
             var selectedView: View? = null
+            val line = activeLineResults.getOrNull(lIdx)
+            val currentChar = line?.text?.getOrNull(cIdx)
             for (i in 0 until candidateList.childCount) {
                 val v = candidateList.getChildAt(i) as? TextView ?: continue
-                if (v.text.toString() == activeAllChars[currentIdx].toString()) {
+                if (v.text.toString() == currentChar?.toString()) {
                     selectedView = v; break
                 }
             }
             selectedView?.let { view -> if (isLandscape) scrollView.scrollTo(0, view.top) else (scrollView as HorizontalScrollView).scrollTo(view.left, 0) }
         }
 
-        val stubView = TextView(this).apply { tag = "manual_input_stub"; text = "⌨"; setTextColor(android.graphics.Color.GRAY); textSize = estimatedTextSize; gravity = Gravity.CENTER; setBackgroundColor(android.graphics.Color.argb(255, 40, 40, 40)); setOnClickListener { showManualInput(currentIdx, rootLayout) } }
+        val stubView = TextView(this).apply { tag = "manual_input_stub"; text = "⌨"; setTextColor(android.graphics.Color.GRAY); textSize = estimatedTextSize; gravity = Gravity.CENTER; setBackgroundColor(android.graphics.Color.argb(255, 40, 40, 40)); setOnClickListener { showManualInput(lIdx, cIdx, rootLayout) } }
         mainLayout.addView(stubView, if (isLandscape) LinearLayout.LayoutParams(itemSize, 0, 1f).apply { setMargins(2, 2, 2, 2) } else LinearLayout.LayoutParams(0, itemSize, 1f).apply { setMargins(2, 2, 2, 2) })
         container.addView(mainLayout)
     }
 
-    private fun refreshCandidateList(candidateList: LinearLayout, currentIdx: Int, isLandscape: Boolean, rootLayout: FrameLayout) {
+    private fun refreshCandidateList(candidateList: LinearLayout, lIdx: Int, cIdx: Int, isLandscape: Boolean, rootLayout: FrameLayout) {
         candidateList.removeAllViews()
         val rootHeight = rootLayout.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
         val rootWidth = rootLayout.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
         val itemSize = (if (isLandscape) rootHeight else rootWidth) / 11
         val estimatedTextSize = (itemSize * 0.45 / resources.displayMetrics.density).toFloat().coerceIn(12f, 22f)
 
-        val alts = activeAllAlternatives.getOrNull(currentIdx) ?: emptyList()
+        val line = activeLineResults.getOrNull(lIdx)
+        val alts = line?.alternatives?.getOrNull(cIdx) ?: emptyList()
+        val currentChar = line?.text?.getOrNull(cIdx)
+        
         alts.take(15).forEach { (altChar, _) ->
             val textView = TextView(this).apply {
                 text = altChar.toString(); setTextColor(android.graphics.Color.WHITE); textSize = estimatedTextSize; gravity = Gravity.CENTER
-                if (altChar == activeAllChars[currentIdx]) { setBackgroundColor(android.graphics.Color.YELLOW); setTextColor(android.graphics.Color.BLACK) }
+                if (altChar == currentChar) { setBackgroundColor(android.graphics.Color.YELLOW); setTextColor(android.graphics.Color.BLACK) }
                 else setBackgroundColor(android.graphics.Color.argb(255, 85, 85, 85))
                 
                 if (isLandscape) {
@@ -1274,10 +1233,10 @@ class OcrAccessibilityService : AccessibilityService() {
                 }
 
                 setOnClickListener { 
-                    if (altChar == activeAllChars[currentIdx]) {
-                        toggleAlternativesPanel(rootLayout, currentIdx, isLandscape)
+                    if (altChar == currentChar) {
+                        toggleAlternativesPanel(rootLayout, lIdx, cIdx, isLandscape)
                     } else {
-                        replaceCharacter(currentIdx, altChar, rootLayout)
+                        replaceCharacter(lIdx, cIdx, altChar, rootLayout)
                     }
                 }
             }
@@ -1285,21 +1244,22 @@ class OcrAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun updateAlternativesPanelContent(container: FrameLayout, currentIdx: Int, isLandscape: Boolean, rootLayout: FrameLayout) {
+    private fun updateAlternativesPanelContent(container: FrameLayout, lIdx: Int, cIdx: Int, isLandscape: Boolean, rootLayout: FrameLayout) {
         val candidateList = container.findViewWithTag<LinearLayout>("candidate_list_panel") ?: return
-        refreshCandidateList(candidateList, currentIdx, isLandscape, rootLayout)
+        refreshCandidateList(candidateList, lIdx, cIdx, isLandscape, rootLayout)
         
         // Update manual input stub too
         val stub = container.findViewWithTag<TextView>("manual_input_stub")
-        stub?.setOnClickListener { showManualInput(currentIdx, rootLayout) }
+        stub?.setOnClickListener { showManualInput(lIdx, cIdx, rootLayout) }
 
-        // Optional: Scroll to new selection if switching neighbors
         val scrollView = candidateList.parent as? View ?: return
         scrollView.post {
             var selectedView: View? = null
+            val line = activeLineResults.getOrNull(lIdx)
+            val currentChar = line?.text?.getOrNull(cIdx)
             for (i in 0 until candidateList.childCount) {
                 val v = candidateList.getChildAt(i) as? TextView ?: continue
-                if (v.text.toString() == activeAllChars[currentIdx].toString()) {
+                if (v.text.toString() == currentChar?.toString()) {
                     selectedView = v; break
                 }
             }
@@ -1329,29 +1289,31 @@ class OcrAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun replaceCharacter(index: Int, newChar: Char, rootLayout: FrameLayout) {
-        activeAllChars[index] = newChar
-        val info = activeCharInfos[index]
-        val line = activeLineResults[info.lineIdx]
-        val charArray = line.text.toCharArray(); charArray[info.charIdxInLine] = newChar; line.text = String(charArray)
-        if (index < textViews.size) textViews[index].text = newChar.toString()
+    private fun replaceCharacter(lIdx: Int, cIdx: Int, newChar: Char, rootLayout: FrameLayout) {
+        val line = activeLineResults[lIdx] ?: return
+        val charArray = line.text.toCharArray()
+        charArray[cIdx] = newChar
+        line.text = String(charArray)
         
-        // Update browser view too
+        updateGlobalData()
+        
+        textViews[Pair(lIdx, cIdx)]?.text = newChar.toString()
+        
         val browserPanel = rootLayout.findViewWithTag<LinearLayout>("neighbor_scroll_panel")
-        browserPanel?.findViewWithTag<TextView>("neighbor_char_$index")?.text = newChar.toString()
+        browserPanel?.findViewWithTag<TextView>("neighbor_char_$lIdx-$cIdx")?.text = newChar.toString()
 
-        // Update alternatives panel highlight instead of recreating
         val altContainer = rootLayout.findViewWithTag<FrameLayout>("alternatives_container")
         if (altContainer != null && altContainer.childCount > 0) {
             updateAlternativesHighlight(altContainer, newChar)
         }
 
-        performLookup(index, rootLayout, skipCenter = true)
+        performLookup(lIdx, cIdx, rootLayout, skipCenter = true)
     }
 
-    private fun showManualInput(index: Int, rootLayout: FrameLayout) {
+    private fun showManualInput(lIdx: Int, cIdx: Int, rootLayout: FrameLayout) {
         val bitmap = screenshotBitmap ?: return
-        val box = activeCharInfos[index].box
+        val line = activeLineResults[lIdx] ?: return
+        val box = line.charBoxes[cIdx]
         val padding = (box.height() * 0.5).toInt()
         val cropRect = Rect((box.left - padding).coerceAtLeast(0), (box.top - padding).coerceAtLeast(0), (box.right + padding).coerceAtMost(bitmap.width), (box.bottom + padding).coerceAtMost(bitmap.height))
         val cropped = Bitmap.createBitmap(bitmap, cropRect.left, cropRect.top, cropRect.width(), cropRect.height())
@@ -1361,14 +1323,14 @@ class OcrAccessibilityService : AccessibilityService() {
         panel.addView(TextView(this).apply { text = "Enter character manually"; setTextColor(android.graphics.Color.GRAY); textSize = 14f; setPadding(0, 30, 0, 10) })
         val editText = EditText(this).apply { setTextColor(android.graphics.Color.WHITE); textSize = 36f; gravity = Gravity.CENTER; maxLines = 1; imeOptions = EditorInfo.IME_ACTION_DONE; inputType = android.text.InputType.TYPE_CLASS_TEXT; background.setTint(android.graphics.Color.CYAN) }
         panel.addView(editText, LinearLayout.LayoutParams(250, LinearLayout.LayoutParams.WRAP_CONTENT))
-        panel.addView(Button(this).apply { text = "Confirm"; setOnClickListener { val text = editText.text.toString(); if (text.isNotEmpty()) { replaceCharacter(index, text[0], rootLayout); closeManualInput(rootLayout) } } }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = 20 })
+        panel.addView(Button(this).apply { text = "Confirm"; setOnClickListener { val text = editText.text.toString(); if (text.isNotEmpty()) { replaceCharacter(lIdx, cIdx, text[0], rootLayout); closeManualInput(rootLayout) } } }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = 20 })
         blocker.addView(panel, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.CENTER))
         val params = screenshotOverlay?.layoutParams as? WindowManager.LayoutParams
         if (params != null) { params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv(); params.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE; windowManager?.updateViewLayout(screenshotOverlay, params) }
         rootLayout.addView(blocker, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         editText.requestFocus()
         editText.postDelayed({ (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).showSoftInput(editText, InputMethodManager.SHOW_IMPLICIT) }, 100)
-        editText.setOnEditorActionListener { _, actionId, event -> if (actionId == EditorInfo.IME_ACTION_DONE || (event != null && event.keyCode == KeyEvent.KEYCODE_ENTER && event.action == KeyEvent.ACTION_DOWN)) { val text = editText.text.toString(); if (text.isNotEmpty()) { replaceCharacter(index, text[0], rootLayout); closeManualInput(rootLayout) }; true } else false }
+        editText.setOnEditorActionListener { _, actionId, event -> if (actionId == EditorInfo.IME_ACTION_DONE || (event != null && event.keyCode == KeyEvent.KEYCODE_ENTER && event.action == KeyEvent.ACTION_DOWN)) { val text = editText.text.toString(); if (text.isNotEmpty()) { replaceCharacter(lIdx, cIdx, text[0], rootLayout); closeManualInput(rootLayout) }; true } else false }
     }
 
     private fun closeManualInput(rootLayout: FrameLayout) {

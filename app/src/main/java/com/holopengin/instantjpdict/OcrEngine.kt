@@ -252,26 +252,26 @@ class OcrEngine(private val context: Context) {
         return result
     }
 
-    suspend fun recognizeStreaming(bitmap: Bitmap, lineBoxes: List<Rect>, onLineRecognized: (LineResult) -> Unit) = withContext(Dispatchers.Default) {
+    suspend fun recognizeStreaming(bitmap: Bitmap, lineBoxes: List<Rect>, onLineRecognized: (Int, LineResult) -> Unit) = withContext(Dispatchers.Default) {
         val startTime = System.currentTimeMillis()
         val semaphore = Semaphore(5) // Increased from 3 to 5
-        val channel = Channel<LineResult>()
+        val channel = Channel<Pair<Int, LineResult>>()
 
-        lineBoxes.forEach { box ->
+        lineBoxes.forEachIndexed { index, box ->
             launch {
                 semaphore.withPermit {
                     val result = recognizeSingleLine(bitmap, box)
                     if (result != null) {
-                        channel.send(result)
+                        channel.send(index to result)
                     }
                 }
             }
         }
 
         repeat(lineBoxes.size) {
-            val result = channel.receive()
+            val (index, result) = channel.receive()
             withContext(Dispatchers.Main) {
-                onLineRecognized(result)
+                onLineRecognized(index, result)
             }
         }
         channel.close()
