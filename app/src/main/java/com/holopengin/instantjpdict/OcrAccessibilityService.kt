@@ -29,6 +29,7 @@ import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.core.content.res.ResourcesCompat
 import com.google.gson.Gson
 import com.holopengin.instantjpdict.data.AppDatabase
 import com.holopengin.instantjpdict.util.Deinflector
@@ -160,19 +161,19 @@ class OcrAccessibilityService : AccessibilityService() {
         }
 
         val frameLayout = FrameLayout(this)
-        ocrButton = Button(this).apply {
+        ocrButton = CenteredButton(this).apply {
             text = "辞典"
-            setTextColor(Color.argb(100, 0, 255, 255))
+            setTextColor(Color.CYAN)
+            typeface = ResourcesCompat.getFont(this@OcrAccessibilityService, R.font.yujimai_regular)
+            background = getDrawable(R.drawable.ic_logo_ring)
             val size = (44 * resources.displayMetrics.density).toInt()
             layoutParams = FrameLayout.LayoutParams(size, size)
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
-                setColor(Color.argb(70, 0, 0, 0))
-                setStroke((1 * resources.displayMetrics.density).toInt(), Color.argb(100, 0, 255, 255))
-            }
             setPadding(0, 0, 0, 0)
-            textSize = 13f
-            isAllCaps = false
+            minWidth = 0
+            minHeight = 0
+            gravity = Gravity.CENTER
+            includeFontPadding = false
+            alpha = 0.3f
         }
         frameLayout.addView(ocrButton)
         
@@ -526,18 +527,18 @@ class OcrAccessibilityService : AccessibilityService() {
         screenshotOverlay = rootLayout
         windowManager?.addView(screenshotOverlay, params)
         
-        val closeButton = Button(this).apply {
+        val closeButton = CenteredButton(this).apply {
             tag = "close_button"
             text = "辞典"
             setTextColor(Color.CYAN)
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
-                setColor(Color.BLACK)
-                setStroke((1 * resources.displayMetrics.density).toInt(), Color.CYAN)
-            }
+            typeface = ResourcesCompat.getFont(this@OcrAccessibilityService, R.font.yujimai_regular)
+            background = getDrawable(R.drawable.ic_logo_ring)
             setPadding(0, 0, 0, 0)
-            textSize = 13f
-            isAllCaps = false
+            minWidth = 0
+            minHeight = 0
+            gravity = Gravity.CENTER
+            includeFontPadding = false
+            alpha = 1.0f
             setOnClickListener { hideScreenshotOverlay() }
             setOnTouchListener(object : View.OnTouchListener {
                 private var initialX = 0f

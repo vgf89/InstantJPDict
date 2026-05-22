@@ -4,17 +4,17 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Rect
 import android.util.AttributeSet
-import android.widget.TextView
+import android.widget.Button
 
 /**
- * A TextView that centers a single character precisely within its bounds using the actual
+ * A Button that centers its text precisely within its bounds using the actual
  * rendered text's bounding box.
  */
-class CenteredTextView @JvmOverloads constructor(
+class CenteredButton @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
-    defStyleAttr: Int = 0
-) : TextView(context, attrs, defStyleAttr) {
+    defStyleAttr: Int = android.R.attr.buttonStyle
+) : Button(context, attrs, defStyleAttr) {
 
     private val bounds = Rect()
 
@@ -22,12 +22,12 @@ class CenteredTextView @JvmOverloads constructor(
         val textStr = text.toString()
         if (textStr.isEmpty()) return
 
-        // Get the bounding box of the actual rendered character(s) in the text
+        // Get the bounding box of the actual rendered characters in the text
         paint.getTextBounds(textStr, 0, textStr.length, bounds)
-        
+
         // Center vertically based on the exact visual bounds of the rendered glyphs.
         val baselineOffsetY = (height / 2f) - (bounds.top + bounds.bottom) / 2f
-        
+
         // Center horizontally based on the exact visual bounds of the rendered glyphs.
         val x = (width / 2f) - (bounds.left + bounds.right) / 2f
 
