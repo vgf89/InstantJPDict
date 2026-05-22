@@ -106,11 +106,16 @@ class OcrEngine(private val context: Context) {
                         val box = boxesArr[i]
                         val r = Rect(box[0].toInt(), box[1].toInt(), box[2].toInt(), box[3].toInt())
                         
-                        // Add small margins for vertical lines to avoid clipping
+                        // Add small margins to avoid clipping
                         if (r.height() > r.width()) {
+                            // Vertical lines: top and right margins
                             val vMargin = (r.width() * 0.1f).toInt().coerceAtLeast(2)
                             val hMargin = (r.width() * 0.05f).toInt().coerceAtLeast(1)
                             r.top = (r.top - vMargin).coerceAtLeast(0)
+                            r.right = (r.right + hMargin).coerceAtMost(bitmap.width)
+                        } else {
+                            // Horizontal lines: right margin
+                            val hMargin = (r.height() * 0.1f).toInt().coerceAtLeast(4)
                             r.right = (r.right + hMargin).coerceAtMost(bitmap.width)
                         }
                         
@@ -320,6 +325,8 @@ class OcrEngine(private val context: Context) {
             val result: LineResult?
             if (isVertical && (crop.height * (32f / crop.width) > 350)) {
                 result = recognizeVerticalLongLine(crop, cropX, cropY)
+            } else if (!isVertical && (crop.width * (32f / crop.height) > 960)) {
+                result = recognizeHorizontalLongLine(crop, cropX, cropY)
             } else {
                 val (filtered, effW, effH) = recognizeSingleChunk(crop, isVertical)
                 val text = filtered.joinToString("") { it.char.toString() }
@@ -497,7 +504,7 @@ class OcrEngine(private val context: Context) {
                 continue
             }
             
-            chunkResults.add(ChunkResult(candidates, currentY, crop.width, h, effW, effH))
+            chunkResults.add(ChunkResult(candidates, 0, currentY, crop.width, h, effW, effH))
             chunkBitmap.recycle()
             
             if (currentY + h >= crop.height) break
@@ -540,8 +547,69 @@ class OcrEngine(private val context: Context) {
         return stitchVerticalChunks(chunkResults, cropX, cropY)
     }
 
+    private fun recognizeHorizontalLongLine(crop: Bitmap, cropX: Int, cropY: Int): LineResult {
+        val scaleFactor = 32f / crop.height
+        val maxChunkWidth = (960 / scaleFactor).toInt()
+        
+        val chunkResults = mutableListOf<ChunkResult>()
+        var currentX = 0
+        while (currentX < crop.width) {
+            val remainingW = crop.width - currentX
+            if (remainingW < 10) break
+            
+            val w = min(maxChunkWidth, remainingW)
+            val chunkBitmap = Bitmap.createBitmap(crop, currentX, 0, w, crop.height)
+            val (candidates, effW, effH) = recognizeSingleChunk(chunkBitmap, false)
+            
+            if (effW <= 0) {
+                chunkBitmap.recycle()
+                currentX += (w * 0.8f).toInt()
+                continue
+            }
+            
+            chunkResults.add(ChunkResult(candidates, currentX, 0, w, crop.height, effW, effH))
+            chunkBitmap.recycle()
+            
+            if (currentX + w >= crop.width) break
+            
+            if (candidates.isNotEmpty()) {
+                val sortedCandidates = candidates.sortedBy { it.box[0] }
+                
+                // Find a character to anchor on in the right portion of the chunk.
+                val overlapStartThreshold = w * 0.6f
+                val anchorOptions = sortedCandidates.filter { 
+                    val localXLeft = (it.box[0] / effW.toFloat()) * w
+                    localXLeft > overlapStartThreshold
+                }
+                
+                val anchorCandidate = when {
+                    anchorOptions.size >= 2 -> anchorOptions[anchorOptions.size - 2] // Next to last
+                    anchorOptions.isNotEmpty() -> anchorOptions.first()
+                    else -> sortedCandidates.last()
+                }
+                
+                val localXLeft = (anchorCandidate.box[0] / effW.toFloat()) * w
+                
+                // Horizontal margin for better detection start
+                val chunkMargin = (crop.height * 0.1f).toInt().coerceAtLeast(2)
+                val nextX = (currentX + localXLeft.toInt() - chunkMargin).coerceAtLeast(0)
+                
+                if (nextX <= currentX || nextX >= currentX + w - 10) {
+                    currentX += (w * 0.8f).toInt()
+                } else {
+                    currentX = nextX
+                }
+            } else {
+                currentX += (w * 0.8f).toInt()
+            }
+        }
+        
+        return stitchHorizontalChunks(chunkResults, cropX, cropY)
+    }
+
     private data class ChunkResult(
         val candidates: List<CharCandidate>,
+        val offsetX: Int,
         val offsetY: Int,
         val chunkW: Int,
         val chunkH: Int,
@@ -556,12 +624,12 @@ class OcrEngine(private val context: Context) {
         
         val allGlobalChunks = chunkResults.map { cr ->
             cr.candidates.map { cand ->
-                GlobalCandidate(cand, cand.getGlobalRect(true, cr.chunkW, cr.chunkH, cropX, cropY + cr.offsetY, cr.effW, cr.effH))
+                GlobalCandidate(cand, cand.getGlobalRect(true, cr.chunkW, cr.chunkH, cropX + cr.offsetX, cropY + cr.offsetY, cr.effW, cr.effH))
             }
         }
         
         val chunkBoxes = chunkResults.map { cr ->
-            Rect(cropX, cropY + cr.offsetY, cropX + cr.chunkW, cropY + cr.offsetY + cr.chunkH)
+            Rect(cropX + cr.offsetX, cropY + cr.offsetY, cropX + cr.offsetX + cr.chunkW, cropY + cr.offsetY + cr.chunkH)
         }
         
         val result = mutableListOf<GlobalCandidate>()
@@ -629,6 +697,88 @@ class OcrEngine(private val context: Context) {
             result.map { it.globalRect },
             result.map { it.cand.alternatives },
             true,
+            chunkBoxes
+        )
+    }
+
+    private fun stitchHorizontalChunks(chunkResults: List<ChunkResult>, cropX: Int, cropY: Int): LineResult {
+        if (chunkResults.isEmpty()) return LineResult("", emptyList(), emptyList(), false)
+        
+        data class GlobalCandidate(val cand: CharCandidate, val globalRect: Rect)
+        
+        val allGlobalChunks = chunkResults.map { cr ->
+            cr.candidates.map { cand ->
+                GlobalCandidate(cand, cand.getGlobalRect(false, cr.chunkW, cr.chunkH, cropX + cr.offsetX, cropY + cr.offsetY, cr.effW, cr.effH))
+            }
+        }
+        
+        val chunkBoxes = chunkResults.map { cr ->
+            Rect(cropX + cr.offsetX, cropY + cr.offsetY, cropX + cr.offsetX + cr.chunkW, cropY + cr.offsetY + cr.chunkH)
+        }
+        
+        val result = mutableListOf<GlobalCandidate>()
+        result.addAll(allGlobalChunks[0])
+        
+        for (i in 1 until allGlobalChunks.size) {
+            val prevChunk = result
+            val currentChunk = allGlobalChunks[i]
+            if (currentChunk.isEmpty()) continue
+            
+            var bestPrevIdx = -1
+            var bestCurrIdx = -1
+            var bestMatchScore = -1f
+            
+            val pStart = max(0, prevChunk.size - 10)
+            val cEnd = min(currentChunk.size, 10)
+            
+            for (pIdx in prevChunk.size - 1 downTo pStart) {
+                val pGC = prevChunk[pIdx]
+                for (cIdx in 0 until cEnd) {
+                    val cGC = currentChunk[cIdx]
+                    
+                    val dist = abs(pGC.globalRect.centerX() - cGC.globalRect.centerX())
+                    if (dist > 30) continue 
+                    
+                    val predictionScore = comparePredictionVectors(pGC.cand.alternatives, cGC.cand.alternatives)
+                    if (predictionScore < 0.4f) continue
+                    
+                    val score = (1f - dist/30f) * 0.3f + predictionScore * 0.7f
+                    if (score > bestMatchScore) {
+                        bestMatchScore = score
+                        bestPrevIdx = pIdx
+                        bestCurrIdx = cIdx
+                    }
+                }
+            }
+            
+            if (bestPrevIdx != -1) {
+                val prevAnchor = result[bestPrevIdx]
+                val currAnchor = currentChunk[bestCurrIdx]
+                val mergedAlts = interleaveAlternatives(prevAnchor.cand.alternatives, currAnchor.cand.alternatives)
+                
+                val toKeep = bestPrevIdx + 1
+                while (result.size > toKeep) result.removeAt(result.size - 1)
+                
+                result[bestPrevIdx] = prevAnchor.copy(cand = prevAnchor.cand.copy(alternatives = mergedAlts))
+
+                for (j in bestCurrIdx + 1 until currentChunk.size) {
+                    result.add(currentChunk[j])
+                }
+            } else {
+                val lastX = result.lastOrNull()?.globalRect?.centerX() ?: -1
+                for (cGC in currentChunk) {
+                    if (cGC.globalRect.centerX() > lastX + 10) {
+                        result.add(cGC)
+                    }
+                }
+            }
+        }
+        
+        return LineResult(
+            result.joinToString("") { it.cand.char.toString() },
+            result.map { it.globalRect },
+            result.map { it.cand.alternatives },
+            false,
             chunkBoxes
         )
     }
