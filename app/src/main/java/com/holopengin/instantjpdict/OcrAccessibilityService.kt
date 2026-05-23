@@ -956,6 +956,7 @@ class OcrAccessibilityService : AccessibilityService() {
                 val neighborScrollView = existingRoot.findViewWithTag<View>("neighbor_scroll_view")
                 if (neighborScrollView != null) centerNeighborScrollView(neighborScrollView, currentTappedLineIdx, currentTappedCharIdxInLine)
             }
+            existingRoot.bringToFront()
             return
         }
 
@@ -977,6 +978,7 @@ class OcrAccessibilityService : AccessibilityService() {
 
         val mainContainer = LinearLayout(this).apply {
             tag = "correction_ui_root"
+            elevation = 100f
             orientation = if (isLandscape) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
             gravity = if (isLandscape) {
                 if (lastLandscapeGravity == Gravity.END) {
@@ -1022,6 +1024,7 @@ class OcrAccessibilityService : AccessibilityService() {
         ).apply { gravity = mainContainer.gravity }
 
         rootLayout.addView(mainContainer, rootParams)
+        mainContainer.bringToFront()
     }
 
     private fun updateDictionaryPanel(container: LinearLayout, matches: List<Pair<String, List<com.holopengin.instantjpdict.data.DictionaryEntry>>>) {
