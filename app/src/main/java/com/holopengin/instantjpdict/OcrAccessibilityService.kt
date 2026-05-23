@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.PixelFormat
@@ -30,6 +31,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.content.res.ResourcesCompat
+import androidx.core.content.ContextCompat
 import com.google.gson.Gson
 import com.holopengin.instantjpdict.data.AppDatabase
 import com.holopengin.instantjpdict.util.Deinflector
@@ -56,12 +58,15 @@ class OcrAccessibilityService : AccessibilityService() {
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var ocrJob: kotlinx.coroutines.Job? = null
     
-    private val screenOffReceiver = object : BroadcastReceiver() {
+    private val overlayControllerReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
-                Intent.ACTION_SCREEN_OFF -> {
+                Intent.ACTION_SCREEN_OFF,
+                Intent.ACTION_CLOSE_SYSTEM_DIALOGS -> {
                     hideScreenshotOverlay()
-                    floatingView?.visibility = View.GONE
+                    if (intent.action == Intent.ACTION_SCREEN_OFF) {
+                        floatingView?.visibility = View.GONE
+                    }
                 }
                 Intent.ACTION_USER_PRESENT -> {
                     floatingView?.visibility = View.VISIBLE
@@ -135,8 +140,23 @@ class OcrAccessibilityService : AccessibilityService() {
         val filter = IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_OFF)
             addAction(Intent.ACTION_USER_PRESENT)
+            @Suppress("DEPRECATION")
+            addAction(Intent.ACTION_CLOSE_SYSTEM_DIALOGS)
         }
-        registerReceiver(screenOffReceiver, filter)
+        
+        ContextCompat.registerReceiver(
+            this,
+            overlayControllerReceiver,
+            filter,
+            ContextCompat.RECEIVER_EXPORTED
+        )
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        if (screenshotOverlay != null) {
+            hideScreenshotOverlay()
+        }
     }
 
     override fun onServiceConnected() {
@@ -455,6 +475,12 @@ class OcrAccessibilityService : AccessibilityService() {
                     MotionEvent.ACTION_MOVE -> {
                         val dx = focusX - lastFocusX
                         val dy = focusY - lastFocusY
+                        
+                        // Close if user swipes down from the top edge (status bar area)
+                        if (initialTouchY < 100 && focusY - initialTouchY > 50 && !isScaling && !hasPanned) {
+                            hideScreenshotOverlay()
+                            return@setOnTouchListener true
+                        }
 
                         if (!isScaling && !hasPanned && (abs(focusX - initialTouchX) > 10 || abs(focusY - initialTouchY) > 10)) {
                             hasPanned = true
@@ -1437,8 +1463,35 @@ class OcrAccessibilityService : AccessibilityService() {
         boxViews.clear(); textViews.clear()
     }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) { if (event?.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && screenshotOverlay != null && event.packageName == "com.android.systemui") hideScreenshotOverlay() }
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (screenshotOverlay == null) return
+
+        val eventPackage = event?.packageName?.toString()
+        // Close if focus shifts to another app (Launcher, etc.) or system UI interacts
+        if (eventPackage != null && eventPackage != packageName) {
+            hideScreenshotOverlay()
+        }
+    }
     override fun onInterrupt() {}
-    override fun onKeyEvent(event: KeyEvent?): Boolean { if (event?.keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_DOWN && screenshotOverlay != null) { val root = screenshotOverlay as FrameLayout; if (root.findViewWithTag<View>("manual_input_blocker") != null) closeManualInput(root) else hideScreenshotOverlay(); return true }; return super.onKeyEvent(event) }
-    override fun onDestroy() { super.onDestroy(); try { unregisterReceiver(screenOffReceiver) } catch (e: Exception) {} ; hideScreenshotOverlay(); floatingView?.let { if (it.isAttachedToWindow) windowManager?.removeView(it) }; ocrEngine.close() }
+    override fun onKeyEvent(event: KeyEvent?): Boolean {
+        if (screenshotOverlay == null) return super.onKeyEvent(event)
+        
+        if (event?.keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_DOWN) {
+            val root = screenshotOverlay as? FrameLayout ?: return true
+            if (root.findViewWithTag<View>("manual_input_blocker") != null) {
+                closeManualInput(root)
+            } else {
+                hideScreenshotOverlay()
+            }
+            return true
+        }
+        return super.onKeyEvent(event)
+    }
+    override fun onDestroy() { 
+        super.onDestroy()
+        try { unregisterReceiver(overlayControllerReceiver) } catch (e: Exception) {} 
+        hideScreenshotOverlay()
+        floatingView?.let { if (it.isAttachedToWindow) windowManager?.removeView(it) }
+        ocrEngine.close() 
+    }
 }
