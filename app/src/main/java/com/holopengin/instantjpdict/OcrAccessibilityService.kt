@@ -79,6 +79,7 @@ class OcrAccessibilityService : AccessibilityService() {
     private val textViews = mutableMapOf<Pair<Int, Int>, TextView>()
     private var lastLandscapeGravity = Gravity.END
     private var lastPortraitGravity = Gravity.BOTTOM
+    private var lastManualInputCloseTime = 0L
 
     private var activeLineResults: MutableList<LineResult?> = mutableListOf()
     private var activeAllChars: MutableList<Char> = mutableListOf()
@@ -123,12 +124,6 @@ class OcrAccessibilityService : AccessibilityService() {
         GradientDrawable().apply {
             setColor(android.graphics.Color.argb(100, 0, 0, 0))
             cornerRadius = 4f
-        }
-    }
-
-    private val chunkBorderDrawable by lazy {
-        GradientDrawable().apply {
-            setStroke((1 * resources.displayMetrics.density).toInt(), android.graphics.Color.GREEN)
         }
     }
 
@@ -644,9 +639,6 @@ class OcrAccessibilityService : AccessibilityService() {
                     val clicksLayer = FrameLayout(this@OcrAccessibilityService).apply { tag = "clicks_layer" }
                     contentContainer.addView(clicksLayer, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
 
-                    val chunksBorderLayer = FrameLayout(this@OcrAccessibilityService).apply { tag = "chunks_border_layer" }
-                    contentContainer.addView(chunksBorderLayer, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
-
                     // Pre-create line containers to maintain Z-order and simplify updates
                     lineBoxes.forEachIndexed { i, _ ->
                         val lineContainer = FrameLayout(this@OcrAccessibilityService).apply { tag = "line_clicks_$i" }
@@ -692,18 +684,6 @@ class OcrAccessibilityService : AccessibilityService() {
         if (screenshotOverlay == null) return
         activeLineResults[lineIdx] = line
         updateGlobalData()
-
-        val chunksBorderLayer = rootLayout.findViewWithTag<FrameLayout>("chunks_border_layer")
-        line.chunkBoxes.forEach { chunkBox ->
-            val chunkView = View(this).apply {
-                background = chunkBorderDrawable
-            }
-            val chunkParams = FrameLayout.LayoutParams(chunkBox.width(), chunkBox.height()).apply {
-                leftMargin = chunkBox.left
-                topMargin = chunkBox.top
-            }
-            chunksBorderLayer?.addView(chunkView, chunkParams)
-        }
 
         val lineContainer = clicksLayer.findViewWithTag<FrameLayout>("line_clicks_$lineIdx") ?: clicksLayer
 
@@ -1326,20 +1306,6 @@ class OcrAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun updateAlternativesHighlight(container: FrameLayout, currentChar: Char) {
-        val candidateList = container.findViewWithTag<LinearLayout>("candidate_list_panel") ?: return
-        for (i in 0 until candidateList.childCount) {
-            val v = candidateList.getChildAt(i) as? TextView ?: continue
-            if (v.text.toString() == currentChar.toString()) {
-                v.setBackgroundColor(android.graphics.Color.YELLOW)
-                v.setTextColor(android.graphics.Color.BLACK)
-            } else {
-                v.setBackgroundColor(android.graphics.Color.argb(255, 85, 85, 85))
-                v.setTextColor(android.graphics.Color.WHITE)
-            }
-        }
-    }
-
     private fun replaceCharacter(lIdx: Int, cIdx: Int, newChar: Char, rootLayout: FrameLayout) {
         val line = activeLineResults[lIdx] ?: return
         val charArray = line.text.toCharArray()
@@ -1355,7 +1321,8 @@ class OcrAccessibilityService : AccessibilityService() {
 
         val altContainer = rootLayout.findViewWithTag<FrameLayout>("alternatives_container")
         if (altContainer != null && altContainer.childCount > 0) {
-            updateAlternativesHighlight(altContainer, newChar)
+            val isLandscape = rootLayout.width > rootLayout.height
+            updateAlternativesPanelContent(altContainer, lIdx, cIdx, isLandscape, rootLayout)
         }
 
         performLookup(lIdx, cIdx, rootLayout, skipCenter = true)
@@ -1368,8 +1335,8 @@ class OcrAccessibilityService : AccessibilityService() {
         val padding = (box.height() * 0.5).toInt()
         val cropRect = Rect((box.left - padding).coerceAtLeast(0), (box.top - padding).coerceAtLeast(0), (box.right + padding).coerceAtMost(bitmap.width), (box.bottom + padding).coerceAtMost(bitmap.height))
         val cropped = Bitmap.createBitmap(bitmap, cropRect.left, cropRect.top, cropRect.width(), cropRect.height())
-        val blocker = FrameLayout(this).apply { tag = "manual_input_blocker"; setBackgroundColor(android.graphics.Color.argb(180, 0, 0, 0)); setOnClickListener { closeManualInput(rootLayout) } }
-        val panel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(android.graphics.Color.argb(255, 35, 35, 35)); setPadding(60, 60, 60, 60); gravity = Gravity.CENTER_HORIZONTAL; elevation = 50f; setOnClickListener { } }
+        val blocker = FrameLayout(this).apply { tag = "manual_input_blocker"; setBackgroundColor(android.graphics.Color.argb(180, 0, 0, 0)); setOnClickListener { closeManualInput(rootLayout) }; elevation = 200f }
+        val panel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(android.graphics.Color.argb(255, 35, 35, 35)); setPadding(60, 60, 60, 60); gravity = Gravity.CENTER_HORIZONTAL; elevation = 201f; setOnClickListener { } }
         panel.addView(android.widget.ImageView(this).apply { setImageBitmap(cropped); val size = (resources.displayMetrics.density * 120).toInt(); layoutParams = LinearLayout.LayoutParams(size, size); scaleType = android.widget.ImageView.ScaleType.FIT_CENTER })
         panel.addView(TextView(this).apply { text = "Enter character manually"; setTextColor(android.graphics.Color.GRAY); textSize = 14f; setPadding(0, 30, 0, 10) })
         val editText = EditText(this).apply { setTextColor(android.graphics.Color.WHITE); textSize = 36f; gravity = Gravity.CENTER; maxLines = 1; imeOptions = EditorInfo.IME_ACTION_DONE; inputType = android.text.InputType.TYPE_CLASS_TEXT; background.setTint(android.graphics.Color.CYAN) }
@@ -1379,6 +1346,7 @@ class OcrAccessibilityService : AccessibilityService() {
         val params = screenshotOverlay?.layoutParams as? WindowManager.LayoutParams
         if (params != null) { params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv(); params.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE; windowManager?.updateViewLayout(screenshotOverlay, params) }
         rootLayout.addView(blocker, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        blocker.bringToFront()
         editText.requestFocus()
         editText.postDelayed({ (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).showSoftInput(editText, InputMethodManager.SHOW_IMPLICIT) }, 100)
         editText.setOnEditorActionListener { _, actionId, event -> if (actionId == EditorInfo.IME_ACTION_DONE || (event != null && event.keyCode == KeyEvent.KEYCODE_ENTER && event.action == KeyEvent.ACTION_DOWN)) { val text = editText.text.toString(); if (text.isNotEmpty()) { replaceCharacter(lIdx, cIdx, text[0], rootLayout); closeManualInput(rootLayout) }; true } else false }
@@ -1386,6 +1354,7 @@ class OcrAccessibilityService : AccessibilityService() {
 
     private fun closeManualInput(rootLayout: FrameLayout) {
         val blocker = rootLayout.findViewWithTag<View>("manual_input_blocker") ?: return
+        lastManualInputCloseTime = System.currentTimeMillis()
         rootLayout.removeView(blocker)
         (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(rootLayout.windowToken, 0)
         val params = screenshotOverlay?.layoutParams as? WindowManager.LayoutParams
@@ -1466,9 +1435,20 @@ class OcrAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (screenshotOverlay == null) return
 
-        val eventPackage = event?.packageName?.toString()
-        // Close if focus shifts to another app (Launcher, etc.) or system UI interacts
-        if (eventPackage != null && eventPackage != packageName) {
+        if (event?.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            val eventPackage = event.packageName?.toString()
+            if (eventPackage == null || eventPackage == packageName) return
+
+            // Don't close if we are in manual input mode (allowing the keyboard to open)
+            val root = screenshotOverlay as? FrameLayout
+            if (root?.findViewWithTag<View>("manual_input_blocker") != null) return
+            
+            // Ignore events immediately after closing manual input (like keyboard dismissal)
+            if (System.currentTimeMillis() - lastManualInputCloseTime < 1000) return
+
+            // Don't close for non-fullscreen events like heads-up notifications
+            if (event.isFullScreen == false) return
+
             hideScreenshotOverlay()
         }
     }
