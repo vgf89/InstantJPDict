@@ -1,6 +1,7 @@
 package com.holopengin.instantjpdict
 
 import android.content.Intent
+import androidx.core.net.toUri
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
@@ -121,6 +122,17 @@ fun HomeScreen(
         Spacer(modifier = Modifier.height(16.dp))
         Button(onClick = onOpenSettings, modifier = Modifier.fillMaxWidth()) {
             Text("Enable Accessibility Service")
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        val context = androidx.compose.ui.platform.LocalContext.current
+        Button(
+            onClick = {
+                val intent = Intent(Intent.ACTION_VIEW, "https://github.com/yomidevs/jmdict-yomitan".toUri())
+                context.startActivity(intent)
+            },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Download Dictionaries")
         }
         Spacer(modifier = Modifier.height(8.dp))
         Button(onClick = onImportDict, modifier = Modifier.fillMaxWidth()) {
