@@ -11,6 +11,7 @@ import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.LayerDrawable
 import android.util.Log
 import android.view.Display
 import android.view.Gravity
@@ -100,6 +101,14 @@ class OcrAccessibilityService : AccessibilityService() {
         }
     }
 
+    private fun createButtonBackground() = LayerDrawable(arrayOf(
+        GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(Color.argb(150, 0, 0, 0))
+        },
+        ContextCompat.getDrawable(this, R.drawable.ic_logo_ring)!!
+    ))
+
     override fun onCreate() {
         super.onCreate()
         ocrEngine = OcrEngine(this)
@@ -153,7 +162,7 @@ class OcrAccessibilityService : AccessibilityService() {
             text = "辞典"
             setTextColor(Color.CYAN)
             typeface = ResourcesCompat.getFont(this@OcrAccessibilityService, R.font.yujimai_regular)
-            background = getDrawable(R.drawable.ic_logo_ring)
+            background = createButtonBackground()
             val size = (44 * resources.displayMetrics.density).toInt()
             layoutParams = FrameLayout.LayoutParams(size, size)
             setPadding(0, 0, 0, 0)
@@ -526,7 +535,7 @@ class OcrAccessibilityService : AccessibilityService() {
             text = "辞典"
             setTextColor(Color.CYAN)
             typeface = ResourcesCompat.getFont(this@OcrAccessibilityService, R.font.yujimai_regular)
-            background = getDrawable(R.drawable.ic_logo_ring)
+            background = createButtonBackground()
             setPadding(0, 0, 0, 0)
             minWidth = 0
             minHeight = 0
