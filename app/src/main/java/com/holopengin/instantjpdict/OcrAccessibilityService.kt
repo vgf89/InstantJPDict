@@ -1425,31 +1425,48 @@ class OcrAccessibilityService : AccessibilityService() {
     private fun renderSenseGroup(container: LinearLayout, tags: List<String>?, senses: List<Pair<Int, Any?>>) {
         if (senses.isEmpty()) return
         
+        val isForms = tags?.any { it.equals("Forms", ignoreCase = true) || it.equals("Other forms", ignoreCase = true) } == true
+
         if (!tags.isNullOrEmpty()) {
-            val range = if (senses.size > 1) " (${senses.first().first}-${senses.last().first})" else " (${senses.first().first})"
+            val range = if (senses.size > 1 && !isForms) " (${senses.first().first}-${senses.last().first})" else if (!isForms) " (${senses.first().first})" else ""
             val header = FlowLayout(this).apply { setPadding(20, 15, 0, 5) }
             tags.forEach { header.addView(createTagView(it)) }
-            header.addView(TextView(this).apply { text = range; setTextColor(android.graphics.Color.GRAY); textSize = 12f; setPadding(10, 0, 0, 0) })
+            if (range.isNotEmpty()) {
+                header.addView(TextView(this).apply { text = range; setTextColor(android.graphics.Color.GRAY); textSize = 12f; setPadding(10, 0, 0, 0) })
+            }
             container.addView(header)
         }
         
-        senses.forEach { (idx, content) ->
-            val senseLayout = LinearLayout(this).apply { 
-                orientation = LinearLayout.HORIZONTAL
+        if (isForms) {
+            val table = LinearLayout(this).apply { 
+                orientation = LinearLayout.VERTICAL
                 setPadding(30, 5, 10, 5)
             }
-            senseLayout.addView(TextView(this).apply {
-                text = "$idx. "
-                setTextColor(android.graphics.Color.WHITE)
-                textSize = 15f
-                setPadding(0, 0, 10, 0)
-            })
-            
-            val contentContainer = FlowLayout(this)
-            renderDefinition(contentContainer, content, false)
-            senseLayout.addView(contentContainer, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
-            
-            container.addView(senseLayout)
+            senses.forEach { (_, content) ->
+                val row = FlowLayout(this).apply { setPadding(0, 5, 0, 5) }
+                renderDefinition(row, content, false)
+                table.addView(row)
+            }
+            container.addView(table)
+        } else {
+            senses.forEach { (idx, content) ->
+                val senseLayout = LinearLayout(this).apply { 
+                    orientation = LinearLayout.HORIZONTAL
+                    setPadding(30, 5, 10, 5)
+                }
+                senseLayout.addView(TextView(this).apply {
+                    text = "$idx. "
+                    setTextColor(android.graphics.Color.WHITE)
+                    textSize = 15f
+                    setPadding(0, 0, 10, 0)
+                })
+                
+                val contentContainer = FlowLayout(this)
+                renderDefinition(contentContainer, content, false)
+                senseLayout.addView(contentContainer, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+                
+                container.addView(senseLayout)
+            }
         }
     }
 
@@ -1529,6 +1546,40 @@ class OcrAccessibilityService : AccessibilityService() {
                         container.addView(box)
                         return false // Blocks break the inline comma chain
                     }
+                    tag == "table" -> {
+                        val tableLayout = LinearLayout(this@OcrAccessibilityService).apply { 
+                            orientation = LinearLayout.VERTICAL
+                            setPadding(10, 10, 10, 10)
+                            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                                topMargin = 10; bottomMargin = 10
+                            }
+                        }
+                        renderDefinition(tableLayout, content, false)
+                        container.addView(tableLayout)
+                        return false
+                    }
+                    tag == "tr" -> {
+                        val tr = LinearLayout(this@OcrAccessibilityService).apply { 
+                            orientation = LinearLayout.HORIZONTAL
+                            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                        }
+                        renderDefinition(tr, content, false)
+                        container.addView(tr)
+                        return false
+                    }
+                    tag == "td" || tag == "th" -> {
+                        val cell = FlowLayout(this@OcrAccessibilityService).apply {
+                            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f)
+                            setPadding(10, 5, 10, 5)
+                            background = GradientDrawable().apply {
+                                setStroke(1, android.graphics.Color.argb(80, 255, 255, 255))
+                            }
+                            minimumHeight = (24 * resources.displayMetrics.density).toInt()
+                        }
+                        renderDefinition(cell, content, false)
+                        container.addView(cell)
+                        return false
+                    }
                     else -> if (content != null) return renderDefinition(container, content, currentlyInline)
                 }
             }
@@ -1595,6 +1646,9 @@ class OcrAccessibilityService : AccessibilityService() {
     private class FlowLayout(context: Context) : android.view.ViewGroup(context) {
         override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
             val width = MeasureSpec.getSize(widthMeasureSpec)
+            val heightMode = MeasureSpec.getMode(heightMeasureSpec)
+            val heightSize = MeasureSpec.getSize(heightMeasureSpec)
+            
             val maxWidth = width - paddingLeft - paddingRight
             var x = paddingLeft
             var y = paddingTop
@@ -1620,7 +1674,10 @@ class OcrAccessibilityService : AccessibilityService() {
                 rowHeight = maxOf(rowHeight, child.measuredHeight)
                 rowBaseline = maxOf(rowBaseline, child.baseline)
             }
-            setMeasuredDimension(width, y + rowHeight + paddingBottom)
+            
+            val calculatedHeight = y + rowHeight + paddingBottom
+            val finalHeight = if (heightMode == MeasureSpec.EXACTLY) heightSize else maxOf(calculatedHeight, minimumHeight)
+            setMeasuredDimension(width, finalHeight)
         }
 
         override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
