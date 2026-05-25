@@ -1062,6 +1062,7 @@ class OcrAccessibilityService : AccessibilityService() {
                 termSection.addView(headwordList)
 
                 var globalSenseNum = 1
+                val groupSeenTags = mutableSetOf<String>()
                 for (e in readingEntries) {
                     val definitionsJson = try { gson.fromJson<Any>(e.definitions, Any::class.java) } catch (ex: Exception) { e.definitions }
                     val definitionsList = if (definitionsJson is List<*>) definitionsJson else listOf(definitionsJson)
@@ -1095,15 +1096,20 @@ class OcrAccessibilityService : AccessibilityService() {
                         val tags = (if (i == 0) metaTags else emptyList()) + (senseTagsMap[i + 1] ?: emptyList())
                         val distinctTags = tags.distinct()
 
-                        if (distinctTags == currentGroupTags) {
+                        if (i == 0) {
+                            currentGroupTags = distinctTags
+                            currentGroupSenses.add(senseIdx to content)
+                        } else if (distinctTags == currentGroupTags) {
                             currentGroupSenses.add(senseIdx to content)
                         } else {
-                            renderSenseGroup(termSection, currentGroupTags, currentGroupSenses)
+                            val filtered = currentGroupTags?.filter { groupSeenTags.add(it) }
+                            renderSenseGroup(termSection, filtered, currentGroupSenses)
                             currentGroupTags = distinctTags
                             currentGroupSenses = mutableListOf(senseIdx to content)
                         }
                     }
-                    renderSenseGroup(termSection, currentGroupTags, currentGroupSenses)
+                    val filtered = currentGroupTags?.filter { groupSeenTags.add(it) }
+                    renderSenseGroup(termSection, filtered, currentGroupSenses)
                 }
                 termSection.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1).apply { topMargin = 20 }; setBackgroundColor(android.graphics.Color.DKGRAY); alpha = 0.3f })
             }
@@ -1482,7 +1488,7 @@ class OcrAccessibilityService : AccessibilityService() {
                             setTextColor(android.graphics.Color.WHITE)
                             textSize = 15f
                             includeFontPadding = false
-                            setPadding(0, 0, 10, 0)
+                            setPadding(0, 0, 0, 0)
                         })
                     }
                     container.addView(TextView(this).apply {
@@ -1490,7 +1496,7 @@ class OcrAccessibilityService : AccessibilityService() {
                         setTextColor(android.graphics.Color.WHITE)
                         textSize = 15f
                         includeFontPadding = false
-                        setPadding(0, 0, 10, 0)
+                        setPadding(0, 0, 0, 0)
                     })
                     return true
                 }
