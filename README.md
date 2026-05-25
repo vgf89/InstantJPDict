@@ -1,12 +1,11 @@
-# InstantJPDict
+# <img src="./logo.svg"> InstantJPDict
 
 InstantJPDict is an Android application which provides instant Japanese-to-English dictionary lookups using on-device OCR (Optical Character Recognition). It allows users to capture text from their screen and get immediate definitions, making it ideal for reading games, browsing social media, or any other activity where copying text is difficult.
 
 Currently only tested with [JMDict and KANJIDIC for Yomitan](https://github.com/yomidevs/jmdict-yomitan).
 
 ## Demo
-<!-- [INSERT DEMO VIDEO HERE] -->
-*(Placeholder for demo video)*
+<div><video controls src="https://github.com/user-attachments/assets/06a01786-9082-4fea-a1fb-0a463180bd99"></video></div>
 
 ## Features
 - **On-device OCR**: High-speed Japanese text recognition without needing an internet connection.
