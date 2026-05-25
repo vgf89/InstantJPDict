@@ -1011,7 +1011,7 @@ class OcrAccessibilityService : AccessibilityService() {
         if (matches.isEmpty()) {
             container.addView(TextView(this).apply {
                 text = "No results found"
-                setTextColor(android.graphics.Color.GRAY)
+                setTextColor(Color.GRAY)
                 gravity = Gravity.CENTER
                 textSize = 16f
                 setPadding(0, 150, 0, 0)
@@ -1019,102 +1019,123 @@ class OcrAccessibilityService : AccessibilityService() {
             return
         }
 
-        val scrollView = ScrollView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
-            isVerticalScrollBarEnabled = false
-        }
         val scrollContent = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(10, 0, 10, 150)
         }
 
-        for ((_, entries) in matches) {
-            val termSection = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 10, 0, 40) }
-            val entriesByReading = entries.groupBy { it.reading }
-
-            for ((reading, readingEntries) in entriesByReading) {
-                val headwordList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 0, 0, 10) }
-                val firstEntry = readingEntries.first()
-                val isKanjiEntry = firstEntry.onyomi != null || firstEntry.kunyomi != null
-                val kanjiVariants = readingEntries.map { it.kanji }.distinct()
-
-                if (isKanjiEntry) {
-                    kanjiVariants.forEach { kanji ->
-                        val entry = readingEntries.find { it.kanji == kanji } ?: firstEntry
-                        val kanjiHeader = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, 5, 0, 5) }
-                        kanjiHeader.addView(TextView(this).apply { text = kanji; setTextColor(android.graphics.Color.CYAN); textSize = 48f; typeface = android.graphics.Typeface.DEFAULT_BOLD; setPadding(0, 0, 30, 0) })
-                        val readingStack = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-                        entry.onyomi?.takeIf { it.isNotEmpty() }?.let { readingStack.addView(TextView(this).apply { text = "ON: ${it.replace(" ", "、")}"; setTextColor(android.graphics.Color.LTGRAY); textSize = 14f }) }
-                        entry.kunyomi?.takeIf { it.isNotEmpty() }?.let { readingStack.addView(TextView(this).apply { text = "KUN: ${it.replace(" ", "、")}"; setTextColor(android.graphics.Color.LTGRAY); textSize = 14f }) }
-                        kanjiHeader.addView(readingStack)
-                        headwordList.addView(kanjiHeader)
-                    }
-                } else {
-                    val flow = FlowLayout(this).apply { setPadding(0, 5, 0, 5) }
-                    kanjiVariants.forEachIndexed { i, kanji ->
-                        flow.addView(createRubyView(kanji, reading))
-                        if (i < kanjiVariants.size - 1) {
-                            flow.addView(TextView(this).apply { text = "、"; setTextColor(android.graphics.Color.GRAY); textSize = 24f; setPadding(5, 0, 5, 0) })
-                        }
-                    }
-                    headwordList.addView(flow)
-                }
-                termSection.addView(headwordList)
-
-                var globalSenseNum = 1
-                val groupSeenTags = mutableSetOf<String>()
-                var currentGroupTags: List<String>? = null
-                var currentGroupSenses = mutableListOf<Pair<Int, Any?>>()
-
-                for (e in readingEntries) {
-                    val definitionsJson = try { gson.fromJson<Any>(e.definitions, Any::class.java) } catch (ex: Exception) { e.definitions }
-                    val definitionsList = if (definitionsJson is List<*>) definitionsJson else listOf(definitionsJson)
-
-                    val senseTagsMap = mutableMapOf<Int, MutableList<String>>()
-                    val metaTags = mutableListOf<String>()
-                    e.jlpt?.takeIf { it.isNotEmpty() }?.let { metaTags.add("jlpt: N$it") }
-                    "grade:([^\\S]+)".toRegex().find(e.rules)?.groupValues?.get(1)?.let { metaTags.add("grade: $it") }
-
-                    val segments = e.rules.split(" | ")
-                    fun parseTags(tagStr: String?) {
-                        if (tagStr == null) return
-                        var currentSense: Int? = null
-                        tagStr.split(" ").filter { it.isNotEmpty() }.forEach { tag ->
-                            val n = tag.toIntOrNull()
-                            if (n != null) currentSense = n
-                            else if (!tag.startsWith("grade:")) {
-                                if (currentSense != null) senseTagsMap.getOrPut(currentSense!!) { mutableListOf() }.add(tag)
-                                else metaTags.add(tag)
-                            }
-                        }
-                    }
-                    parseTags(segments.getOrNull(0))
-                    parseTags(segments.getOrNull(2))
-
-                    val senseIdx = globalSenseNum++
-                    val tags = metaTags + (senseTagsMap[1] ?: emptyList())
-                    val distinctTags = tags.distinct()
-
-                    if (currentGroupTags == null) {
-                        currentGroupTags = distinctTags
-                        currentGroupSenses.add(senseIdx to definitionsList)
-                    } else if (distinctTags == currentGroupTags) {
-                        currentGroupSenses.add(senseIdx to definitionsList)
-                    } else {
-                        val filtered = currentGroupTags?.filter { groupSeenTags.add(it) }
-                        renderSenseGroup(termSection, filtered, currentGroupSenses)
-                        currentGroupTags = distinctTags
-                        currentGroupSenses = mutableListOf(senseIdx to definitionsList)
-                    }
-                }
-                val filtered = currentGroupTags?.filter { groupSeenTags.add(it) }
-                renderSenseGroup(termSection, filtered, currentGroupSenses)
-
-                termSection.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1).apply { topMargin = 20 }; setBackgroundColor(android.graphics.Color.DKGRAY); alpha = 0.3f })
+        matches.forEach { (_, entries) ->
+            val termSection = LinearLayout(this).apply { 
+                orientation = LinearLayout.VERTICAL
+                setPadding(0, 10, 0, 40)
+            }
+            
+            entries.groupBy { it.reading }.forEach { (reading, readingEntries) ->
+                renderHeadwordSection(termSection, reading, readingEntries)
+                renderSensesForReading(termSection, readingEntries)
+                
+                termSection.addView(View(this).apply {
+                    layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1).apply { topMargin = 20 }
+                    setBackgroundColor(Color.DKGRAY)
+                    alpha = 0.3f
+                })
             }
             scrollContent.addView(termSection)
         }
-        scrollView.addView(scrollContent); container.addView(scrollView)
+
+        val scrollView = ScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
+            isVerticalScrollBarEnabled = false
+            addView(scrollContent)
+        }
+        container.addView(scrollView)
+    }
+
+    private fun renderHeadwordSection(container: LinearLayout, reading: String, entries: List<com.holopengin.instantjpdict.data.DictionaryEntry>) {
+        val headwordList = LinearLayout(this).apply { 
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, 0, 0, 10)
+        }
+        val isKanjiEntry = entries.firstOrNull()?.let { it.onyomi != null || it.kunyomi != null } ?: false
+        val kanjiVariants = entries.map { it.kanji }.distinct()
+
+        if (isKanjiEntry) {
+            kanjiVariants.forEach { kanji ->
+                val entry = entries.find { it.kanji == kanji } ?: entries.first()
+                val kanjiHeader = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(0, 5, 0, 5)
+                }
+                kanjiHeader.addView(TextView(this).apply {
+                    text = kanji
+                    setTextColor(Color.CYAN)
+                    textSize = 48f
+                    typeface = android.graphics.Typeface.DEFAULT_BOLD
+                    setPadding(0, 0, 30, 0)
+                })
+                val readingStack = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+                entry.onyomi?.takeIf { it.isNotEmpty() }?.let { readingStack.addView(TextView(this).apply { text = "ON: ${it.replace(" ", "、")}"; setTextColor(Color.LTGRAY); textSize = 14f }) }
+                entry.kunyomi?.takeIf { it.isNotEmpty() }?.let { readingStack.addView(TextView(this).apply { text = "KUN: ${it.replace(" ", "、")}"; setTextColor(Color.LTGRAY); textSize = 14f }) }
+                kanjiHeader.addView(readingStack)
+                headwordList.addView(kanjiHeader)
+            }
+        } else {
+            val flow = FlowLayout(this).apply { setPadding(0, 5, 0, 5) }
+            kanjiVariants.forEachIndexed { i, kanji ->
+                flow.addView(createRubyView(kanji, reading))
+                if (i < kanjiVariants.size - 1) {
+                    flow.addView(TextView(this).apply { text = "、"; setTextColor(Color.GRAY); textSize = 24f; setPadding(5, 0, 5, 0) })
+                }
+            }
+            headwordList.addView(flow)
+        }
+        container.addView(headwordList)
+    }
+
+    private fun renderSensesForReading(container: LinearLayout, entries: List<com.holopengin.instantjpdict.data.DictionaryEntry>) {
+        var globalSenseNum = 1
+        val groupSeenTags = mutableSetOf<String>()
+        var currentGroupTags: List<String>? = null
+        var currentGroupSenses = mutableListOf<Pair<Int, Any?>>()
+
+        for (e in entries) {
+            val definitionsJson = try { gson.fromJson<Any>(e.definitions, Any::class.java) } catch (ex: Exception) { e.definitions }
+            val definitionsList = if (definitionsJson is List<*>) definitionsJson else listOf(definitionsJson)
+
+            val metaTags = mutableListOf<String>()
+            val senseTagsMap = mutableMapOf<Int, MutableList<String>>()
+            e.jlpt?.takeIf { it.isNotEmpty() }?.let { metaTags.add("jlpt: N$it") }
+            "grade:([^\\S]+)".toRegex().find(e.rules)?.groupValues?.get(1)?.let { metaTags.add("grade: $it") }
+
+            val segments = e.rules.split(" | ")
+            fun parseToMaps(s: String?) {
+                var currentSense: Int? = null
+                s?.split(" ")?.filter { it.isNotEmpty() }?.forEach { tag ->
+                    val n = tag.toIntOrNull()
+                    if (n != null) currentSense = n
+                    else if (!tag.startsWith("grade:")) {
+                        if (currentSense != null) senseTagsMap.getOrPut(currentSense!!) { mutableListOf() }.add(tag)
+                        else metaTags.add(tag)
+                    }
+                }
+            }
+            parseToMaps(segments.getOrNull(0))
+            parseToMaps(segments.getOrNull(2))
+
+            val senseIdx = globalSenseNum++
+            val tags = (metaTags + (senseTagsMap[1] ?: emptyList())).distinct()
+
+            if (currentGroupTags == null || tags == currentGroupTags) {
+                currentGroupTags = tags
+                currentGroupSenses.add(senseIdx to definitionsList)
+            } else {
+                renderSenseGroup(container, currentGroupTags?.filter { groupSeenTags.add(it) }, currentGroupSenses)
+                currentGroupTags = tags
+                currentGroupSenses = mutableListOf(senseIdx to definitionsList)
+            }
+        }
+        renderSenseGroup(container, currentGroupTags?.filter { groupSeenTags.add(it) }, currentGroupSenses)
     }
 
     private fun updateNeighborHighlights(panel: LinearLayout) {
@@ -1337,14 +1358,14 @@ class OcrAccessibilityService : AccessibilityService() {
 
     private fun createTagView(tag: String, category: String = "general"): View {
         val color = when { 
-            category == "pos" || tag.startsWith("v") || tag == "adj-i" || tag == "adj-na" -> android.graphics.Color.parseColor("#3a5a7a")
-            tag == "n" || tag == "adv" || tag == "pn" -> android.graphics.Color.parseColor("#3a7a5a")
-            category == "meta" || tag.startsWith("jlpt") || tag.startsWith("grade") || tag == "★" -> android.graphics.Color.parseColor("#7a3a3a")
-            else -> android.graphics.Color.parseColor("#444444") 
+            category == "pos" || tag.startsWith("v") || tag == "adj-i" || tag == "adj-na" -> Color.parseColor("#3a5a7a")
+            tag == "n" || tag == "adv" || tag == "pn" -> Color.parseColor("#3a7a5a")
+            category == "meta" || tag.startsWith("jlpt") || tag.startsWith("grade") || tag == "★" -> Color.parseColor("#7a3a3a")
+            else -> Color.parseColor("#444444") 
         }
         return TextView(this).apply { 
             text = tag
-            setTextColor(android.graphics.Color.WHITE)
+            setTextColor(Color.WHITE)
             textSize = 10f
             typeface = android.graphics.Typeface.DEFAULT_BOLD
             setPadding(12, 2, 12, 2)
@@ -1363,39 +1384,35 @@ class OcrAccessibilityService : AccessibilityService() {
         if (term == reading) {
             return TextView(this).apply {
                 text = term
-                setTextColor(android.graphics.Color.CYAN)
+                setTextColor(Color.CYAN)
                 textSize = if (isMini) 15f else 32f
                 typeface = android.graphics.Typeface.DEFAULT_BOLD
                 includeFontPadding = false
                 setPadding(0, 0, 0, 0)
             }
         }
-        val rubyItem = LinearLayout(this).apply {
+        return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
             isBaselineAligned = true
+            
+            addView(TextView(this@OcrAccessibilityService).apply {
+                text = reading
+                setTextColor(Color.LTGRAY)
+                textSize = if (isMini) 9f else 13f
+                gravity = Gravity.CENTER
+                includeFontPadding = false
+            })
+            addView(TextView(this@OcrAccessibilityService).apply {
+                text = term
+                setTextColor(Color.CYAN)
+                textSize = if (isMini) 15f else 32f
+                typeface = android.graphics.Typeface.DEFAULT_BOLD
+                gravity = Gravity.CENTER
+                includeFontPadding = false
+            })
+            baselineAlignedChildIndex = 1
         }
-        // Reading (Furigana)
-        rubyItem.addView(TextView(this).apply {
-            text = reading
-            setTextColor(android.graphics.Color.LTGRAY)
-            textSize = if (isMini) 9f else 13f
-            gravity = Gravity.CENTER
-            includeFontPadding = false
-            setPadding(0, 0, 0, 0)
-        })
-        // Term (Kanji)
-        rubyItem.addView(TextView(this).apply {
-            text = term
-            setTextColor(android.graphics.Color.CYAN)
-            textSize = if (isMini) 15f else 32f
-            typeface = android.graphics.Typeface.DEFAULT_BOLD
-            gravity = Gravity.CENTER
-            includeFontPadding = false
-            setPadding(0, 0, 0, 0)
-        })
-        rubyItem.baselineAlignedChildIndex = 1
-        return rubyItem
     }
 
     private fun renderSenseGroup(container: LinearLayout, tags: List<String>?, senses: List<Pair<Int, Any?>>) {
@@ -1428,7 +1445,7 @@ class OcrAccessibilityService : AccessibilityService() {
                 }
                 senseLayout.addView(TextView(this).apply {
                     text = "$idx. "
-                    setTextColor(android.graphics.Color.WHITE)
+                    setTextColor(Color.WHITE)
                     textSize = 15f
                     setPadding(0, 0, 10, 0)
                 })
@@ -1444,27 +1461,23 @@ class OcrAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun getAttr(data: Map<*, *>, key: String): String? {
-        val attrMap = data["data"] as? Map<*, *>
-        return attrMap?.get(key) as? String ?: data["data-$key"] as? String ?: data[key] as? String
-    }
+    private fun getAttr(data: Map<*, *>, key: String) = 
+        (data["data"] as? Map<*, *>)?.get(key) as? String ?: data["data-$key"] as? String ?: data[key] as? String
 
-    private fun isExample(data: Map<*, *>): Boolean {
-        if (data["type"] == "sentence" || data.containsKey("japanese")) return true
-        val scContent = getAttr(data, "content")
-        return scContent == "examples" || scContent == "example-sentence"
-    }
+    private fun isExample(data: Map<*, *>) = 
+        data["type"] == "sentence" || data.containsKey("japanese") || getAttr(data, "content")?.let { it == "examples" || it == "example-sentence" } == true
 
     private fun isBlock(item: Any?): Boolean {
-        if (item !is Map<*, *>) return false
-        if (isExample(item)) return true
-        val scClass = getAttr(item, "class")
-        val scContent = getAttr(item, "content")
-        val tag = item["tag"] as? String
-        if (scClass == "extra-box" || scContent == "info-gloss" || scContent == "sense-note" || scContent == "lang-source" || scContent == "xref" || scContent == "antonym") return true
-        if (tag == "ul" || tag == "ol") return !(scContent == "glossary" || scContent == "infoGlossary" || scContent == "sourceLanguages")
-        if (tag == "table") return true
-        return false
+        val data = item as? Map<*, *> ?: return false
+        if (isExample(data)) return true
+        val scClass = getAttr(data, "class")
+        val scContent = getAttr(data, "content")
+        val tag = data["tag"] as? String
+        
+        return scClass == "extra-box" || scContent == "info-gloss" || scContent == "sense-note" || 
+               scContent == "lang-source" || scContent == "xref" || scContent == "antonym" ||
+               tag == "table" || 
+               ((tag == "ul" || tag == "ol") && scContent !in listOf("glossary", "infoGlossary", "sourceLanguages"))
     }
 
     private fun renderDefinition(container: ViewGroup, data: Any?, prevWasInline: Boolean): Boolean {
@@ -1475,35 +1488,17 @@ class OcrAccessibilityService : AccessibilityService() {
                 if (trimmed.isEmpty()) return currentlyInline
                 
                 if (currentlyInline && container is FlowLayout) {
-                    container.addView(TextView(this).apply {
-                        text = ", "
-                        setTextColor(android.graphics.Color.WHITE)
-                        textSize = 15f
-                        includeFontPadding = false
-                    })
+                    container.addView(TextView(this).apply { text = ", "; setTextColor(Color.WHITE); textSize = 15f; includeFontPadding = false })
                 }
                 
-                container.addView(TextView(this).apply { 
-                    text = trimmed
-                    setTextColor(android.graphics.Color.WHITE)
-                    textSize = 15f
-                    includeFontPadding = false
-                })
+                container.addView(TextView(this).apply { text = trimmed; setTextColor(Color.WHITE); textSize = 15f; includeFontPadding = false })
                 return true
             }
             is List<*> -> {
                 data.forEach { item ->
-                    val isEx = if (item is Map<*, *>) isExample(item) else false
-                    val isBlk = if (item is Map<*, *>) isBlock(item) else false
-
-                    if (currentlyInline && isBlk && container is FlowLayout) {
-                        val punctuation = if (isEx) ". " else " "
-                        container.addView(TextView(this).apply {
-                            text = punctuation
-                            setTextColor(android.graphics.Color.WHITE)
-                            textSize = 15f
-                            includeFontPadding = false
-                        })
+                    if (currentlyInline && isBlock(item) && container is FlowLayout) {
+                        val punctuation = if (item is Map<*, *> && isExample(item)) ". " else " "
+                        container.addView(TextView(this).apply { text = punctuation; setTextColor(Color.WHITE); textSize = 15f; includeFontPadding = false })
                         currentlyInline = false
                     }
                     currentlyInline = renderDefinition(container, item, currentlyInline)
@@ -1516,90 +1511,62 @@ class OcrAccessibilityService : AccessibilityService() {
                 val scContent = getAttr(data, "content")
                 val scClass = getAttr(data, "class")
 
-                if (isExample(data)) {
-                    val box = LinearLayout(this).apply {
-                        orientation = LinearLayout.VERTICAL
-                        setPadding(30, 15, 30, 25)
-                        background = GradientDrawable().apply {
-                            setColor(android.graphics.Color.argb(30, 255, 255, 255))
-                            setStroke(3, android.graphics.Color.argb(220, 255, 255, 255))
-                            cornerRadius = 12f
+                when {
+                    isExample(data) -> {
+                        val box = LinearLayout(this).apply {
+                            orientation = LinearLayout.VERTICAL
+                            setPadding(30, 15, 30, 25)
+                            background = GradientDrawable().apply {
+                                setColor(android.graphics.Color.argb(10, 255, 255, 255))
+                                setStroke(3, android.graphics.Color.argb(80, 255, 255, 255))
+                                cornerRadius = 12f
+                            }
+                            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(0, 15, 0, 15) }
                         }
-                        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                            setMargins(0, 15, 0, 15)
-                        }
+                        val jp = (data["japanese"] as? String) ?: (content as? String)
+                        if (jp != null) {
+                            box.addView(TextView(this).apply { text = jp; setTextColor(Color.WHITE); textSize = 16f; setPadding(0, 0, 0, 10) })
+                            (data["english"] as? String)?.let { en -> box.addView(TextView(this).apply { text = en; setTextColor(Color.LTGRAY); textSize = 14f }) }
+                        } else renderDefinition(box, content, false)
+                        container.addView(box)
+                        return false
                     }
-                    
-                    val jp = (data["japanese"] as? String) ?: (if (content is String) content else null)
-                    val en = data["english"] as? String
-                    
-                    if (jp != null) {
-                        box.addView(TextView(this).apply { text = jp; setTextColor(android.graphics.Color.WHITE); textSize = 16f; setPadding(0, 0, 0, 10) })
-                        if (!en.isNullOrEmpty()) box.addView(TextView(this).apply { text = en; setTextColor(android.graphics.Color.LTGRAY); textSize = 14f })
-                    } else {
-                        renderDefinition(box, content, false)
+                    scClass == "tag" || (tag == "span" && scContent?.endsWith("-info") == true) -> {
+                        container.addView(createTagView(content?.toString() ?: ""))
+                        return false
                     }
-                    container.addView(box)
-                    return false
-                }
-
-                if (scClass == "tag" || (tag == "span" && scContent?.endsWith("-info") == true)) {
-                    container.addView(createTagView(content?.toString() ?: ""))
-                    return false
-                }
-
-                if (tag == "ruby") {
-                    val rubyList = content as? List<*>
-                    if (rubyList != null && rubyList.size >= 2) {
-                        if (currentlyInline && container is FlowLayout) {
-                            container.addView(TextView(this).apply { text = ", "; setTextColor(android.graphics.Color.WHITE); textSize = 15f; includeFontPadding = false })
-                        }
-                        val base = rubyList[0].toString()
-                        val rt = (rubyList[1] as? Map<*, *>)?.get("content")?.toString() ?: ""
-                        container.addView(createRubyView(base, rt, isMini = true).apply { setPadding(0, 0, 15, 0) })
-                        return true
-                    }
-                }
-
-                if (tag == "table") {
-                    val table = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(10, 10, 10, 10); layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = 10; bottomMargin = 10 } }
-                    renderDefinition(table, content, false); container.addView(table); return false
-                }
-                if (tag == "tr") {
-                    val tr = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT) }
-                    renderDefinition(tr, content, false); container.addView(tr); return false
-                }
-                if (tag == "td" || tag == "th") {
-                    val cell = FlowLayout(this).apply { layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f); setPadding(10, 5, 10, 5); background = GradientDrawable().apply { setStroke(1, android.graphics.Color.argb(80, 255, 255, 255)) }; minimumHeight = (24 * resources.displayMetrics.density).toInt() }
-                    renderDefinition(cell, content, false); container.addView(cell); return false
-                }
-
-                if (tag == "ul" || tag == "ol") {
-                    if (scContent == "glossary" || scContent == "infoGlossary" || scContent == "sourceLanguages") {
-                        return renderDefinition(container, content, currentlyInline)
-                    }
-                    val block = LinearLayout(this).apply { 
-                        orientation = LinearLayout.VERTICAL
-                        setTag(scContent)
-                        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                            setMargins(0, 10, 0, 10)
+                    tag == "ruby" -> {
+                        val rubyList = content as? List<*>
+                        if (rubyList != null && rubyList.size >= 2) {
+                            if (currentlyInline && container is FlowLayout) {
+                                container.addView(TextView(this).apply { text = ", "; setTextColor(Color.WHITE); textSize = 15f; includeFontPadding = false })
+                            }
+                            container.addView(createRubyView(rubyList[0].toString(), (rubyList[1] as? Map<*, *>)?.get("content")?.toString() ?: "", isMini = true).apply { setPadding(0, 0, 15, 0) })
+                            return true
                         }
                     }
-                    renderDefinition(block, content, false)
-                    container.addView(block)
-                    return false
+                    tag == "table" -> {
+                        val table = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(10, 10, 10, 10); layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = 10; bottomMargin = 10 } }
+                        renderDefinition(table, content, false); container.addView(table); return false
+                    }
+                    tag == "tr" -> {
+                        val tr = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT) }
+                        renderDefinition(tr, content, false); container.addView(tr); return false
+                    }
+                    tag == "td" || tag == "th" -> {
+                        val cell = FlowLayout(this).apply { layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f); setPadding(10, 5, 10, 5); background = GradientDrawable().apply { setStroke(1, android.graphics.Color.argb(80, 255, 255, 255)) }; minimumHeight = (24 * resources.displayMetrics.density).toInt() }
+                        renderDefinition(cell, content, false); container.addView(cell); return false
+                    }
+                    tag == "ul" || tag == "ol" -> {
+                        if (scContent in listOf("glossary", "infoGlossary", "sourceLanguages")) return renderDefinition(container, content, currentlyInline)
+                        val block = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setTag(scContent); layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(0, 10, 0, 10) } }
+                        renderDefinition(block, content, false); container.addView(block); return false
+                    }
+                    content != null -> return renderDefinition(container, content, currentlyInline)
                 }
-
-                if (content != null) return renderDefinition(container, content, currentlyInline)
             }
         }
         return currentlyInline
-    }
-
-    private fun isExampleSentence(item: Any?): Boolean {
-        if (item is Map<*, *>) return isExample(item)
-        if (item is List<*> && item.isNotEmpty()) return isExampleSentence(item[0])
-        return false
     }
 
     private fun hideScreenshotOverlay() {
