@@ -1484,7 +1484,8 @@ class OcrAccessibilityService : AccessibilityService() {
         var currentlyInline = prevWasInline
         when (data) {
             is String -> {
-                val trimmed = data.trim()
+                val replaced = data.replace("; ", "\n").replace(";", "\n")
+                val trimmed = replaced.trim()
                 if (trimmed.isEmpty()) return currentlyInline
                 
                 if (currentlyInline && container is FlowLayout) {
