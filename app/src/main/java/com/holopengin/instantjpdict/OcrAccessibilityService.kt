@@ -1063,6 +1063,9 @@ class OcrAccessibilityService : AccessibilityService() {
 
                 var globalSenseNum = 1
                 val groupSeenTags = mutableSetOf<String>()
+                var currentGroupTags: List<String>? = null
+                var currentGroupSenses = mutableListOf<Pair<Int, Any?>>()
+
                 for (e in readingEntries) {
                     val definitionsJson = try { gson.fromJson<Any>(e.definitions, Any::class.java) } catch (ex: Exception) { e.definitions }
                     val definitionsList = if (definitionsJson is List<*>) definitionsJson else listOf(definitionsJson)
@@ -1070,7 +1073,7 @@ class OcrAccessibilityService : AccessibilityService() {
                     val senseTagsMap = mutableMapOf<Int, MutableList<String>>()
                     val metaTags = mutableListOf<String>()
                     e.jlpt?.takeIf { it.isNotEmpty() }?.let { metaTags.add("jlpt: N$it") }
-                    "grade:([^\\s]+)".toRegex().find(e.rules)?.groupValues?.get(1)?.let { metaTags.add("grade: $it") }
+                    "grade:([^\\S]+)".toRegex().find(e.rules)?.groupValues?.get(1)?.let { metaTags.add("grade: $it") }
 
                     val segments = e.rules.split(" | ")
                     fun parseTags(tagStr: String?) {
@@ -1088,29 +1091,25 @@ class OcrAccessibilityService : AccessibilityService() {
                     parseTags(segments.getOrNull(0))
                     parseTags(segments.getOrNull(2))
 
-                    var currentGroupTags: List<String>? = null
-                    var currentGroupSenses = mutableListOf<Pair<Int, Any?>>()
-                    
-                    definitionsList.forEachIndexed { i, content ->
-                        val senseIdx = globalSenseNum++
-                        val tags = (if (i == 0) metaTags else emptyList()) + (senseTagsMap[i + 1] ?: emptyList())
-                        val distinctTags = tags.distinct()
+                    val senseIdx = globalSenseNum++
+                    val tags = metaTags + (senseTagsMap[1] ?: emptyList())
+                    val distinctTags = tags.distinct()
 
-                        if (i == 0) {
-                            currentGroupTags = distinctTags
-                            currentGroupSenses.add(senseIdx to content)
-                        } else if (distinctTags == currentGroupTags) {
-                            currentGroupSenses.add(senseIdx to content)
-                        } else {
-                            val filtered = currentGroupTags?.filter { groupSeenTags.add(it) }
-                            renderSenseGroup(termSection, filtered, currentGroupSenses)
-                            currentGroupTags = distinctTags
-                            currentGroupSenses = mutableListOf(senseIdx to content)
-                        }
+                    if (currentGroupTags == null) {
+                        currentGroupTags = distinctTags
+                        currentGroupSenses.add(senseIdx to definitionsList)
+                    } else if (distinctTags == currentGroupTags) {
+                        currentGroupSenses.add(senseIdx to definitionsList)
+                    } else {
+                        val filtered = currentGroupTags?.filter { groupSeenTags.add(it) }
+                        renderSenseGroup(termSection, filtered, currentGroupSenses)
+                        currentGroupTags = distinctTags
+                        currentGroupSenses = mutableListOf(senseIdx to definitionsList)
                     }
-                    val filtered = currentGroupTags?.filter { groupSeenTags.add(it) }
-                    renderSenseGroup(termSection, filtered, currentGroupSenses)
                 }
+                val filtered = currentGroupTags?.filter { groupSeenTags.add(it) }
+                renderSenseGroup(termSection, filtered, currentGroupSenses)
+
                 termSection.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1).apply { topMargin = 20 }; setBackgroundColor(android.graphics.Color.DKGRAY); alpha = 0.3f })
             }
             scrollContent.addView(termSection)
@@ -1344,7 +1343,7 @@ class OcrAccessibilityService : AccessibilityService() {
             else -> android.graphics.Color.parseColor("#444444") 
         }
         return TextView(this).apply { 
-            text = formatTag(tag)
+            text = tag
             setTextColor(android.graphics.Color.WHITE)
             textSize = 10f
             typeface = android.graphics.Typeface.DEFAULT_BOLD
@@ -1358,35 +1357,6 @@ class OcrAccessibilityService : AccessibilityService() {
             }
             includeFontPadding = false
         }
-    }
-
-    private fun formatTag(tag: String): String = when(tag) { 
-        "v1" -> "1-dan"
-        "v5", "v5k", "v5s", "v5t", "v5n", "v5m", "v5r", "v5w", "v5g", "v5z", "v5b" -> "5-dan"
-        "vs", "vs-i", "vs-s" -> "suru"
-        "vi" -> "intrans"
-        "vt" -> "trans"
-        "adj-i" -> "adj-i"
-        "adj-na" -> "adj-na"
-        "n" -> "noun"
-        "adv" -> "adv"
-        "pn" -> "pronoun"
-        "p" -> "particle"
-        "exp" -> "phrase"
-        "aux" -> "aux"
-        "ctr" -> "count"
-        "conj" -> "conj"
-        "num" -> "num"
-        "int" -> "intj"
-        "suf" -> "suffix"
-        "pref" -> "prefix"
-        "arch" -> "archaic"
-        "dated" -> "dated"
-        "hist" -> "hist"
-        "sl" -> "slang"
-        "col" -> "colloq"
-        "obs" -> "obsolete"
-        else -> tag 
     }
 
     private fun createRubyView(term: String, reading: String, isMini: Boolean = false): View {
@@ -1434,12 +1404,8 @@ class OcrAccessibilityService : AccessibilityService() {
         val isForms = tags?.any { it.equals("Forms", ignoreCase = true) || it.equals("Other forms", ignoreCase = true) } == true
 
         if (!tags.isNullOrEmpty()) {
-            val range = if (senses.size > 1 && !isForms) " (${senses.first().first}-${senses.last().first})" else if (!isForms) " (${senses.first().first})" else ""
             val header = FlowLayout(this).apply { setPadding(20, 15, 0, 5) }
             tags.forEach { header.addView(createTagView(it)) }
-            if (range.isNotEmpty()) {
-                header.addView(TextView(this).apply { text = range; setTextColor(android.graphics.Color.GRAY); textSize = 12f; setPadding(10, 0, 0, 0) })
-            }
             container.addView(header)
         }
         
@@ -1467,7 +1433,9 @@ class OcrAccessibilityService : AccessibilityService() {
                     setPadding(0, 0, 10, 0)
                 })
                 
-                val contentContainer = FlowLayout(this)
+                val contentContainer = FlowLayout(this).apply {
+                    setPadding(0, 0, 0, 15)
+                }
                 renderDefinition(contentContainer, content, false)
                 senseLayout.addView(contentContainer, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
                 
@@ -1476,123 +1444,163 @@ class OcrAccessibilityService : AccessibilityService() {
         }
     }
 
+    private fun getAttr(data: Map<*, *>, key: String): String? {
+        val attrMap = data["data"] as? Map<*, *>
+        return attrMap?.get(key) as? String ?: data["data-$key"] as? String ?: data[key] as? String
+    }
+
+    private fun isExample(data: Map<*, *>): Boolean {
+        if (data["type"] == "sentence" || data.containsKey("japanese")) return true
+        val scContent = getAttr(data, "content")
+        return scContent == "examples" || scContent == "example-sentence"
+    }
+
+    private fun isBlock(item: Any?): Boolean {
+        if (item !is Map<*, *>) return false
+        if (isExample(item)) return true
+        val scClass = getAttr(item, "class")
+        val scContent = getAttr(item, "content")
+        val tag = item["tag"] as? String
+        if (scClass == "extra-box" || scContent == "info-gloss" || scContent == "sense-note" || scContent == "lang-source" || scContent == "xref" || scContent == "antonym") return true
+        if (tag == "ul" || tag == "ol") return !(scContent == "glossary" || scContent == "infoGlossary" || scContent == "sourceLanguages")
+        if (tag == "table") return true
+        return false
+    }
+
     private fun renderDefinition(container: ViewGroup, data: Any?, prevWasInline: Boolean): Boolean {
         var currentlyInline = prevWasInline
         when (data) {
             is String -> {
                 val trimmed = data.trim()
-                if (trimmed.isNotEmpty()) {
-                    if (currentlyInline && container is FlowLayout) {
-                        container.addView(TextView(this).apply {
-                            text = ", "
-                            setTextColor(android.graphics.Color.WHITE)
-                            textSize = 15f
-                            includeFontPadding = false
-                            setPadding(0, 0, 0, 0)
-                        })
-                    }
+                if (trimmed.isEmpty()) return currentlyInline
+                
+                if (currentlyInline && container is FlowLayout) {
                     container.addView(TextView(this).apply {
-                        text = trimmed
+                        text = ", "
                         setTextColor(android.graphics.Color.WHITE)
                         textSize = 15f
                         includeFontPadding = false
-                        setPadding(0, 0, 0, 0)
                     })
-                    return true
                 }
+                
+                container.addView(TextView(this).apply { 
+                    text = trimmed
+                    setTextColor(android.graphics.Color.WHITE)
+                    textSize = 15f
+                    includeFontPadding = false
+                })
+                return true
             }
             is List<*> -> {
-                data.forEach { currentlyInline = renderDefinition(container, it, currentlyInline) }
+                data.forEach { item ->
+                    val isEx = if (item is Map<*, *>) isExample(item) else false
+                    val isBlk = if (item is Map<*, *>) isBlock(item) else false
+
+                    if (currentlyInline && isBlk && container is FlowLayout) {
+                        val punctuation = if (isEx) ". " else " "
+                        container.addView(TextView(this).apply {
+                            text = punctuation
+                            setTextColor(android.graphics.Color.WHITE)
+                            textSize = 15f
+                            includeFontPadding = false
+                        })
+                        currentlyInline = false
+                    }
+                    currentlyInline = renderDefinition(container, item, currentlyInline)
+                }
                 return currentlyInline
             }
             is Map<*, *> -> {
                 val tag = data["tag"] as? String
                 val content = data["content"] ?: data["list"]
-                val scClass = data["data-sc-class"] as? String
-                val scContent = data["data-sc-content"] as? String
-                
-                when {
-                    tag == "ruby" -> {
-                        val rubyList = content as? List<*>
-                        if (rubyList != null && rubyList.size >= 2) {
-                            if (currentlyInline && container is FlowLayout) {
-                                container.addView(TextView(this).apply {
-                                    text = ", "
-                                    setTextColor(android.graphics.Color.WHITE)
-                                    textSize = 15f
-                                    includeFontPadding = false
-                                    setPadding(0, 0, 10, 0)
-                                })
-                            }
-                            val base = rubyList[0].toString()
-                            val rt = (rubyList[1] as? Map<*, *>)?.get("content")?.toString() ?: ""
-                            container.addView(createRubyView(base, rt, isMini = true).apply {
-                                setPadding(0, 0, 10, 0)
-                            })
-                            return true
-                        } else return renderDefinition(container, content, currentlyInline)
-                    }
-                    scClass == "tag" || (tag == "span" && scContent?.endsWith("-info") == true) -> {
-                        container.addView(createTagView(content?.toString() ?: ""))
-                        return false // Tags break the inline comma chain
-                    }
-                    scClass == "extra-box" || scClass == "example-sentence" || scContent?.startsWith("example-sentence") == true ||
-                    scContent == "info-gloss" || scContent == "sense-note" || scContent == "lang-source" || scContent == "xref" || scContent == "antonym" -> {
-                        val box = FlowLayout(this).apply {
-                            setPadding(20, 10, 10, 10)
-                            background = GradientDrawable().apply {
-                                setColor(android.graphics.Color.argb(20, 255, 255, 255))
-                                setStroke(1, android.graphics.Color.argb(100, 255, 255, 255))
-                                cornerRadius = 8f
-                            }
-                            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-                            (layoutParams as? ViewGroup.MarginLayoutParams)?.setMargins(0, 10, 0, 10)
+                val scContent = getAttr(data, "content")
+                val scClass = getAttr(data, "class")
+
+                if (isExample(data)) {
+                    val box = LinearLayout(this).apply {
+                        orientation = LinearLayout.VERTICAL
+                        setPadding(30, 15, 30, 25)
+                        background = GradientDrawable().apply {
+                            setColor(android.graphics.Color.argb(30, 255, 255, 255))
+                            setStroke(3, android.graphics.Color.argb(220, 255, 255, 255))
+                            cornerRadius = 12f
                         }
+                        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                            setMargins(0, 15, 0, 15)
+                        }
+                    }
+                    
+                    val jp = (data["japanese"] as? String) ?: (if (content is String) content else null)
+                    val en = data["english"] as? String
+                    
+                    if (jp != null) {
+                        box.addView(TextView(this).apply { text = jp; setTextColor(android.graphics.Color.WHITE); textSize = 16f; setPadding(0, 0, 0, 10) })
+                        if (!en.isNullOrEmpty()) box.addView(TextView(this).apply { text = en; setTextColor(android.graphics.Color.LTGRAY); textSize = 14f })
+                    } else {
                         renderDefinition(box, content, false)
-                        container.addView(box)
-                        return false // Blocks break the inline comma chain
                     }
-                    tag == "table" -> {
-                        val tableLayout = LinearLayout(this@OcrAccessibilityService).apply { 
-                            orientation = LinearLayout.VERTICAL
-                            setPadding(10, 10, 10, 10)
-                            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                                topMargin = 10; bottomMargin = 10
-                            }
-                        }
-                        renderDefinition(tableLayout, content, false)
-                        container.addView(tableLayout)
-                        return false
-                    }
-                    tag == "tr" -> {
-                        val tr = LinearLayout(this@OcrAccessibilityService).apply { 
-                            orientation = LinearLayout.HORIZONTAL
-                            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-                        }
-                        renderDefinition(tr, content, false)
-                        container.addView(tr)
-                        return false
-                    }
-                    tag == "td" || tag == "th" -> {
-                        val cell = FlowLayout(this@OcrAccessibilityService).apply {
-                            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f)
-                            setPadding(10, 5, 10, 5)
-                            background = GradientDrawable().apply {
-                                setStroke(1, android.graphics.Color.argb(80, 255, 255, 255))
-                            }
-                            minimumHeight = (24 * resources.displayMetrics.density).toInt()
-                        }
-                        renderDefinition(cell, content, false)
-                        container.addView(cell)
-                        return false
-                    }
-                    else -> if (content != null) return renderDefinition(container, content, currentlyInline)
+                    container.addView(box)
+                    return false
                 }
+
+                if (scClass == "tag" || (tag == "span" && scContent?.endsWith("-info") == true)) {
+                    container.addView(createTagView(content?.toString() ?: ""))
+                    return false
+                }
+
+                if (tag == "ruby") {
+                    val rubyList = content as? List<*>
+                    if (rubyList != null && rubyList.size >= 2) {
+                        if (currentlyInline && container is FlowLayout) {
+                            container.addView(TextView(this).apply { text = ", "; setTextColor(android.graphics.Color.WHITE); textSize = 15f; includeFontPadding = false })
+                        }
+                        val base = rubyList[0].toString()
+                        val rt = (rubyList[1] as? Map<*, *>)?.get("content")?.toString() ?: ""
+                        container.addView(createRubyView(base, rt, isMini = true).apply { setPadding(0, 0, 15, 0) })
+                        return true
+                    }
+                }
+
+                if (tag == "table") {
+                    val table = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(10, 10, 10, 10); layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = 10; bottomMargin = 10 } }
+                    renderDefinition(table, content, false); container.addView(table); return false
+                }
+                if (tag == "tr") {
+                    val tr = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT) }
+                    renderDefinition(tr, content, false); container.addView(tr); return false
+                }
+                if (tag == "td" || tag == "th") {
+                    val cell = FlowLayout(this).apply { layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f); setPadding(10, 5, 10, 5); background = GradientDrawable().apply { setStroke(1, android.graphics.Color.argb(80, 255, 255, 255)) }; minimumHeight = (24 * resources.displayMetrics.density).toInt() }
+                    renderDefinition(cell, content, false); container.addView(cell); return false
+                }
+
+                if (tag == "ul" || tag == "ol") {
+                    if (scContent == "glossary" || scContent == "infoGlossary" || scContent == "sourceLanguages") {
+                        return renderDefinition(container, content, currentlyInline)
+                    }
+                    val block = LinearLayout(this).apply { 
+                        orientation = LinearLayout.VERTICAL
+                        setTag(scContent)
+                        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                            setMargins(0, 10, 0, 10)
+                        }
+                    }
+                    renderDefinition(block, content, false)
+                    container.addView(block)
+                    return false
+                }
+
+                if (content != null) return renderDefinition(container, content, currentlyInline)
             }
         }
         return currentlyInline
     }
 
+    private fun isExampleSentence(item: Any?): Boolean {
+        if (item is Map<*, *>) return isExample(item)
+        if (item is List<*> && item.isNotEmpty()) return isExampleSentence(item[0])
+        return false
+    }
 
     private fun hideScreenshotOverlay() {
         ocrJob?.cancel()
@@ -1665,18 +1673,25 @@ class OcrAccessibilityService : AccessibilityService() {
                 val child = getChildAt(i)
                 if (child.visibility == View.GONE) continue
                 
+                val childWidthSpec = if (child.layoutParams.width == ViewGroup.LayoutParams.MATCH_PARENT) {
+                    MeasureSpec.makeMeasureSpec(maxWidth, MeasureSpec.EXACTLY)
+                } else {
+                    MeasureSpec.makeMeasureSpec(maxWidth, MeasureSpec.AT_MOST)
+                }
                 child.measure(
-                    MeasureSpec.makeMeasureSpec(maxWidth, MeasureSpec.AT_MOST),
+                    childWidthSpec,
                     MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED)
                 )
                 
-                if (x + child.measuredWidth > width - paddingRight && x > paddingLeft) {
+                val measuredWidth = if (child.layoutParams.width == ViewGroup.LayoutParams.MATCH_PARENT) maxWidth else child.measuredWidth
+                
+                if (x + measuredWidth > width - paddingRight && x > paddingLeft) {
                     x = paddingLeft
                     y += rowHeight
                     rowHeight = 0
                     rowBaseline = 0
                 }
-                x += child.measuredWidth
+                x += measuredWidth
                 rowHeight = maxOf(rowHeight, child.measuredHeight)
                 rowBaseline = maxOf(rowBaseline, child.baseline)
             }
@@ -1688,6 +1703,7 @@ class OcrAccessibilityService : AccessibilityService() {
 
         override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
             val width = r - l
+            val maxWidth = width - paddingLeft - paddingRight
             var x = paddingLeft
             var y = paddingTop
             var rowHeight = 0
@@ -1698,22 +1714,24 @@ class OcrAccessibilityService : AccessibilityService() {
                 val child = getChildAt(i)
                 if (child.visibility == View.GONE) continue
                 
-                if (x + child.measuredWidth > width - paddingRight && x > paddingLeft) {
-                    layoutRow(rowStartIndex, i, y, rowHeight, rowBaseline)
+                val measuredWidth = if (child.layoutParams.width == ViewGroup.LayoutParams.MATCH_PARENT) maxWidth else child.measuredWidth
+
+                if (x + measuredWidth > width - paddingRight && x > paddingLeft) {
+                    layoutRow(rowStartIndex, i, y, rowHeight, rowBaseline, maxWidth)
                     x = paddingLeft
                     y += rowHeight
                     rowHeight = 0
                     rowBaseline = 0
                     rowStartIndex = i
                 }
-                x += child.measuredWidth
+                x += measuredWidth
                 rowHeight = maxOf(rowHeight, child.measuredHeight)
                 rowBaseline = maxOf(rowBaseline, child.baseline)
             }
-            layoutRow(rowStartIndex, childCount, y, rowHeight, rowBaseline)
+            layoutRow(rowStartIndex, childCount, y, rowHeight, rowBaseline, maxWidth)
         }
 
-        private fun layoutRow(start: Int, end: Int, top: Int, rowHeight: Int, rowBaseline: Int) {
+        private fun layoutRow(start: Int, end: Int, top: Int, rowHeight: Int, rowBaseline: Int, maxWidth: Int) {
             var x = paddingLeft
             for (i in start until end) {
                 val child = getChildAt(i)
@@ -1726,8 +1744,9 @@ class OcrAccessibilityService : AccessibilityService() {
                     top + rowHeight - child.measuredHeight
                 }
                 
-                child.layout(x, childTop, x + child.measuredWidth, childTop + child.measuredHeight)
-                x += child.measuredWidth
+                val measuredWidth = if (child.layoutParams.width == ViewGroup.LayoutParams.MATCH_PARENT) maxWidth else child.measuredWidth
+                child.layout(x, childTop, x + measuredWidth, childTop + child.measuredHeight)
+                x += measuredWidth
             }
         }
 
