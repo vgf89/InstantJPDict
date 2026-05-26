@@ -151,6 +151,19 @@ fun HomeScreen(
         Button(onClick = { showManageDicts = true }, modifier = Modifier.fillMaxWidth()) {
             Text("Manage Dictionaries")
         }
+        var showGamepadSettings by remember { mutableStateOf(false) }
+
+        if (showGamepadSettings) {
+            GamepadSettingsDialog(
+                onDismiss = { showGamepadSettings = false },
+                context = androidx.compose.ui.platform.LocalContext.current
+            )
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+        Button(onClick = { showGamepadSettings = true }, modifier = Modifier.fillMaxWidth()) {
+            Text("Gamepad Controls")
+        }
         Spacer(modifier = Modifier.height(8.dp))
         Button(onClick = onCheckDb, modifier = Modifier.fillMaxWidth()) {
             Text("Refresh Status")
