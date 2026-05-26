@@ -11,7 +11,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.DragHandle
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -51,7 +51,7 @@ fun DictionaryManagerDialog(
     
     val listState = rememberLazyListState()
     var draggedItemIndex by remember { mutableStateOf<Int?>(null) }
-    var dragOffset by remember { mutableStateOf(0f) }
+    var dragOffset by remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
 
     // Refresh function
     suspend fun refresh() {
@@ -141,7 +141,7 @@ fun DictionaryManagerDialog(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Icon(
-                                imageVector = Icons.Default.DragHandle,
+                                imageVector = Icons.Default.Menu,
                                 contentDescription = "Drag Handle",
                                 modifier = Modifier
                                     .padding(end = 8.dp)
