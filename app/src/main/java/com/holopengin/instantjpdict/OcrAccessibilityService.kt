@@ -11,7 +11,6 @@ import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.graphics.drawable.GradientDrawable
-import android.graphics.drawable.LayerDrawable
 import android.util.Log
 import android.view.Display
 import android.view.Gravity
@@ -32,7 +31,6 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import android.view.ViewGroup
-import androidx.core.content.res.ResourcesCompat
 import androidx.core.content.ContextCompat
 import com.google.gson.Gson
 import com.holopengin.instantjpdict.data.AppDatabase
@@ -101,13 +99,7 @@ class OcrAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun createButtonBackground() = LayerDrawable(arrayOf(
-        GradientDrawable().apply {
-            shape = GradientDrawable.OVAL
-            setColor(Color.argb(150, 0, 0, 0))
-        },
-        ContextCompat.getDrawable(this, R.drawable.ic_logo_ring)!!
-    ))
+    private fun createButtonBackground() = ContextCompat.getDrawable(this, R.drawable.logo)!!
 
     override fun onCreate() {
         super.onCreate()
@@ -159,9 +151,6 @@ class OcrAccessibilityService : AccessibilityService() {
 
         val frameLayout = FrameLayout(this)
         ocrButton = CenteredButton(this).apply {
-            text = "辞典"
-            setTextColor(Color.CYAN)
-            typeface = ResourcesCompat.getFont(this@OcrAccessibilityService, R.font.yujimai_regular)
             background = createButtonBackground()
             val size = (44 * resources.displayMetrics.density).toInt()
             layoutParams = FrameLayout.LayoutParams(size, size)
@@ -532,9 +521,6 @@ class OcrAccessibilityService : AccessibilityService() {
         
         val closeButton = CenteredButton(this).apply {
             tag = "close_button"
-            text = "辞典"
-            setTextColor(Color.CYAN)
-            typeface = ResourcesCompat.getFont(this@OcrAccessibilityService, R.font.yujimai_regular)
             background = createButtonBackground()
             setPadding(0, 0, 0, 0)
             minWidth = 0
