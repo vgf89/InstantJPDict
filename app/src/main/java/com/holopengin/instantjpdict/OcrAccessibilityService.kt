@@ -309,7 +309,14 @@ class OcrAccessibilityService : AccessibilityService() {
                 findViewWithTag<View>("correction_ui_root")?.let { removeView(it); resetHighlights(); return@setOnClickListener }
                 if (!controller.isNearCharacter(initialTouchX, initialTouchY, 20f, resources.displayMetrics.density)) hideScreenshotOverlay()
             }
-            setOnGenericMotionListener { _, event -> handleJoystick(event) }
+            setOnGenericMotionListener { _, event ->
+                handleJoystick(
+                    event,
+                    controller.lastJoystickKeyCode,
+                    { controller.lastJoystickKeyCode = it },
+                    { handleGamepad(it) }
+                )
+            }
         }
 
             // Viewport container to support Pan & Zoom for image AND results
@@ -1461,48 +1468,10 @@ class OcrAccessibilityService : AccessibilityService() {
     }
 
 
-    private fun handleJoystick(event: MotionEvent): Boolean {
-        if (event.action != MotionEvent.ACTION_MOVE) return false
-
-        val x = getCenteredAxis(event, MotionEvent.AXIS_X, MotionEvent.AXIS_HAT_X)
-        val y = getCenteredAxis(event, MotionEvent.AXIS_Y, MotionEvent.AXIS_HAT_Y)
-
-        val threshold = 0.5f
-        val currentKeyCode = when {
-            x > threshold -> KeyEvent.KEYCODE_DPAD_RIGHT
-            x < -threshold -> KeyEvent.KEYCODE_DPAD_LEFT
-            y > threshold -> KeyEvent.KEYCODE_DPAD_DOWN
-            y < -threshold -> KeyEvent.KEYCODE_DPAD_UP
-            else -> 0
-        }
-
-        if (currentKeyCode != controller.lastJoystickKeyCode) {
-            if (controller.lastJoystickKeyCode != 0) {
-                handleGamepad(KeyEvent(KeyEvent.ACTION_UP, controller.lastJoystickKeyCode))
-            }
-            controller.lastJoystickKeyCode = currentKeyCode
-            if (controller.lastJoystickKeyCode != 0) {
-                handleGamepad(KeyEvent(KeyEvent.ACTION_DOWN, controller.lastJoystickKeyCode))
-            }
-        }
-        
-        return true
-    }
-
-    private fun getCenteredAxis(event: MotionEvent, axis1: Int, axis2: Int): Float {
-        val range1 = event.device?.getMotionRange(axis1, event.source)
-        val v1 = if (range1 != null) event.getAxisValue(axis1) else 0f
-        val range2 = event.device?.getMotionRange(axis2, event.source)
-        val v2 = if (range2 != null) event.getAxisValue(axis2) else 0f
-        
-        val v = if (abs(v1) > abs(v2)) v1 else v2
-        return if (abs(v) > 0.3f) v else 0f
-    }
-
     private fun scrollDictionary(keyCode: Int, root: FrameLayout) {
         val dictionaryRoot = root.findViewWithTag<LinearLayout>("correction_ui_root") ?: return
         val scrollView = dictionaryRoot.findViewWithTag<View>("dictionary_scroll_view") as? ScrollView ?: return
-        val amount = (20 * resources.displayMetrics.density).toInt() // Smaller steps for smoother continuous feel
+        val amount = (100 * resources.displayMetrics.density).toInt()
         if (keyCode == KeyEvent.KEYCODE_BUTTON_R1 || keyCode == KeyEvent.KEYCODE_BUTTON_R2) scrollView.smoothScrollBy(0, amount)
         else scrollView.smoothScrollBy(0, -amount)
     }
@@ -1699,15 +1668,6 @@ class OcrAccessibilityService : AccessibilityService() {
             if (childCount == 0) return -1
             return getChildAt(0).baseline
         }
-    }
-
-    private fun MotionEvent.getFocusCoords(): Pair<Float, Float> {
-        var (sx, sy, c) = Triple(0f, 0f, 0)
-        for (i in 0 until pointerCount) {
-            if (actionMasked == MotionEvent.ACTION_POINTER_UP && i == actionIndex) continue
-            sx += getX(i); sy += getY(i); c++
-        }
-        return if (c > 0) sx / c to sy / c else 0f to 0f
     }
 
 }

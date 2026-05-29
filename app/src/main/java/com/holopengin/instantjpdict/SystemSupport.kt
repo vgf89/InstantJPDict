@@ -4,8 +4,10 @@ import android.content.Context
 import android.graphics.Rect
 import android.view.Gravity
 import android.view.KeyEvent
+import android.view.MotionEvent
 import com.holopengin.instantjpdict.data.AppDatabase
 import com.holopengin.instantjpdict.data.DictionaryEntry
+import kotlin.math.abs
 
 data class JpDictRect(
     val left: Int,
@@ -90,4 +92,58 @@ object JpDictKeyEvent {
     const val KEYCODE_BUTTON_R1 = 103
     const val KEYCODE_BUTTON_L2 = 104
     const val KEYCODE_BUTTON_R2 = 105
+}
+
+fun MotionEvent.getJoystickKeyCode(): Int {
+    fun getCenteredAxis(event: MotionEvent, axis1: Int, axis2: Int): Float {
+        val range1 = event.device?.getMotionRange(axis1, event.source)
+        val v1 = if (range1 != null) event.getAxisValue(axis1) else 0f
+        val range2 = event.device?.getMotionRange(axis2, event.source)
+        val v2 = if (range2 != null) event.getAxisValue(axis2) else 0f
+        
+        val v = if (abs(v1) > abs(v2)) v1 else v2
+        return if (abs(v) > 0.3f) v else 0f
+    }
+
+    val x = getCenteredAxis(this, MotionEvent.AXIS_X, MotionEvent.AXIS_HAT_X)
+    val y = getCenteredAxis(this, MotionEvent.AXIS_Y, MotionEvent.AXIS_HAT_Y)
+
+    val threshold = 0.5f
+    return when {
+        x > threshold -> KeyEvent.KEYCODE_DPAD_RIGHT
+        x < -threshold -> KeyEvent.KEYCODE_DPAD_LEFT
+        y > threshold -> KeyEvent.KEYCODE_DPAD_DOWN
+        y < -threshold -> KeyEvent.KEYCODE_DPAD_UP
+        else -> 0
+    }
+}
+
+fun MotionEvent.getFocusCoords(): Pair<Float, Float> {
+    var (sx, sy, c) = Triple(0f, 0f, 0)
+    for (i in 0 until pointerCount) {
+        if (actionMasked == MotionEvent.ACTION_POINTER_UP && i == actionIndex) continue
+        sx += getX(i); sy += getY(i); c++
+    }
+    return if (c > 0) sx / c to sy / c else 0f to 0f
+}
+
+fun handleJoystick(
+    event: MotionEvent,
+    lastKeyCode: Int,
+    onKeyChange: (Int) -> Unit,
+    onSimulatedKeyEvent: (KeyEvent) -> Unit
+): Boolean {
+    if (event.action != MotionEvent.ACTION_MOVE) return false
+
+    val currentKeyCode = event.getJoystickKeyCode()
+    if (currentKeyCode != lastKeyCode) {
+        if (lastKeyCode != 0) {
+            onSimulatedKeyEvent(KeyEvent(KeyEvent.ACTION_UP, lastKeyCode))
+        }
+        onKeyChange(currentKeyCode)
+        if (currentKeyCode != 0) {
+            onSimulatedKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, currentKeyCode))
+        }
+    }
+    return true
 }
