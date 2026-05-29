@@ -1,10 +1,8 @@
 package com.holopengin.instantjpdict.util
 
-import android.content.Context
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
-import android.util.Log
-import java.io.InputStreamReader
+import java.io.Reader
 
 data class DeinflectionRule(
     val kanaIn: String,
@@ -19,23 +17,20 @@ data class DeinflectionResult(
     val type: List<String>
 )
 
-class Deinflector(context: Context) {
+class Deinflector(reader: Reader) {
     private val rules: List<DeinflectionRule>
 
     init {
         val loadedRules = mutableListOf<DeinflectionRule>()
         try {
-            val inputStream = context.assets.open("deinflect.json")
-            val reader = InputStreamReader(inputStream)
             val type = object : TypeToken<Map<String, List<DeinflectionRule>>>() {}.type
             val rawRules: Map<String, List<DeinflectionRule>> = Gson().fromJson(reader, type)
             
             rawRules.forEach { (_, ruleList) ->
                 loadedRules.addAll(ruleList)
             }
-            Log.d("Deinflector", "Loaded ${loadedRules.size} rules")
         } catch (e: Exception) {
-            Log.e("Deinflector", "Failed to load deinflect.json", e)
+            // Simplified logging or pass a logger
         }
         rules = loadedRules
     }
@@ -54,16 +49,13 @@ class Deinflector(context: Context) {
 
             for (rule in rules) {
                 if (current.term.endsWith(rule.kanaIn)) {
-                    // For maximum recall, we allow the rule if it produced a valid root
-                    // even if the intermediate PoS tags don't perfectly align.
-                    // This is especially helpful with contracted forms like -chau.
                     val root = current.term.substring(0, current.term.length - rule.kanaIn.length) + rule.kanaOut
                     
                     if (root.isNotEmpty()) {
                         val newResult = DeinflectionResult(
                             term = root,
                             reasons = current.reasons + listOf(rule.kanaIn),
-                            type = rule.rulesOut // These are the tags the DB entry should have
+                            type = rule.rulesOut
                         )
                         
                         if (!results.any { it.term == newResult.term }) {

@@ -4,7 +4,6 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.Rect
 import android.util.Log
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
@@ -74,7 +73,7 @@ class OcrEngine(private val context: Context) {
 
     fun isReady(): Boolean = detectSession != null && recognizeSession != null && recognizeSessionVertical != null
 
-    fun detect(bitmap: Bitmap): List<Rect> {
+    fun detect(bitmap: Bitmap): List<JpDictRect> {
         val session = detectSession ?: return emptyList()
         val resized = Bitmap.createScaledBitmap(bitmap, DETECT_WIDTH, DETECT_HEIGHT, true)
         val imgData = bitmapToFloatBuffer(resized, DETECT_WIDTH, DETECT_HEIGHT)
@@ -90,7 +89,7 @@ class OcrEngine(private val context: Context) {
         }
 
         val results = session.run(inputs)
-        val detectedBoxes = mutableListOf<Rect>()
+        val detectedBoxes = mutableListOf<JpDictRect>()
         
         try {
             val outputNames = session.outputNames.toList()
@@ -104,22 +103,25 @@ class OcrEngine(private val context: Context) {
                 for (i in scoresArr.indices) {
                     if (scoresArr[i] > 0.4f) {
                         val box = boxesArr[i]
-                        val r = Rect(box[0].toInt(), box[1].toInt(), box[2].toInt(), box[3].toInt())
+                        var left = box[0].toInt()
+                        var top = box[1].toInt()
+                        var right = box[2].toInt()
+                        var bottom = box[3].toInt()
                         
                         // Add small margins to avoid clipping
-                        if (r.height() > r.width()) {
+                        if (bottom - top > right - left) {
                             // Vertical lines: top and right margins
-                            val vMargin = (r.width() * 0.1f).toInt().coerceAtLeast(2)
-                            val hMargin = (r.width() * 0.05f).toInt().coerceAtLeast(1)
-                            r.top = (r.top - vMargin).coerceAtLeast(0)
-                            r.right = (r.right + hMargin).coerceAtMost(bitmap.width)
+                            val vMargin = ((right - left) * 0.1f).toInt().coerceAtLeast(2)
+                            val hMargin = ((right - left) * 0.05f).toInt().coerceAtLeast(1)
+                            top = (top - vMargin).coerceAtLeast(0)
+                            right = (right + hMargin).coerceAtMost(bitmap.width)
                         } else {
                             // Horizontal lines: right margin
-                            val hMargin = (r.height() * 0.1f).toInt().coerceAtLeast(4)
-                            r.right = (r.right + hMargin).coerceAtMost(bitmap.width)
+                            val hMargin = ((bottom - top) * 0.1f).toInt().coerceAtLeast(4)
+                            right = (right + hMargin).coerceAtMost(bitmap.width)
                         }
                         
-                        detectedBoxes.add(r)
+                        detectedBoxes.add(JpDictRect(left, top, right, bottom))
                     }
                 }
             }
@@ -138,10 +140,10 @@ class OcrEngine(private val context: Context) {
         return sortDetectedBoxes(mergedBoxes)
     }
 
-    private fun mergeOverlappingBoxes(boxes: List<Rect>): List<Rect> {
+    private fun mergeOverlappingBoxes(boxes: List<JpDictRect>): List<JpDictRect> {
         if (boxes.size < 2) return boxes
         
-        val result = mutableListOf<Rect>()
+        val result = mutableListOf<JpDictRect>()
         val handled = BooleanArray(boxes.size)
         
         // Sort by size to keep the larger/more robust box as the primary
@@ -164,7 +166,7 @@ class OcrEngine(private val context: Context) {
                 
                 if (shouldMergeBoxes(currentMerged, boxB)) {
                     // Merge by taking the bounding box of both
-                    currentMerged = Rect(
+                    currentMerged = JpDictRect(
                         min(currentMerged.left, boxB.left),
                         min(currentMerged.top, boxB.top),
                         max(currentMerged.right, boxB.right),
@@ -178,7 +180,7 @@ class OcrEngine(private val context: Context) {
         return result
     }
 
-    private fun shouldMergeBoxes(a: Rect, b: Rect): Boolean {
+    private fun shouldMergeBoxes(a: JpDictRect, b: JpDictRect): Boolean {
         val interLeft = max(a.left, b.left)
         val interTop = max(a.top, b.top)
         val interRight = min(a.right, b.right)
@@ -218,15 +220,15 @@ class OcrEngine(private val context: Context) {
         }
     }
 
-    private fun sortDetectedBoxes(boxes: List<Rect>): List<Rect> {
+    private fun sortDetectedBoxes(boxes: List<JpDictRect>): List<JpDictRect> {
         if (boxes.isEmpty()) return emptyList()
 
         // 1. Sort primarily by top coordinate
         val sortedByTop = boxes.sortedBy { it.top }
         
-        val rowGroups = mutableListOf<MutableList<Rect>>()
+        val rowGroups = mutableListOf<MutableList<JpDictRect>>()
         if (sortedByTop.isNotEmpty()) {
-            var currentGroup = mutableListOf<Rect>()
+            var currentGroup = mutableListOf<JpDictRect>()
             currentGroup.add(sortedByTop[0])
             rowGroups.add(currentGroup)
             
@@ -244,14 +246,14 @@ class OcrEngine(private val context: Context) {
                 if (abs(box.top - prevBox.top) < threshold) {
                     currentGroup.add(box)
                 } else {
-                    currentGroup = mutableListOf<Rect>()
+                    currentGroup = mutableListOf<JpDictRect>()
                     currentGroup.add(box)
                     rowGroups.add(currentGroup)
                 }
             }
         }
 
-        val result = mutableListOf<Rect>()
+        val result = mutableListOf<JpDictRect>()
         for (group in rowGroups) {
             // Within each row group:
             // Separate horizontal and vertical lines
@@ -267,7 +269,7 @@ class OcrEngine(private val context: Context) {
         return result
     }
 
-    suspend fun recognizeStreaming(bitmap: Bitmap, lineBoxes: List<Rect>, onLineRecognized: (Int, LineResult) -> Unit) = withContext(Dispatchers.Default) {
+    suspend fun recognizeStreaming(bitmap: Bitmap, lineBoxes: List<JpDictRect>, onLineRecognized: (Int, LineResult) -> Unit) = withContext(Dispatchers.Default) {
         val startTime = System.currentTimeMillis()
         val semaphore = Semaphore(5) // Increased from 3 to 5
         val channel = Channel<Pair<Int, LineResult>>()
@@ -295,7 +297,7 @@ class OcrEngine(private val context: Context) {
         Log.d("MeikiOcrEngine", "Streaming recognition for ${lineBoxes.size} lines took ${totalTime}ms")
     }
 
-    suspend fun recognize(bitmap: Bitmap, lineBoxes: List<Rect>): List<LineResult> = withContext(Dispatchers.Default) {
+    suspend fun recognize(bitmap: Bitmap, lineBoxes: List<JpDictRect>): List<LineResult> = withContext(Dispatchers.Default) {
         val startTime = System.currentTimeMillis()
         val results = lineBoxes.map { box ->
             async {
@@ -307,7 +309,7 @@ class OcrEngine(private val context: Context) {
         results
     }
 
-    private fun recognizeSingleLine(bitmap: Bitmap, box: Rect): LineResult? {
+    private fun recognizeSingleLine(bitmap: Bitmap, box: JpDictRect): LineResult? {
         val lineStartTime = System.currentTimeMillis()
         if (recognizeSession == null || recognizeSessionVertical == null) return null
 
@@ -332,7 +334,7 @@ class OcrEngine(private val context: Context) {
                 val text = filtered.joinToString("") { it.char.toString() }
                 val alternativesList = filtered.map { it.alternatives }
                 val charBoxes = filtered.map { it.getGlobalRect(isVertical, crop.width, crop.height, cropX, cropY, effW, effH) }
-                result = LineResult(text, charBoxes, alternativesList, isVertical, listOf(Rect(cropX, cropY, cropX + cropW, cropY + cropH)))
+                result = LineResult(text, charBoxes, alternativesList, isVertical, listOf(JpDictRect(cropX, cropY, cropX + cropW, cropY + cropH)))
             }
 
             crop.recycle()
@@ -620,7 +622,7 @@ class OcrEngine(private val context: Context) {
     private fun stitchVerticalChunks(chunkResults: List<ChunkResult>, cropX: Int, cropY: Int): LineResult {
         if (chunkResults.isEmpty()) return LineResult("", emptyList(), emptyList(), true)
         
-        data class GlobalCandidate(val cand: CharCandidate, val globalRect: Rect)
+        data class GlobalCandidate(val cand: CharCandidate, val globalRect: JpDictRect)
         
         val allGlobalChunks = chunkResults.map { cr ->
             cr.candidates.map { cand ->
@@ -629,7 +631,7 @@ class OcrEngine(private val context: Context) {
         }
         
         val chunkBoxes = chunkResults.map { cr ->
-            Rect(cropX + cr.offsetX, cropY + cr.offsetY, cropX + cr.offsetX + cr.chunkW, cropY + cr.offsetY + cr.chunkH)
+            JpDictRect(cropX + cr.offsetX, cropY + cr.offsetY, cropX + cr.offsetX + cr.chunkW, cropY + cr.offsetY + cr.chunkH)
         }
         
         val result = mutableListOf<GlobalCandidate>()
@@ -704,7 +706,7 @@ class OcrEngine(private val context: Context) {
     private fun stitchHorizontalChunks(chunkResults: List<ChunkResult>, cropX: Int, cropY: Int): LineResult {
         if (chunkResults.isEmpty()) return LineResult("", emptyList(), emptyList(), false)
         
-        data class GlobalCandidate(val cand: CharCandidate, val globalRect: Rect)
+        data class GlobalCandidate(val cand: CharCandidate, val globalRect: JpDictRect)
         
         val allGlobalChunks = chunkResults.map { cr ->
             cr.candidates.map { cand ->
@@ -713,7 +715,7 @@ class OcrEngine(private val context: Context) {
         }
         
         val chunkBoxes = chunkResults.map { cr ->
-            Rect(cropX + cr.offsetX, cropY + cr.offsetY, cropX + cr.offsetX + cr.chunkW, cropY + cr.offsetY + cr.chunkH)
+            JpDictRect(cropX + cr.offsetX, cropY + cr.offsetY, cropX + cr.offsetX + cr.chunkW, cropY + cr.offsetY + cr.chunkH)
         }
         
         val result = mutableListOf<GlobalCandidate>()
@@ -915,21 +917,13 @@ class OcrEngine(private val context: Context) {
     }
 }
 
-data class LineResult(
-    var text: String,
-    val charBoxes: List<Rect>,
-    val alternatives: List<List<Pair<Char, Float>>> = emptyList(),
-    val isVertical: Boolean = false,
-    val chunkBoxes: List<Rect> = emptyList()
-)
-
 private data class CharCandidate(
     val char: Char,
     val score: Float,
     val box: FloatArray,
     val alternatives: List<Pair<Char, Float>> = emptyList()
 ) {
-    fun getGlobalRect(isVertical: Boolean, cropW: Int, cropH: Int, cropX: Int, cropY: Int, effectiveW: Int, effectiveH: Int): Rect {
+    fun getGlobalRect(isVertical: Boolean, cropW: Int, cropH: Int, cropX: Int, cropY: Int, effectiveW: Int, effectiveH: Int): JpDictRect {
         val rx1 = box[0]
         val ry1 = box[1]
         val rx2 = box[2]
@@ -952,7 +946,7 @@ private data class CharCandidate(
             y2 = (ry2 / 32f) * cropH + cropY
         }
         
-        return Rect(Math.round(x1), Math.round(y1), Math.round(x2), Math.round(y2))
+        return JpDictRect(Math.round(x1), Math.round(y1), Math.round(x2), Math.round(y2))
     }
 }
 
