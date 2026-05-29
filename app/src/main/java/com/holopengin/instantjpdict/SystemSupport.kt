@@ -1,8 +1,11 @@
 package com.holopengin.instantjpdict
 
+import android.content.Context
 import android.graphics.Rect
 import android.view.Gravity
 import android.view.KeyEvent
+import com.holopengin.instantjpdict.data.AppDatabase
+import com.holopengin.instantjpdict.data.DictionaryEntry
 
 data class JpDictRect(
     val left: Int,
@@ -18,6 +21,17 @@ data class JpDictRect(
 
 fun JpDictRect.toAndroidRect(): Rect = Rect(left, top, right, bottom)
 fun Rect.toJpDictRect(): JpDictRect = JpDictRect(left, top, right, bottom)
+
+interface DictionaryProvider {
+    suspend fun findByTexts(texts: List<String>): List<DictionaryEntry>
+}
+
+class AndroidDictionaryProvider(private val context: Context) : DictionaryProvider {
+    override suspend fun findByTexts(texts: List<String>): List<DictionaryEntry> {
+        val db = AppDatabase.getDatabase(context)
+        return db.dictionaryDao().findByTexts(texts)
+    }
+}
 
 object JpDictGravity {
     const val NONE = 0

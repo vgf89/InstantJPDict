@@ -17,7 +17,6 @@ import android.view.Display
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.MotionEvent
-import android.view.InputDevice
 import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
@@ -35,9 +34,7 @@ import android.widget.Toast
 import android.view.ViewGroup
 import androidx.core.content.ContextCompat
 import com.google.gson.Gson
-import com.holopengin.instantjpdict.data.AppDatabase
 import com.holopengin.instantjpdict.util.Deinflector
-import com.holopengin.instantjpdict.util.JapaneseUtil
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -56,7 +53,6 @@ class OcrAccessibilityService : AccessibilityService() {
     private var screenshotOverlay: View? = null
     private var screenshotBitmap: Bitmap? = null
     private lateinit var ocrEngine: OcrEngine
-    private lateinit var deinflector: Deinflector
     private val controller = OcrOverlayStateController()
     private val gson = Gson()
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
@@ -102,8 +98,10 @@ class OcrAccessibilityService : AccessibilityService() {
     override fun onCreate() {
         super.onCreate()
         ocrEngine = OcrEngine(this)
-        deinflector = Deinflector(java.io.InputStreamReader(assets.open("deinflect.json")))
-        
+        controller.deinflector = Deinflector(java.io.InputStreamReader(assets.open("deinflect.json")))
+        controller.dictionaryProvider = AndroidDictionaryProvider(this)
+        controller.gson = gson
+
         val filter = IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_OFF)
             addAction(Intent.ACTION_USER_PRESENT)
@@ -712,10 +710,10 @@ class OcrAccessibilityService : AccessibilityService() {
                 performLookup(lineIdx, i, rootLayout)
             }
         }
-        updateNeighborPanelForLine(rootLayout, lineIdx, line)
+        updateNeighborPanelForLine(rootLayout, lineIdx)
     }
 
-    private fun updateNeighborPanelForLine(rootLayout: FrameLayout, lineIdx: Int, line: LineResult) {
+    private fun updateNeighborPanelForLine(rootLayout: FrameLayout, lineIdx: Int) {
         val neighborPanel = rootLayout.findViewWithTag<LinearLayout>("neighbor_scroll_panel") ?: return
         val neighborScrollView = rootLayout.findViewWithTag<View>("neighbor_scroll_view") ?: return
         val lineContainer = neighborPanel.findViewWithTag<LinearLayout>("line_neighbor_$lineIdx") ?: return
@@ -725,7 +723,7 @@ class OcrAccessibilityService : AccessibilityService() {
         val isAbove = lineIdx < controller.currentTappedLineIdx
         val oldDim = if (isAbove) (if (isLandscape) lineContainer.height else lineContainer.width) else 0
 
-        fillLineNeighborContainer(lineContainer, lineIdx, line, isLandscape, rootLayout)
+        fillLineNeighborContainer(lineContainer, lineIdx, isLandscape, rootLayout)
         
         if (isAbove) {
             lineContainer.post {
@@ -742,42 +740,37 @@ class OcrAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun fillLineNeighborContainer(lineContainer: LinearLayout, lineIdx: Int, line: LineResult, isLandscape: Boolean, rootLayout: FrameLayout) {
+    private fun fillLineNeighborContainer(lineContainer: LinearLayout, lineIdx: Int, isLandscape: Boolean, rootLayout: FrameLayout) {
         lineContainer.removeAllViews()
+        val neighborState = controller.getNeighborUiState().getOrNull(lineIdx) ?: return
         val rootHeight = rootLayout.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
         val rootWidth = rootLayout.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
         val itemSize = (if (isLandscape) rootHeight else rootWidth) / 11
         val estimatedTextSize = (itemSize * 0.45 / resources.displayMetrics.density).toFloat().coerceIn(12f, 22f)
         val itemLp = LinearLayout.LayoutParams(itemSize, itemSize).apply { setMargins(2, 2, 2, 2) }
 
-        for (i in line.text.indices) {
-            val char = line.text[i].toString()
+        neighborState.chars.forEach { charState ->
             val neighborTextView = TextView(this).apply {
-                tag = "neighbor_char_$lineIdx-$i"
-                text = char
-                setTextColor(android.graphics.Color.WHITE)
+                tag = "neighbor_char_${charState.lineIdx}-${charState.charIdx}"
+                text = charState.text
+                setTextColor(if (charState.isSelected) android.graphics.Color.BLACK else android.graphics.Color.WHITE)
                 textSize = estimatedTextSize
                 gravity = Gravity.CENTER
-                setBackgroundColor(android.graphics.Color.argb(255, 65, 65, 65))
+                setBackgroundColor(if (charState.isSelected) android.graphics.Color.YELLOW else android.graphics.Color.argb(255, 65, 65, 65))
                 
                 if (isLandscape) {
                     textLocale = java.util.Locale.JAPANESE
                     fontFeatureSettings = "'vert' 1"
                 }
                 
-                if (lineIdx == controller.currentTappedLineIdx && i == controller.currentTappedCharIdxInLine) {
-                    setBackgroundColor(android.graphics.Color.YELLOW)
-                    setTextColor(android.graphics.Color.BLACK)
-                }
-                
                 setOnClickListener {
-                    if (controller.currentTappedLineIdx == lineIdx && controller.currentTappedCharIdxInLine == i) {
-                        toggleAlternativesPanel(rootLayout, lineIdx, i, isLandscape)
+                    if (controller.currentTappedLineIdx == charState.lineIdx && controller.currentTappedCharIdxInLine == charState.charIdx) {
+                        toggleAlternativesPanel(rootLayout, charState.lineIdx, charState.charIdx, isLandscape)
                     } else {
                         val oldLineIdx = controller.currentTappedLineIdx
                         val oldCharIdx = controller.currentTappedCharIdxInLine
-                        controller.currentTappedLineIdx = lineIdx
-                        controller.currentTappedCharIdxInLine = i
+                        controller.currentTappedLineIdx = charState.lineIdx
+                        controller.currentTappedCharIdxInLine = charState.charIdx
                         
                         val oldPanel = rootLayout.findViewWithTag<LinearLayout>("neighbor_scroll_panel")
                         oldPanel?.findViewWithTag<View>("neighbor_char_$oldLineIdx-$oldCharIdx")?.let { 
@@ -790,10 +783,10 @@ class OcrAccessibilityService : AccessibilityService() {
                         
                         val altContainer = rootLayout.findViewWithTag<FrameLayout>("alternatives_container")
                         if (altContainer != null && altContainer.childCount > 0) {
-                            updateAlternativesPanelContent(altContainer, lineIdx, i, isLandscape, rootLayout)
+                            updateAlternativesPanelContent(altContainer, charState.lineIdx, charState.charIdx, isLandscape, rootLayout)
                         }
                         
-                        performLookup(lineIdx, i, rootLayout, skipCenter = true)
+                        performLookup(charState.lineIdx, charState.charIdx, rootLayout, skipCenter = true)
                     }
                 }
             }
@@ -810,35 +803,15 @@ class OcrAccessibilityService : AccessibilityService() {
             // Wait for user to stop navigating before doing heavy DB/UI work
             kotlinx.coroutines.delay(200)
 
-            val globalIdx = controller.getGlobalIdx(lineIdx, charIdx)
-            controller.currentTappedIdx = globalIdx
-            controller.currentTappedLineIdx = lineIdx
-            controller.currentTappedCharIdxInLine = charIdx
+            val result = controller.lookup(lineIdx, charIdx) ?: return@launch
 
-            val line = controller.activeLineResults.getOrNull(lineIdx) ?: return@launch
-            val tappedBox = line.charBoxes.getOrNull(charIdx) ?: JpDictRect(0, 0, 0, 0)
-
-            val endIdx = kotlin.math.min(globalIdx + 20, controller.activeAllChars.size)
-            val followingText = controller.activeAllChars.subList(globalIdx, endIdx).joinToString("")
-
-            val result = withContext(Dispatchers.IO) {
-                val db = AppDatabase.getDatabase(applicationContext)
-                val (allTermsToSearch, candidatesByLength) = controller.prepareSearchCandidates(followingText, deinflector)
-
-                val dbResults = db.dictionaryDao().findByTexts(allTermsToSearch.toList())
-                val (uniqueMatches, maxLen) = controller.processResults(dbResults, candidatesByLength, allTermsToSearch, followingText)
-                
-                Triple(uniqueMatches, maxLen, tappedBox)
-            }
-
-            val uniqueMatches = result.first
+            val formattedMatches = result.first
             val maxMatchedLen = result.second
             val finalTappedBox = result.third
 
-            controller.currentWordLength = maxMatchedLen
             updateLookupHighlights(lineIdx, charIdx, maxMatchedLen)
 
-            showResultsUi(rootLayout, uniqueMatches, finalTappedBox, skipCenter)
+            showResultsUi(rootLayout, formattedMatches, finalTappedBox, skipCenter)
         }
     }
 
@@ -862,7 +835,7 @@ class OcrAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun showResultsUi(rootLayout: FrameLayout, matches: List<Pair<String, List<com.holopengin.instantjpdict.data.DictionaryEntry>>>, tappedBox: JpDictRect, skipCenter: Boolean = false) {
+    private fun showResultsUi(rootLayout: FrameLayout, matches: List<FormattedEntry>, tappedBox: JpDictRect, skipCenter: Boolean = false) {
         controller.isDictionaryVisible = true
         val existingRoot = rootLayout.findViewWithTag<LinearLayout>("correction_ui_root")
         
@@ -942,7 +915,7 @@ class OcrAccessibilityService : AccessibilityService() {
         updateCursor()
     }
 
-    private fun updateDictionaryPanel(container: LinearLayout, matches: List<Pair<String, List<com.holopengin.instantjpdict.data.DictionaryEntry>>>) {
+    private fun updateDictionaryPanel(container: LinearLayout, matches: List<FormattedEntry>) {
         container.removeAllViews()
         if (matches.isEmpty()) {
             container.addView(TextView(this).apply {
@@ -960,15 +933,15 @@ class OcrAccessibilityService : AccessibilityService() {
             setPadding(10, 0, 10, 150)
         }
 
-        matches.forEach { (_, entries) ->
+        matches.forEach { entry ->
             val termSection = LinearLayout(this).apply { 
                 orientation = LinearLayout.VERTICAL
                 setPadding(0, 10, 0, 40)
             }
             
-            entries.groupBy { it.reading }.forEach { (reading, readingEntries) ->
-                renderHeadwordSection(termSection, reading, readingEntries)
-                renderSensesForReading(termSection, readingEntries)
+            entry.readingGroups.forEach { group ->
+                renderHeadwordSection(termSection, group)
+                renderSensesForReading(termSection, group)
                 
                 termSection.addView(View(this).apply {
                     layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1).apply { topMargin = 20 }
@@ -988,40 +961,37 @@ class OcrAccessibilityService : AccessibilityService() {
         container.addView(scrollView)
     }
 
-    private fun renderHeadwordSection(container: LinearLayout, reading: String, entries: List<com.holopengin.instantjpdict.data.DictionaryEntry>) {
+    private fun renderHeadwordSection(container: LinearLayout, group: FormattedReadingGroup) {
         val headwordList = LinearLayout(this).apply { 
             orientation = LinearLayout.VERTICAL
             setPadding(0, 0, 0, 10)
         }
-        val isKanjiEntry = entries.firstOrNull()?.let { it.onyomi != null || it.kunyomi != null } ?: false
-        val kanjiVariants = entries.map { it.kanji }.distinct()
 
-        if (isKanjiEntry) {
-            kanjiVariants.forEach { kanji ->
-                val entry = entries.find { it.kanji == kanji } ?: entries.first()
+        if (group.isKanjiEntry) {
+            group.headwords.forEach { hw ->
                 val kanjiHeader = LinearLayout(this).apply {
                     orientation = LinearLayout.HORIZONTAL
                     gravity = Gravity.CENTER_VERTICAL
                     setPadding(0, 5, 0, 5)
                 }
                 kanjiHeader.addView(TextView(this).apply {
-                    text = kanji
+                    text = hw.kanji
                     setTextColor(Color.CYAN)
                     textSize = 48f
                     typeface = android.graphics.Typeface.DEFAULT_BOLD
                     setPadding(0, 0, 30, 0)
                 })
                 val readingStack = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-                entry.onyomi?.takeIf { it.isNotEmpty() }?.let { readingStack.addView(TextView(this).apply { text = "ON: ${it.replace(" ", "、")}"; setTextColor(Color.LTGRAY); textSize = 14f }) }
-                entry.kunyomi?.takeIf { it.isNotEmpty() }?.let { readingStack.addView(TextView(this).apply { text = "KUN: ${it.replace(" ", "、")}"; setTextColor(Color.LTGRAY); textSize = 14f }) }
+                hw.onyomi?.takeIf { it.isNotEmpty() }?.let { readingStack.addView(TextView(this).apply { text = "ON: ${it.replace(" ", "、")}"; setTextColor(Color.LTGRAY); textSize = 14f }) }
+                hw.kunyomi?.takeIf { it.isNotEmpty() }?.let { readingStack.addView(TextView(this).apply { text = "KUN: ${it.replace(" ", "、")}"; setTextColor(Color.LTGRAY); textSize = 14f }) }
                 kanjiHeader.addView(readingStack)
                 headwordList.addView(kanjiHeader)
             }
         } else {
             val flow = FlowLayout(this).apply { setPadding(0, 5, 0, 5) }
-            kanjiVariants.forEachIndexed { i, kanji ->
-                flow.addView(createRubyView(kanji, reading))
-                if (i < kanjiVariants.size - 1) {
+            group.headwords.forEachIndexed { i, hw ->
+                flow.addView(createRubyView(hw.kanji, group.reading))
+                if (i < group.headwords.size - 1) {
                     flow.addView(TextView(this).apply { text = "、"; setTextColor(Color.GRAY); textSize = 24f; setPadding(5, 0, 5, 0) })
                 }
             }
@@ -1030,49 +1000,10 @@ class OcrAccessibilityService : AccessibilityService() {
         container.addView(headwordList)
     }
 
-    private fun renderSensesForReading(container: LinearLayout, entries: List<com.holopengin.instantjpdict.data.DictionaryEntry>) {
-        var globalSenseNum = 1
-        val groupSeenTags = mutableSetOf<String>()
-        var currentGroupTags: List<String>? = null
-        var currentGroupSenses = mutableListOf<Pair<Int, Any?>>()
-
-        for (e in entries) {
-            val definitionsJson = try { gson.fromJson<Any>(e.definitions, Any::class.java) } catch (ex: Exception) { e.definitions }
-            val definitionsList = if (definitionsJson is List<*>) definitionsJson else listOf(definitionsJson)
-
-            val metaTags = mutableListOf<String>()
-            val senseTagsMap = mutableMapOf<Int, MutableList<String>>()
-            e.jlpt?.takeIf { it.isNotEmpty() }?.let { metaTags.add("jlpt: N$it") }
-            "grade:([^\\S]+)".toRegex().find(e.rules)?.groupValues?.get(1)?.let { metaTags.add("grade: $it") }
-
-            val segments = e.rules.split(" | ")
-            fun parseToMaps(s: String?) {
-                var currentSense: Int? = null
-                s?.split(" ")?.filter { it.isNotEmpty() }?.forEach { tag ->
-                    val n = tag.toIntOrNull()
-                    if (n != null) currentSense = n
-                    else if (!tag.startsWith("grade:")) {
-                        if (currentSense != null) senseTagsMap.getOrPut(currentSense!!) { mutableListOf() }.add(tag)
-                        else metaTags.add(tag)
-                    }
-                }
-            }
-            parseToMaps(segments.getOrNull(0))
-            parseToMaps(segments.getOrNull(2))
-
-            val senseIdx = globalSenseNum++
-            val tags = (metaTags + (senseTagsMap[1] ?: emptyList())).distinct()
-
-            if (currentGroupTags == null || tags == currentGroupTags) {
-                currentGroupTags = tags
-                currentGroupSenses.add(senseIdx to definitionsList)
-            } else {
-                renderSenseGroup(container, currentGroupTags?.filter { groupSeenTags.add(it) }, currentGroupSenses)
-                currentGroupTags = tags
-                currentGroupSenses = mutableListOf(senseIdx to definitionsList)
-            }
+    private fun renderSensesForReading(container: LinearLayout, group: FormattedReadingGroup) {
+        group.senseGroups.forEach { senseGroup ->
+            renderSenseGroup(container, senseGroup)
         }
-        renderSenseGroup(container, currentGroupTags?.filter { groupSeenTags.add(it) }, currentGroupSenses)
     }
 
     private fun updateNeighborHighlights(panel: LinearLayout) {
@@ -1134,7 +1065,7 @@ class OcrAccessibilityService : AccessibilityService() {
             }
             panel.addView(lineContainer)
             if (line != null) {
-                fillLineNeighborContainer(lineContainer, lIdx, line, isLandscape, rootLayout)
+                fillLineNeighborContainer(lineContainer, lIdx, isLandscape, rootLayout)
             }
         }
 
@@ -1151,6 +1082,7 @@ class OcrAccessibilityService : AccessibilityService() {
             return 
         }
         controller.isAlternativesVisible = true
+        val altState = controller.getAlternativesUiState() ?: return
         val rootHeight = rootLayout.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
         val rootWidth = rootLayout.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
         val itemSize = (if (isLandscape) rootHeight else rootWidth) / 11
@@ -1169,38 +1101,34 @@ class OcrAccessibilityService : AccessibilityService() {
         // Find and scroll to selected
         scrollView.post {
             var selectedView: View? = null
-            val line = controller.activeLineResults.getOrNull(lIdx)
-            val currentChar = line?.text?.getOrNull(cIdx)
             for (i in 0 until candidateList.childCount) {
                 val v = candidateList.getChildAt(i) as? TextView ?: continue
-                if (v.text.toString() == currentChar?.toString()) {
+                if (altState.candidates.getOrNull(i)?.isSelected == true) {
                     selectedView = v; break
                 }
             }
             selectedView?.let { view -> if (isLandscape) scrollView.scrollTo(0, view.top) else (scrollView as HorizontalScrollView).scrollTo(view.left, 0) }
         }
 
-        val stubView = TextView(this).apply { tag = "manual_input_stub"; text = "⌨"; setTextColor(android.graphics.Color.GRAY); textSize = estimatedTextSize; gravity = Gravity.CENTER; setBackgroundColor(android.graphics.Color.argb(255, 40, 40, 40)); setOnClickListener { showManualInput(lIdx, cIdx, rootLayout) } }
-        mainLayout.addView(stubView, if (isLandscape) LinearLayout.LayoutParams(itemSize, 0, 1f).apply { setMargins(2, 2, 2, 2) } else LinearLayout.LayoutParams(0, itemSize, 1f).apply { setMargins(2, 2, 2, 2) })
+        if (altState.showManualInput) {
+            val stubView = TextView(this).apply { tag = "manual_input_stub"; text = "⌨"; setTextColor(android.graphics.Color.GRAY); textSize = estimatedTextSize; gravity = Gravity.CENTER; setBackgroundColor(android.graphics.Color.argb(255, 40, 40, 40)); setOnClickListener { showManualInput(lIdx, cIdx, rootLayout) } }
+            mainLayout.addView(stubView, if (isLandscape) LinearLayout.LayoutParams(itemSize, 0, 1f).apply { setMargins(2, 2, 2, 2) } else LinearLayout.LayoutParams(0, itemSize, 1f).apply { setMargins(2, 2, 2, 2) })
+        }
         container.addView(mainLayout)
     }
 
     private fun refreshCandidateList(candidateList: LinearLayout, lIdx: Int, cIdx: Int, isLandscape: Boolean, rootLayout: FrameLayout) {
         candidateList.removeAllViews()
+        val altState = controller.getAlternativesUiState() ?: return
         val rootHeight = rootLayout.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
         val rootWidth = rootLayout.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
         val itemSize = (if (isLandscape) rootHeight else rootWidth) / 11
         val estimatedTextSize = (itemSize * 0.45 / resources.displayMetrics.density).toFloat().coerceIn(12f, 22f)
 
-        val line = controller.activeLineResults.getOrNull(lIdx)
-        val alts = line?.alternatives?.getOrNull(cIdx) ?: emptyList()
-        val currentChar = line?.text?.getOrNull(cIdx)
-        
-        alts.take(15).forEach { altPair ->
-            val altChar = altPair.first
+        altState.candidates.forEach { cand ->
             val textView = TextView(this).apply {
-                text = altChar.toString(); setTextColor(android.graphics.Color.WHITE); textSize = estimatedTextSize; gravity = Gravity.CENTER
-                if (altChar == currentChar) { setBackgroundColor(android.graphics.Color.YELLOW); setTextColor(android.graphics.Color.BLACK) }
+                text = cand.char.toString(); setTextColor(android.graphics.Color.WHITE); textSize = estimatedTextSize; gravity = Gravity.CENTER
+                if (cand.isSelected) { setBackgroundColor(android.graphics.Color.YELLOW); setTextColor(android.graphics.Color.BLACK) }
                 else setBackgroundColor(android.graphics.Color.argb(255, 85, 85, 85))
                 
                 if (isLandscape) {
@@ -1209,10 +1137,10 @@ class OcrAccessibilityService : AccessibilityService() {
                 }
 
                 setOnClickListener { 
-                    if (altChar == currentChar) {
+                    if (cand.isSelected) {
                         toggleAlternativesPanel(rootLayout, lIdx, cIdx, isLandscape)
                     } else {
-                        replaceCharacter(lIdx, cIdx, altChar, rootLayout)
+                        replaceCharacter(lIdx, cIdx, cand.char, rootLayout)
                     }
                 }
             }
@@ -1231,11 +1159,10 @@ class OcrAccessibilityService : AccessibilityService() {
         val scrollView = candidateList.parent as? View ?: return
         scrollView.post {
             var selectedView: View? = null
-            val line = controller.activeLineResults.getOrNull(lIdx)
-            val currentChar = line?.text?.getOrNull(cIdx)
+            val altState = controller.getAlternativesUiState()
             for (i in 0 until candidateList.childCount) {
                 val v = candidateList.getChildAt(i) as? TextView ?: continue
-                if (v.text.toString() == currentChar?.toString()) {
+                if (altState?.candidates?.getOrNull(i)?.isSelected == true) {
                     selectedView = v; break
                 }
             }
@@ -1358,36 +1285,34 @@ class OcrAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun renderSenseGroup(container: LinearLayout, tags: List<String>?, senses: List<Pair<Int, Any?>>) {
-        if (senses.isEmpty()) return
+    private fun renderSenseGroup(container: LinearLayout, senseGroup: FormattedSenseGroup) {
+        if (senseGroup.senses.isEmpty()) return
         
-        val isForms = tags?.any { it.equals("Forms", ignoreCase = true) || it.equals("Other forms", ignoreCase = true) } == true
-
-        if (!tags.isNullOrEmpty()) {
+        if (senseGroup.tags.isNotEmpty()) {
             val header = FlowLayout(this).apply { setPadding(20, 15, 0, 5) }
-            tags.forEach { header.addView(createTagView(it)) }
+            senseGroup.tags.forEach { header.addView(createTagView(it)) }
             container.addView(header)
         }
         
-        if (isForms) {
+        if (senseGroup.isForms) {
             val table = LinearLayout(this).apply { 
                 orientation = LinearLayout.VERTICAL
                 setPadding(30, 5, 10, 5)
             }
-            senses.forEach { (_, content) ->
+            senseGroup.senses.forEach { sense ->
                 val row = FlowLayout(this).apply { setPadding(0, 5, 0, 5) }
-                renderDefinition(row, content, false)
+                renderDefinition(row, sense.nodes)
                 table.addView(row)
             }
             container.addView(table)
         } else {
-            senses.forEach { (idx, content) ->
+            senseGroup.senses.forEach { sense ->
                 val senseLayout = LinearLayout(this).apply { 
                     orientation = LinearLayout.HORIZONTAL
                     setPadding(30, 5, 10, 5)
                 }
                 senseLayout.addView(TextView(this).apply {
-                    text = "$idx. "
+                    text = "${sense.index}. "
                     setTextColor(Color.WHITE)
                     textSize = 15f
                     setPadding(0, 0, 10, 0)
@@ -1396,7 +1321,7 @@ class OcrAccessibilityService : AccessibilityService() {
                 val contentContainer = FlowLayout(this).apply {
                     setPadding(0, 0, 0, 15)
                 }
-                renderDefinition(contentContainer, content, false)
+                renderDefinition(contentContainer, sense.nodes)
                 senseLayout.addView(contentContainer, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
                 
                 container.addView(senseLayout)
@@ -1404,113 +1329,88 @@ class OcrAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun getAttr(data: Map<*, *>, key: String) = 
-        (data["data"] as? Map<*, *>)?.get(key) as? String ?: data["data-$key"] as? String ?: data[key] as? String
-
-    private fun isExample(data: Map<*, *>) = 
-        data["type"] == "sentence" || data.containsKey("japanese") || getAttr(data, "content")?.let { it == "examples" || it == "example-sentence" } == true
-
-    private fun isBlock(item: Any?): Boolean {
-        val data = item as? Map<*, *> ?: return false
-        if (isExample(data)) return true
-        val scClass = getAttr(data, "class")
-        val scContent = getAttr(data, "content")
-        val tag = data["tag"] as? String
-        
-        return scClass == "extra-box" || scContent == "info-gloss" || scContent == "sense-note" || 
-               scContent == "lang-source" || scContent == "xref" || scContent == "antonym" ||
-               tag == "table" || 
-               ((tag == "ul" || tag == "ol") && scContent !in listOf("glossary", "infoGlossary", "sourceLanguages"))
-    }
-
-    private fun renderDefinition(container: ViewGroup, data: Any?, prevWasInline: Boolean): Boolean {
-        var currentlyInline = prevWasInline
-        when (data) {
-            is String -> {
-                val replaced = data.replace("; ", "\n").replace(";", "\n")
-                val trimmed = replaced.trim()
-                if (trimmed.isEmpty()) return currentlyInline
-                
-                if (currentlyInline && container is FlowLayout) {
-                    container.addView(TextView(this).apply { text = ", "; setTextColor(Color.WHITE); textSize = 15f; includeFontPadding = false })
+    private fun renderDefinition(container: ViewGroup, nodes: List<DefinitionNode>) {
+        var i = 0
+        while (i < nodes.size) {
+            when (val node = nodes[i]) {
+                is DefinitionNode.Text -> {
+                    val sb = StringBuilder()
+                    var j = i
+                    while (j < nodes.size && nodes[j] is DefinitionNode.Text) {
+                        sb.append((nodes[j] as DefinitionNode.Text).text)
+                        j++
+                    }
+                    container.addView(TextView(this).apply {
+                        text = sb.toString()
+                        setTextColor(Color.WHITE)
+                        textSize = 15f
+                        includeFontPadding = false
+                    })
+                    i = j
                 }
-                
-                container.addView(TextView(this).apply { text = trimmed; setTextColor(Color.WHITE); textSize = 15f; includeFontPadding = false })
-                return true
-            }
-            is List<*> -> {
-                data.forEach { item ->
-                    if (currentlyInline && isBlock(item) && container is FlowLayout) {
-                        val punctuation = if (item is Map<*, *> && isExample(item)) ". " else " "
-                        container.addView(TextView(this).apply { text = punctuation; setTextColor(Color.WHITE); textSize = 15f; includeFontPadding = false })
-                        currentlyInline = false
-                    }
-                    currentlyInline = renderDefinition(container, item, currentlyInline)
+                is DefinitionNode.Ruby -> {
+                    container.addView(createRubyView(node.term, node.reading, node.isMini))
+                    i++
                 }
-                return currentlyInline
-            }
-            is Map<*, *> -> {
-                val tag = data["tag"] as? String
-                val content = data["content"] ?: data["list"]
-                val scContent = getAttr(data, "content")
-                val scClass = getAttr(data, "class")
-
-                when {
-                    isExample(data) -> {
-                        val box = LinearLayout(this).apply {
-                            orientation = LinearLayout.VERTICAL
-                            setPadding(30, 15, 30, 25)
-                            background = GradientDrawable().apply {
-                                setColor(android.graphics.Color.argb(10, 255, 255, 255))
-                                setStroke(3, android.graphics.Color.argb(80, 255, 255, 255))
-                                cornerRadius = 12f
-                            }
-                            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(0, 15, 0, 15) }
+                is DefinitionNode.Tag -> {
+                    container.addView(createTagView(node.text, node.category))
+                    i++
+                }
+                is DefinitionNode.Example -> {
+                    val box = LinearLayout(this).apply {
+                        orientation = LinearLayout.VERTICAL
+                        setPadding(30, 15, 30, 25)
+                        background = GradientDrawable().apply {
+                            setColor(android.graphics.Color.argb(10, 255, 255, 255))
+                            setStroke(3, android.graphics.Color.argb(80, 255, 255, 255))
+                            cornerRadius = 12f
                         }
-                        val jp = (data["japanese"] as? String) ?: (content as? String)
-                        if (jp != null) {
-                            box.addView(TextView(this).apply { text = jp; setTextColor(Color.WHITE); textSize = 16f; setPadding(0, 0, 0, 10) })
-                            (data["english"] as? String)?.let { en -> box.addView(TextView(this).apply { text = en; setTextColor(Color.LTGRAY); textSize = 14f }) }
-                        } else renderDefinition(box, content, false)
-                        container.addView(box)
-                        return false
+                        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(0, 15, 0, 15) }
                     }
-                    scClass == "tag" || (tag == "span" && scContent?.endsWith("-info") == true) -> {
-                        container.addView(createTagView(content?.toString() ?: ""))
-                        return false
+                    if (node.japanese != null) {
+                        box.addView(TextView(this).apply { text = node.japanese; setTextColor(Color.WHITE); textSize = 16f; setPadding(0, 0, 0, 10) })
+                        node.english?.let { en -> box.addView(TextView(this).apply { text = en; setTextColor(Color.LTGRAY); textSize = 14f }) }
+                    } else if (node.content != null) {
+                        val flow = FlowLayout(this)
+                        renderDefinition(flow, node.content)
+                        box.addView(flow)
                     }
-                    tag == "ruby" -> {
-                        val rubyList = content as? List<*>
-                        if (rubyList != null && rubyList.size >= 2) {
-                            if (currentlyInline && container is FlowLayout) {
-                                container.addView(TextView(this).apply { text = ", "; setTextColor(Color.WHITE); textSize = 15f; includeFontPadding = false })
-                            }
-                            container.addView(createRubyView(rubyList[0].toString(), (rubyList[1] as? Map<*, *>)?.get("content")?.toString() ?: "", isMini = true).apply { setPadding(0, 0, 15, 0) })
-                            return true
-                        }
+                    container.addView(box)
+                    i++
+                }
+                is DefinitionNode.ListBlock -> {
+                    val block = LinearLayout(this).apply { 
+                        orientation = LinearLayout.VERTICAL
+                        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(0, 10, 0, 10) } 
                     }
-                    tag == "table" -> {
-                        val table = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(10, 10, 10, 10); layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = 10; bottomMargin = 10 } }
-                        renderDefinition(table, content, false); container.addView(table); return false
+                    node.items.forEach { itemNodes ->
+                        val itemRow = FlowLayout(this).apply { setPadding(0, 0, 0, 5) }
+                        renderDefinition(itemRow, itemNodes)
+                        block.addView(itemRow)
                     }
-                    tag == "tr" -> {
-                        val tr = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT) }
-                        renderDefinition(tr, content, false); container.addView(tr); return false
+                    container.addView(block)
+                    i++
+                }
+                is DefinitionNode.Table -> {
+                    // Skip table for now
+                    i++
+                }
+                is DefinitionNode.Group -> {
+                    val groupContainer = if (node.isInline) FlowLayout(this) else LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+                    if (groupContainer is FlowLayout) {
+                        renderDefinition(groupContainer, node.nodes)
+                    } else {
+                        // If it's a vertical group, each child should still be rendered as a flow if it has inline elements
+                        // But for simplicity, let's just use a nested FlowLayout for everything for now
+                        val flow = FlowLayout(this)
+                        renderDefinition(flow, node.nodes)
+                        (groupContainer as LinearLayout).addView(flow)
                     }
-                    tag == "td" || tag == "th" -> {
-                        val cell = FlowLayout(this).apply { layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f); setPadding(10, 5, 10, 5); background = GradientDrawable().apply { setStroke(1, android.graphics.Color.argb(80, 255, 255, 255)) }; minimumHeight = (24 * resources.displayMetrics.density).toInt() }
-                        renderDefinition(cell, content, false); container.addView(cell); return false
-                    }
-                    tag == "ul" || tag == "ol" -> {
-                        if (scContent in listOf("glossary", "infoGlossary", "sourceLanguages")) return renderDefinition(container, content, currentlyInline)
-                        val block = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setTag(scContent); layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(0, 10, 0, 10) } }
-                        renderDefinition(block, content, false); container.addView(block); return false
-                    }
-                    content != null -> return renderDefinition(container, content, currentlyInline)
+                    container.addView(groupContainer)
+                    i++
                 }
             }
         }
-        return currentlyInline
     }
 
     override fun onKeyEvent(event: KeyEvent?): Boolean {
