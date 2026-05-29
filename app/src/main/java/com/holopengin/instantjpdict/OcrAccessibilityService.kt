@@ -33,6 +33,7 @@ import android.widget.TextView
 import android.widget.Toast
 import android.view.ViewGroup
 import androidx.core.content.ContextCompat
+import androidx.core.view.isVisible
 import com.google.gson.Gson
 import com.holopengin.instantjpdict.util.Deinflector
 import kotlinx.coroutines.CoroutineScope
@@ -78,7 +79,6 @@ class OcrAccessibilityService : AccessibilityService() {
         }
     }
     
-    private val boxViews = mutableListOf<View>()
     private val textViews = mutableMapOf<Pair<Int, Int>, TextView>()
     
     private var repeatJob: kotlinx.coroutines.Job? = null
@@ -257,13 +257,7 @@ class OcrAccessibilityService : AccessibilityService() {
     private fun showScreenshotOverlay(bitmap: Bitmap) {
         if (screenshotOverlay != null) return
         screenshotBitmap = bitmap
-        controller.currentScale = 1f
-        controller.currentTransX = 0f
-        controller.currentTransY = 0f
-        controller.currentTappedIdx = -1
-        controller.currentTappedLineIdx = -1
-        controller.currentTappedCharIdxInLine = -1
-        controller.lastJoystickKeyCode = 0
+        controller.resetState()
 
         val params = WindowManager.LayoutParams().apply {
             type = WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
@@ -286,97 +280,36 @@ class OcrAccessibilityService : AccessibilityService() {
         val rootLayout = object : FrameLayout(this) {
             private fun isTouchOnView(tag: String, ev: MotionEvent): Boolean {
                 val v = findViewWithTag<View>(tag) ?: return false
-                if (v.visibility != View.VISIBLE) return false
-                val rect = Rect()
-                v.getGlobalVisibleRect(rect)
-                return rect.contains(ev.rawX.toInt(), ev.rawY.toInt())
+                return v.isVisible && Rect().also { v.getGlobalVisibleRect(it) }.contains(ev.rawX.toInt(), ev.rawY.toInt())
             }
 
             private fun updateFocusState(ev: MotionEvent) {
-                var sumX = 0f
-                var sumY = 0f
-                val count = ev.pointerCount
-                val isPointerUp = ev.actionMasked == MotionEvent.ACTION_POINTER_UP
-                val div = if (isPointerUp) count - 1 else count
-                if (div > 0) {
-                    for (i in 0 until count) {
-                        if (isPointerUp && i == ev.actionIndex) continue
-                        sumX += ev.getX(i)
-                        sumY += ev.getY(i)
-                    }
-                }
-                val fx = if (div > 0) sumX / div else 0f
-                val fy = if (div > 0) sumY / div else 0f
-
-                when (ev.actionMasked) {
-                    MotionEvent.ACTION_DOWN -> {
-                        initialTouchX = fx; initialTouchY = fy
-                        lastFocusX = fx; lastFocusY = fy
-                        isScaling = false; hasPanned = false
-                    }
-                    MotionEvent.ACTION_POINTER_DOWN -> {
-                        isScaling = true
-                        lastFocusX = fx; lastFocusY = fy
-                    }
+                val (fx, fy) = ev.getFocusCoords()
+                if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
+                    initialTouchX = fx; initialTouchY = fy; lastFocusX = fx; lastFocusY = fy
+                    isScaling = false; hasPanned = false
+                } else if (ev.actionMasked == MotionEvent.ACTION_POINTER_DOWN) {
+                    isScaling = true; lastFocusX = fx; lastFocusY = fy
                 }
             }
 
             override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
-                if (isTouchOnView("correction_ui_root", ev)) return false
-                if (isTouchOnView("manual_input_blocker", ev)) return false
-                if (isTouchOnView("close_button", ev)) return false
-
+                if (listOf("correction_ui_root", "manual_input_blocker", "close_button").any { isTouchOnView(it, ev) }) return false
                 updateFocusState(ev)
-
-                when (ev.actionMasked) {
-                    MotionEvent.ACTION_MOVE -> {
-                        val dx = abs(ev.x - initialTouchX)
-                        val dy = abs(ev.y - initialTouchY)
-                        if (ev.pointerCount > 1 || dx > 10 || dy > 10) return true
-                    }
-                    MotionEvent.ACTION_POINTER_DOWN -> return true
-                }
+                if (ev.actionMasked == MotionEvent.ACTION_MOVE) {
+                    if (ev.pointerCount > 1 || abs(ev.x - initialTouchX) > 10 || abs(ev.y - initialTouchY) > 10) return true
+                } else if (ev.actionMasked == MotionEvent.ACTION_POINTER_DOWN) return true
                 return super.onInterceptTouchEvent(ev)
             }
         }.apply {
             setBackgroundColor(android.graphics.Color.argb(140, 0, 0, 0))
             systemUiVisibility = View.SYSTEM_UI_FLAG_LAYOUT_STABLE or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
             setOnClickListener {
-                if (findViewWithTag<View>("manual_input_blocker") != null) {
-                    closeManualInput(this)
-                    return@setOnClickListener
-                }
-
-                val panel = findViewWithTag<View>("correction_ui_root")
-                if (panel != null) {
-                    removeView(panel)
-                    resetHighlights()
-                    return@setOnClickListener
-                }
-
-                // Screen-space margin check: if click is within 20dp of any character box, ignore it
-                val s = controller.currentScale
-                val tx = controller.currentTransX
-                val ty = controller.currentTransY
-                val ix = (initialTouchX - tx) / s
-                val iy = (initialTouchY - ty) / s
-                val m = (20 * resources.displayMetrics.density) / s
-                
-                val isNear = controller.activeLineResults.filterNotNull().any { line ->
-                    line.charBoxes.any { b ->
-                        ix >= b.left - m && ix <= b.right + m && iy >= b.top - m && iy <= b.bottom + m
-                    }
-                } || controller.activeLineBoxes.any { b ->
-                    ix >= b.left - m && ix <= b.right + m && iy >= b.top - m && iy <= b.bottom + m
-                }
-                if (isNear) return@setOnClickListener
-
-                hideScreenshotOverlay()
+                if (findViewWithTag<View>("manual_input_blocker") != null) { closeManualInput(this); return@setOnClickListener }
+                findViewWithTag<View>("correction_ui_root")?.let { removeView(it); resetHighlights(); return@setOnClickListener }
+                if (!controller.isNearCharacter(initialTouchX, initialTouchY, 20f, resources.displayMetrics.density)) hideScreenshotOverlay()
             }
-            
-            setOnGenericMotionListener { _, event ->
-                handleJoystick(event)
-            }
+            setOnGenericMotionListener { _, event -> handleJoystick(event) }
         }
 
             // Viewport container to support Pan & Zoom for image AND results
@@ -415,83 +348,44 @@ class OcrAccessibilityService : AccessibilityService() {
             })
 
             rootLayout.setOnTouchListener { v, event ->
-                // Calculate current focus (midpoint of all active pointers)
-                var sumX = 0f
-                var sumY = 0f
-                val count = event.pointerCount
-                val isPointerUp = event.actionMasked == MotionEvent.ACTION_POINTER_UP
-                val div = if (isPointerUp) count - 1 else count
-                
-                if (div > 0) {
-                    for (i in 0 until count) {
-                        if (isPointerUp && i == event.actionIndex) continue
-                        sumX += event.getX(i)
-                        sumY += event.getY(i)
-                    }
-                }
-                val focusX = if (div > 0) sumX / div else 0f
-                val focusY = if (div > 0) sumY / div else 0f
+                val (focusX, focusY) = event.getFocusCoords()
 
                 when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
-                        initialTouchX = focusX
-                        initialTouchY = focusY
-                        lastFocusX = focusX
-                        lastFocusY = focusY
-                        isScaling = false
-                        hasPanned = false
+                        initialTouchX = focusX; initialTouchY = focusY
+                        lastFocusX = focusX; lastFocusY = focusY
+                        isScaling = false; hasPanned = false
                     }
                     MotionEvent.ACTION_POINTER_DOWN -> {
-                        isScaling = true
-                        lastFocusX = focusX
-                        lastFocusY = focusY
+                        isScaling = true; lastFocusX = focusX; lastFocusY = focusY
                     }
                     MotionEvent.ACTION_MOVE -> {
                         val dx = focusX - lastFocusX
                         val dy = focusY - lastFocusY
                         
-                        // Close if user swipes down from the top edge (status bar area)
                         if (initialTouchY < 100 && focusY - initialTouchY > 50 && !isScaling && !hasPanned) {
-                            hideScreenshotOverlay()
-                            return@setOnTouchListener true
+                            hideScreenshotOverlay(); return@setOnTouchListener true
                         }
 
                         if (!isScaling && !hasPanned && (abs(focusX - initialTouchX) > 10 || abs(focusY - initialTouchY) > 10)) {
                             hasPanned = true
                         }
 
-                        // We pan if we are either in a 1-finger pan mode (!isScaling) 
-                        // or if we have multiple fingers down (allowing pan-while-zoom)
-                        if ((hasPanned && !isScaling) || count > 1) {
+                        if ((hasPanned && !isScaling) || event.pointerCount > 1) {
                             controller.currentTransX += dx
                             controller.currentTransY += dy
+                            contentContainer.translationX = controller.currentTransX
+                            contentContainer.translationY = controller.currentTransY
                         }
-                        
-                        lastFocusX = focusX
-                        lastFocusY = focusY
+                        lastFocusX = focusX; lastFocusY = focusY
                     }
-                    MotionEvent.ACTION_POINTER_UP -> {
-                        lastFocusX = focusX
-                        lastFocusY = focusY
-                    }
+                    MotionEvent.ACTION_POINTER_UP -> { lastFocusX = focusX; lastFocusY = focusY }
                 }
 
                 gestureDetector.onTouchEvent(event)
                 
-                if (event.actionMasked == MotionEvent.ACTION_MOVE) {
-                    if ((hasPanned && !isScaling) || count > 1) {
-                        contentContainer.translationX = controller.currentTransX
-                        contentContainer.translationY = controller.currentTransY
-                    }
-                } else if (event.actionMasked == MotionEvent.ACTION_UP) {
-                    // Only performClick if we didn't pan or zoom
-                    if (!hasPanned && !isScaling) {
-                        val dx = focusX - initialTouchX
-                        val dy = focusY - initialTouchY
-                        if (abs(dx) < 10 && abs(dy) < 10) {
-                            v.performClick()
-                        }
-                    }
+                if (event.actionMasked == MotionEvent.ACTION_UP && !hasPanned && !isScaling) {
+                    if (abs(focusX - initialTouchX) < 10 && abs(focusY - initialTouchY) < 10) v.performClick()
                 }
                 true
             }
@@ -621,7 +515,6 @@ class OcrAccessibilityService : AccessibilityService() {
                         clicksLayer.addView(lineContainer, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
                     }
 
-                    boxViews.clear()
                     textViews.clear()
                     controller.activeLineResults = MutableList(lineBoxes.size) { null as LineResult? }
                     controller.activeAllChars = mutableListOf()
@@ -875,13 +768,6 @@ class OcrAccessibilityService : AccessibilityService() {
         }
         updateDictionaryPanel(dictionaryPanel, matches)
 
-        val mainContainer = LinearLayout(this).apply {
-            tag = "correction_ui_root"
-            elevation = 100f
-            orientation = if (isLandscape) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
-            gravity = (if (isLandscape) controller.lastLandscapeGravity else controller.lastPortraitGravity).toAndroidGravity()
-        }
-
         val correctionPanel = createCorrectionPanel(controller.currentTappedLineIdx, controller.currentTappedCharIdxInLine, isLandscape, rootLayout, skipCenter)
         val alternativesPanelContainer = FrameLayout(this).apply {
             tag = "alternatives_container"
@@ -889,17 +775,21 @@ class OcrAccessibilityService : AccessibilityService() {
             else LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
         }
 
-        if (isLandscape) {
-            if (controller.lastLandscapeGravity == JpDictGravity.END) {
-                mainContainer.addView(alternativesPanelContainer); mainContainer.addView(correctionPanel); mainContainer.addView(dictionaryPanel, LinearLayout.LayoutParams(panelWidth, panelHeight))
+        val mainContainer = LinearLayout(this).apply {
+            tag = "correction_ui_root"
+            elevation = 100f
+            orientation = if (isLandscape) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
+            gravity = (if (isLandscape) controller.lastLandscapeGravity else controller.lastPortraitGravity).toAndroidGravity()
+
+            val isReverse = if (isLandscape) controller.lastLandscapeGravity == JpDictGravity.END else controller.lastPortraitGravity == JpDictGravity.BOTTOM
+            if (isReverse) {
+                addView(alternativesPanelContainer)
+                addView(correctionPanel)
+                addView(dictionaryPanel, LinearLayout.LayoutParams(panelWidth, panelHeight))
             } else {
-                mainContainer.addView(dictionaryPanel, LinearLayout.LayoutParams(panelWidth, panelHeight)); mainContainer.addView(correctionPanel); mainContainer.addView(alternativesPanelContainer)
-            }
-        } else {
-            if (controller.lastPortraitGravity == JpDictGravity.BOTTOM) {
-                mainContainer.addView(alternativesPanelContainer); mainContainer.addView(correctionPanel); mainContainer.addView(dictionaryPanel, LinearLayout.LayoutParams(panelWidth, panelHeight))
-            } else {
-                mainContainer.addView(dictionaryPanel, LinearLayout.LayoutParams(panelWidth, panelHeight)); mainContainer.addView(correctionPanel); mainContainer.addView(alternativesPanelContainer)
+                addView(dictionaryPanel, LinearLayout.LayoutParams(panelWidth, panelHeight))
+                addView(correctionPanel)
+                addView(alternativesPanelContainer)
             }
         }
 
@@ -1462,67 +1352,51 @@ class OcrAccessibilityService : AccessibilityService() {
 
     private fun handleGamepad(event: KeyEvent): Boolean {
         val root = screenshotOverlay as? FrameLayout ?: return false
-        val dictionaryRoot = root.findViewWithTag<LinearLayout>("correction_ui_root")
-        val isManualInputOpen = root.findViewWithTag<View>("manual_input_blocker") != null
-        
-        if (isManualInputOpen) return false
+        if (root.findViewWithTag<View>("manual_input_blocker") != null) return false
         
         val prefs = getSharedPreferences("gamepad_prefs", Context.MODE_PRIVATE)
         val layoutSwap = prefs.getBoolean("layout_swap", false)
-
         val keyCode = event.keyCode
-        if (!controller.isHandledKey(keyCode)) return false
         
+        if (!controller.isHandledKey(keyCode)) return false
         if (event.action == KeyEvent.ACTION_UP) {
-            if (keyCode == currentRepeatingKeyCode) {
-                stopRepeat()
-            }
+            if (keyCode == currentRepeatingKeyCode) stopRepeat()
             return true
         }
         if (event.action != KeyEvent.ACTION_DOWN) return true
 
         val action = controller.resolveGamepadAction(keyCode, layoutSwap)
         if (action == GamepadAction.NONE) return false
-
-        if (keyCode != currentRepeatingKeyCode) {
-            startRepeat(keyCode)
-        }
+        if (keyCode != currentRepeatingKeyCode) startRepeat(keyCode)
 
         when (action) {
-            GamepadAction.BACK -> {
-                if (controller.isAlternativesVisible) {
-                    toggleAlternativesPanel(root, controller.currentTappedLineIdx, controller.currentTappedCharIdxInLine, root.width > root.height)
-                } else if (controller.isDictionaryVisible) {
-                    root.removeView(dictionaryRoot)
-                    controller.isDictionaryVisible = false
-                    resetHighlights()
-                    updateCursor()
-                } else {
-                    hideScreenshotOverlay()
-                }
-                return true
-            }
-            GamepadAction.CONFIRM -> {
-                if (controller.isAlternativesVisible) {
-                    toggleAlternativesPanel(root, controller.currentTappedLineIdx, controller.currentTappedCharIdxInLine, root.width > root.height)
-                } else if (controller.isDictionaryVisible) {
-                    toggleAlternativesPanel(root, controller.currentTappedLineIdx, controller.currentTappedCharIdxInLine, root.width > root.height)
-                } else {
-                    if (controller.currentTappedLineIdx != -1 && controller.currentTappedCharIdxInLine != -1) {
-                        performLookup(controller.currentTappedLineIdx, controller.currentTappedCharIdxInLine, root)
-                    }
-                }
-                return true
-            }
-            GamepadAction.NAVIGATE_LEFT, GamepadAction.NAVIGATE_RIGHT, GamepadAction.NAVIGATE_UP, GamepadAction.NAVIGATE_DOWN -> {
-                executeNavigation(keyCode)
-                return true
-            }
-            GamepadAction.SCROLL_UP, GamepadAction.SCROLL_DOWN -> {
-                scrollDictionary(keyCode, root)
-                return true
-            }
+            GamepadAction.BACK -> handleGamepadBack(root)
+            GamepadAction.CONFIRM -> handleGamepadConfirm(root)
+            GamepadAction.NAVIGATE_LEFT, GamepadAction.NAVIGATE_RIGHT, GamepadAction.NAVIGATE_UP, GamepadAction.NAVIGATE_DOWN -> executeNavigation(keyCode)
+            GamepadAction.SCROLL_UP, GamepadAction.SCROLL_DOWN -> scrollDictionary(keyCode, root)
             else -> return false
+        }
+        return true
+    }
+
+    private fun handleGamepadBack(root: FrameLayout) {
+        if (controller.isAlternativesVisible) {
+            toggleAlternativesPanel(root, controller.currentTappedLineIdx, controller.currentTappedCharIdxInLine, root.width > root.height)
+        } else if (controller.isDictionaryVisible) {
+            root.removeView(root.findViewWithTag("correction_ui_root"))
+            controller.isDictionaryVisible = false
+            resetHighlights()
+            updateCursor()
+        } else {
+            hideScreenshotOverlay()
+        }
+    }
+
+    private fun handleGamepadConfirm(root: FrameLayout) {
+        if (controller.isAlternativesVisible || controller.isDictionaryVisible) {
+            toggleAlternativesPanel(root, controller.currentTappedLineIdx, controller.currentTappedCharIdxInLine, root.width > root.height)
+        } else if (controller.currentTappedLineIdx != -1 && controller.currentTappedCharIdxInLine != -1) {
+            performLookup(controller.currentTappedLineIdx, controller.currentTappedCharIdxInLine, root)
         }
     }
 
@@ -1700,7 +1574,7 @@ class OcrAccessibilityService : AccessibilityService() {
         screenshotOverlay = null; screenshotBitmap = null; floatingView?.visibility = View.VISIBLE
         controller.resetState()
         try { windowManager?.updateViewLayout(floatingView, floatingParams) } catch (e: Exception) { Log.e("OcrAccessibilityService", "Error restoring button", e) }
-        boxViews.clear(); textViews.clear()
+        textViews.clear()
         cursorView = null
     }
 
@@ -1825,6 +1699,15 @@ class OcrAccessibilityService : AccessibilityService() {
             if (childCount == 0) return -1
             return getChildAt(0).baseline
         }
+    }
+
+    private fun MotionEvent.getFocusCoords(): Pair<Float, Float> {
+        var (sx, sy, c) = Triple(0f, 0f, 0)
+        for (i in 0 until pointerCount) {
+            if (actionMasked == MotionEvent.ACTION_POINTER_UP && i == actionIndex) continue
+            sx += getX(i); sy += getY(i); c++
+        }
+        return if (c > 0) sx / c to sy / c else 0f to 0f
     }
 
 }
