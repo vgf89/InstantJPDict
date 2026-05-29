@@ -60,6 +60,7 @@ class OcrAccessibilityService : AccessibilityService() {
     private val gson = Gson()
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var ocrJob: kotlinx.coroutines.Job? = null
+    private var lookupJob: kotlinx.coroutines.Job? = null
     
     private var currentScale = 1f
     private var currentTransX = 0f
@@ -98,14 +99,19 @@ class OcrAccessibilityService : AccessibilityService() {
     private var lastLandscapeGravity = Gravity.END
     private var lastPortraitGravity = Gravity.BOTTOM
     private var lastManualInputCloseTime = 0L
+    private var lastNeighborHighlightedLine = -1
+    private var lastNeighborHighlightedChar = -1
+
+    private val lastHighlightedCoords = mutableListOf<Pair<Int, Int>>()
 
     private var activeLineResults: MutableList<LineResult?> = mutableListOf()
     
-    private var joystickLastX = 0f
-    private var joystickLastY = 0f
+    private var lastJoystickKeyCode = 0
     
     private var repeatJob: kotlinx.coroutines.Job? = null
     private var currentRepeatingKeyCode = 0
+    private val pressedKeys = mutableSetOf<Int>()
+    private var lastGlobalTriggerTime = 0L
 
     private val borderDrawable by lazy {
         GradientDrawable().apply {
@@ -282,8 +288,7 @@ class OcrAccessibilityService : AccessibilityService() {
         currentTappedIdx = -1
         currentTappedLineIdx = -1
         currentTappedCharIdxInLine = -1
-        joystickLastX = 0f
-        joystickLastY = 0f
+        lastJoystickKeyCode = 0
 
         val params = WindowManager.LayoutParams().apply {
             type = WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
@@ -841,111 +846,119 @@ class OcrAccessibilityService : AccessibilityService() {
     }
 
     private fun performLookup(lineIdx: Int, charIdx: Int, rootLayout: FrameLayout, skipCenter: Boolean = false) {
-        currentTappedLineIdx = lineIdx
-        currentTappedCharIdxInLine = charIdx
-        currentTappedIdx = getGlobalIdx(lineIdx, charIdx)
-
-        val line = activeLineResults.getOrNull(lineIdx) ?: return
-        val tappedBox = line.charBoxes.getOrNull(charIdx) ?: Rect()
-
-        activeLineResults.getOrNull(lineIdx)?.alternatives?.getOrNull(charIdx)?.let { alternatives ->
-            val logMsg = alternatives.joinToString(", ") { (char, score) ->
-                "$char (${String.format(java.util.Locale.US, "%.8f", score)})"
-            }
-            Log.i("OcrAccessibilityService", "Top 15 candidates: $logMsg")
-        }
-
+        // Instant visual feedback for the cursor movement
         resetHighlights()
-
         textViews[Pair(lineIdx, charIdx)]?.let {
             it.setTextColor(android.graphics.Color.YELLOW)
             it.typeface = android.graphics.Typeface.DEFAULT_BOLD
+            lastHighlightedCoords.add(Pair(lineIdx, charIdx))
         }
 
-        val endIdx = kotlin.math.min(currentTappedIdx + 20, activeAllChars.size)
-        val followingText = activeAllChars.subList(currentTappedIdx, endIdx).joinToString("")
+        lookupJob?.cancel()
+        lookupJob = serviceScope.launch {
+            // Wait for user to stop navigating before doing heavy DB/UI work
+            kotlinx.coroutines.delay(200)
 
-        serviceScope.launch {
-            val db = AppDatabase.getDatabase(applicationContext)
-            val allMatches = mutableListOf<Pair<String, List<com.holopengin.instantjpdict.data.DictionaryEntry>>>()
-            var maxMatchedLen = 0
+            val globalIdx = getGlobalIdx(lineIdx, charIdx)
+            currentTappedIdx = globalIdx
+            currentTappedLineIdx = lineIdx
+            currentTappedCharIdxInLine = charIdx
 
-            val allTermsToSearch = mutableSetOf<String>()
-            val candidatesByLength = mutableListOf<Pair<Int, List<Pair<String, List<String>?>>>>()
+            val line = activeLineResults.getOrNull(lineIdx) ?: return@launch
+            val tappedBox = line.charBoxes.getOrNull(charIdx) ?: Rect()
 
-            for (len in followingText.length downTo 1) {
-                val queryTextRaw = followingText.substring(0, len)
-                val queryText = JapaneseUtil.normalize(queryTextRaw)
+            val endIdx = kotlin.math.min(globalIdx + 20, activeAllChars.size)
+            val followingText = activeAllChars.subList(globalIdx, endIdx).joinToString("")
 
-                val variants = listOf(
-                    queryText,
-                    JapaneseUtil.katakanaToHiragana(queryText),
-                    JapaneseUtil.collapseEmphatic(queryText)
-                ).distinct()
+            val result = withContext(Dispatchers.IO) {
+                val db = AppDatabase.getDatabase(applicationContext)
+                val allTermsToSearch = mutableSetOf<String>()
+                val candidatesByLength = mutableListOf<Pair<Int, List<Pair<String, List<String>?>>>>()
 
-                val deinflections = deinflector.deinflect(queryText)
-                val lengthCandidates = mutableListOf<Pair<String, List<String>?>>()
-                variants.forEach { lengthCandidates.add(it to null); allTermsToSearch.add(it) }
-                deinflections.forEach { if (it.term != queryText) { lengthCandidates.add(it.term to it.type); allTermsToSearch.add(it.term) } }
-                candidatesByLength.add(len to lengthCandidates)
-            }
+                for (len in followingText.length downTo 1) {
+                    val queryTextRaw = followingText.substring(0, len)
+                    val queryText = JapaneseUtil.normalize(queryTextRaw)
 
-            val dbResults = withContext(Dispatchers.IO) {
-                db.dictionaryDao().findByTexts(allTermsToSearch.toList())
-            }
+                    val variants = listOf(
+                        queryText,
+                        JapaneseUtil.katakanaToHiragana(queryText),
+                        JapaneseUtil.collapseEmphatic(queryText)
+                    ).distinct()
 
-            val resultsByTerm = mutableMapOf<String, MutableList<com.holopengin.instantjpdict.data.DictionaryEntry>>()
-            dbResults.forEach { entry ->
-                if (entry.kanji in allTermsToSearch) resultsByTerm.getOrPut(entry.kanji) { mutableListOf() }.add(entry)
-                if (entry.reading in allTermsToSearch) resultsByTerm.getOrPut(entry.reading) { mutableListOf() }.add(entry)
-            }
-
-            for ((len, candidates) in candidatesByLength) {
-                var foundInThisLen = false
-                for ((term, requiredTypes) in candidates) {
-                    val termEntries = resultsByTerm[term] ?: continue
-                    val filteredResults = if (requiredTypes == null) {
-                        val queryText = JapaneseUtil.normalize(followingText.substring(0, len))
-                        termEntries.filter { entry ->
-                            val isKanjiEntry = entry.onyomi != null || entry.kunyomi != null
-                            !isKanjiEntry || entry.kanji == queryText
-                        }
-                    } else {
-                        termEntries.filter { entry ->
-                            val entryTags = entry.rules.split(" ")
-                            requiredTypes.isEmpty() || requiredTypes.any { it in entryTags } ||
-                                    (entryTags.any { it.startsWith("v") } && requiredTypes.any { it.startsWith("v") })
-                        }
-                    }
-                    if (filteredResults.isNotEmpty()) {
-                        allMatches.add(term to filteredResults.distinctBy { it.id })
-                        foundInThisLen = true
-                    }
+                    val deinflections = deinflector.deinflect(queryText)
+                    val lengthCandidates = mutableListOf<Pair<String, List<String>?>>()
+                    variants.forEach { lengthCandidates.add(it to null); allTermsToSearch.add(it) }
+                    deinflections.forEach { if (it.term != queryText) { lengthCandidates.add(it.term to it.type); allTermsToSearch.add(it.term) } }
+                    candidatesByLength.add(len to lengthCandidates)
                 }
-                if (foundInThisLen && maxMatchedLen == 0) maxMatchedLen = len
+
+                val dbResults = db.dictionaryDao().findByTexts(allTermsToSearch.toList())
+                val resultsByTerm = mutableMapOf<String, MutableList<com.holopengin.instantjpdict.data.DictionaryEntry>>()
+                dbResults.forEach { entry ->
+                    if (entry.kanji in allTermsToSearch) resultsByTerm.getOrPut(entry.kanji) { mutableListOf() }.add(entry)
+                    if (entry.reading in allTermsToSearch) resultsByTerm.getOrPut(entry.reading) { mutableListOf() }.add(entry)
+                }
+
+                val matches = mutableListOf<Pair<String, List<com.holopengin.instantjpdict.data.DictionaryEntry>>>()
+                var maxLen = 0
+                for ((len, candidates) in candidatesByLength) {
+                    var found = false
+                    for ((term, requiredTypes) in candidates) {
+                        val termEntries = resultsByTerm[term] ?: continue
+                        val filteredResults = if (requiredTypes == null) {
+                            val queryText = JapaneseUtil.normalize(followingText.substring(0, len))
+                            termEntries.filter { entry ->
+                                val isKanjiEntry = entry.onyomi != null || entry.kunyomi != null
+                                !isKanjiEntry || entry.kanji == queryText
+                            }
+                        } else {
+                            termEntries.filter { entry ->
+                                val entryTags = entry.rules.split(" ")
+                                requiredTypes.isEmpty() || requiredTypes.any { it in entryTags } ||
+                                        (entryTags.any { it.startsWith("v") } && requiredTypes.any { it.startsWith("v") })
+                            }
+                        }
+                        if (filteredResults.isNotEmpty()) {
+                            matches.add(term to filteredResults.distinctBy { it.id })
+                            found = true
+                        }
+                    }
+                    if (found && maxLen == 0) maxLen = len
+                }
+                Triple(matches.distinctBy { it.first }, maxLen, tappedBox)
             }
 
-            val uniqueMatches = allMatches.distinctBy { it.first }
-            withContext(Dispatchers.Main) {
-                currentWordLength = maxMatchedLen
-                for (i in 0 until maxMatchedLen) {
-                    val targetGlobalIdx = currentTappedIdx + i
+            val uniqueMatches = result.first
+            val maxMatchedLen = result.second
+            val finalTappedBox = result.third
+
+            currentWordLength = maxMatchedLen
+            
+            // Only update word highlight if we found something
+            if (maxMatchedLen > 1) {
+                for (i in 1 until maxMatchedLen) {
+                    val targetGlobalIdx = globalIdx + i
                     val coords = getCoordsFromGlobalIdx(targetGlobalIdx)
                     if (coords != null) {
                         textViews[coords]?.setTextColor(android.graphics.Color.YELLOW)
                         textViews[coords]?.typeface = android.graphics.Typeface.DEFAULT_BOLD
+                        lastHighlightedCoords.add(coords)
                     }
                 }
-                showResultsUi(rootLayout, uniqueMatches, tappedBox, skipCenter)
             }
+            showResultsUi(rootLayout, uniqueMatches, finalTappedBox, skipCenter)
         }
     }
 
     private fun resetHighlights() {
-        textViews.values.forEach { 
-            it.setTextColor(android.graphics.Color.parseColor("#FF7777"))
-            it.typeface = android.graphics.Typeface.DEFAULT
+        if (lastHighlightedCoords.isEmpty()) return
+        lastHighlightedCoords.forEach { coords ->
+            textViews[coords]?.let {
+                it.setTextColor(android.graphics.Color.parseColor("#FF7777"))
+                it.typeface = android.graphics.Typeface.DEFAULT
+            }
         }
+        lastHighlightedCoords.clear()
     }
 
     private fun showResultsUi(rootLayout: FrameLayout, matches: List<Pair<String, List<com.holopengin.instantjpdict.data.DictionaryEntry>>>, tappedBox: Rect, skipCenter: Boolean = false) {
@@ -962,7 +975,7 @@ class OcrAccessibilityService : AccessibilityService() {
                 val neighborScrollView = existingRoot.findViewWithTag<View>("neighbor_scroll_view")
                 if (neighborScrollView != null) centerNeighborScrollView(neighborScrollView, currentTappedLineIdx, currentTappedCharIdxInLine)
             }
-            centerWordInVisibleArea(rootLayout, currentTappedLineIdx, currentTappedCharIdxInLine, currentWordLength)
+            centerWordInVisibleArea(rootLayout, currentTappedLineIdx, currentTappedCharIdxInLine)
             existingRoot.bringToFront()
             updateCursor()
             return
@@ -1034,7 +1047,7 @@ class OcrAccessibilityService : AccessibilityService() {
         rootLayout.addView(mainContainer, rootParams)
         mainContainer.bringToFront()
 
-        centerWordInVisibleArea(rootLayout, currentTappedLineIdx, currentTappedCharIdxInLine, currentWordLength)
+        centerWordInVisibleArea(rootLayout, currentTappedLineIdx, currentTappedCharIdxInLine)
         updateCursor()
     }
 
@@ -1172,19 +1185,26 @@ class OcrAccessibilityService : AccessibilityService() {
     }
 
     private fun updateNeighborHighlights(panel: LinearLayout) {
-        activeLineResults.forEachIndexed { lIdx, line ->
-            val lineContainer = panel.findViewWithTag<LinearLayout>("line_neighbor_$lIdx") ?: return@forEachIndexed
-            for (i in 0 until lineContainer.childCount) {
-                val view = lineContainer.getChildAt(i) as? TextView ?: continue
-                if (lIdx == currentTappedLineIdx && i == currentTappedCharIdxInLine) {
-                    view.setBackgroundColor(android.graphics.Color.YELLOW)
-                    view.setTextColor(android.graphics.Color.BLACK)
-                } else {
-                    view.setBackgroundColor(android.graphics.Color.argb(255, 65, 65, 65))
-                    view.setTextColor(android.graphics.Color.WHITE)
-                }
+        // Clear previous highlight
+        if (lastNeighborHighlightedLine != -1 && lastNeighborHighlightedChar != -1) {
+            val oldLineContainer = panel.findViewWithTag<LinearLayout>("line_neighbor_$lastNeighborHighlightedLine")
+            val oldView = oldLineContainer?.getChildAt(lastNeighborHighlightedChar) as? TextView
+            oldView?.let {
+                it.setBackgroundColor(android.graphics.Color.argb(255, 65, 65, 65))
+                it.setTextColor(android.graphics.Color.WHITE)
             }
         }
+        
+        // Set new highlight
+        val lineContainer = panel.findViewWithTag<LinearLayout>("line_neighbor_$currentTappedLineIdx")
+        val newView = lineContainer?.getChildAt(currentTappedCharIdxInLine) as? TextView
+        newView?.let {
+            it.setBackgroundColor(android.graphics.Color.YELLOW)
+            it.setTextColor(android.graphics.Color.BLACK)
+        }
+        
+        lastNeighborHighlightedLine = currentTappedLineIdx
+        lastNeighborHighlightedChar = currentTappedCharIdxInLine
     }
 
     private fun centerNeighborScrollView(scrollView: View, lIdx: Int, cIdx: Int) {
@@ -1602,12 +1622,52 @@ class OcrAccessibilityService : AccessibilityService() {
     }
 
     override fun onKeyEvent(event: KeyEvent?): Boolean {
-        if (screenshotOverlay == null) return super.onKeyEvent(event)
         val keyEvent = event ?: return super.onKeyEvent(event)
+        
+        // Handle global shortcut when overlay is NOT showing
+        if (screenshotOverlay == null) {
+            val prefs = getSharedPreferences("gamepad_prefs", Context.MODE_PRIVATE)
+            val globalShortcutEnabled = prefs.getBoolean("global_shortcut_enabled", true)
+            
+            if (!globalShortcutEnabled) {
+                pressedKeys.clear()
+                return super.onKeyEvent(event)
+            }
+
+            when (keyEvent.action) {
+                KeyEvent.ACTION_DOWN -> {
+                    pressedKeys.add(keyEvent.keyCode)
+                    if (pressedKeys.contains(KeyEvent.KEYCODE_BUTTON_L1) && pressedKeys.contains(KeyEvent.KEYCODE_BUTTON_R1)) {
+                        val now = System.currentTimeMillis()
+                        if (now - lastGlobalTriggerTime > 1500) { // 1.5s cooldown
+                            lastGlobalTriggerTime = now
+                            // Clear keys to prevent immediate repeat and consume the event
+                            pressedKeys.clear()
+                            
+                            // Trigger OCR (same logic as floating button click)
+                            floatingView?.visibility = View.GONE
+                            ocrButton?.postDelayed({
+                                triggerCapture { bitmap ->
+                                    showScreenshotOverlay(bitmap)
+                                }
+                            }, 50)
+                            return true
+                        }
+                    }
+                }
+                KeyEvent.ACTION_UP -> {
+                    pressedKeys.remove(keyEvent.keyCode)
+                }
+            }
+            return super.onKeyEvent(event)
+        }
+
         Log.d("OcrAccessibilityService", "onKeyEvent: keyCode=${keyEvent.keyCode}, action=${keyEvent.action}")
         if (handleGamepad(keyEvent)) return true
         return super.onKeyEvent(keyEvent)
     }
+
+    private var isControllerNavigation = false
 
     private fun handleGamepad(event: KeyEvent): Boolean {
         val root = screenshotOverlay as? FrameLayout ?: return false
@@ -1690,17 +1750,19 @@ class OcrAccessibilityService : AccessibilityService() {
                 }
                 return true
             }
-            KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT, 
-            KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN -> {
-                executeNavigation(keyCode, root, isAltOpen, isDictionaryOpen)
+            KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                executeNavigation(keyCode)
                 return true
             }
-            KeyEvent.KEYCODE_BUTTON_L1, KeyEvent.KEYCODE_BUTTON_R1 -> {
-                if (isDictionaryOpen) {
-                    scrollDictionary(event.keyCode, root)
-                } else {
-                    val direction = if (event.keyCode == KeyEvent.KEYCODE_BUTTON_R1) 1 else -1
-                    navigateLinesWithDirection(direction)
+            KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN -> {
+                executeNavigation(keyCode)
+                return true
+            }
+            KeyEvent.KEYCODE_BUTTON_L1, KeyEvent.KEYCODE_BUTTON_R1, KeyEvent.KEYCODE_BUTTON_L2, KeyEvent.KEYCODE_BUTTON_R2 -> {
+                if (event.action == KeyEvent.ACTION_DOWN) {
+                    startRepeat(keyCode)
+                } else if (event.action == KeyEvent.ACTION_UP) {
+                    stopRepeat()
                 }
                 return true
             }
@@ -1720,12 +1782,13 @@ class OcrAccessibilityService : AccessibilityService() {
             kotlinx.coroutines.delay(delay)
             while (isActive && currentRepeatingKeyCode == keyCode) {
                 val root = screenshotOverlay as? FrameLayout ?: break
-                val dictionaryRoot = root.findViewWithTag<LinearLayout>("correction_ui_root")
-                val altContainer = root.findViewWithTag<FrameLayout>("alternatives_container")
-                val isAltOpen = (altContainer?.childCount ?: 0) > 0
-                val isDictionaryOpen = dictionaryRoot != null
                 
-                executeNavigation(keyCode, root, isAltOpen, isDictionaryOpen)
+                if (keyCode == KeyEvent.KEYCODE_BUTTON_L1 || keyCode == KeyEvent.KEYCODE_BUTTON_L2 || 
+                    keyCode == KeyEvent.KEYCODE_BUTTON_R1 || keyCode == KeyEvent.KEYCODE_BUTTON_R2) {
+                    scrollDictionary(keyCode, root)
+                } else {
+                    executeNavigation(keyCode)
+                }
                 kotlinx.coroutines.delay(interval)
             }
         }
@@ -1737,60 +1800,129 @@ class OcrAccessibilityService : AccessibilityService() {
         currentRepeatingKeyCode = 0
     }
 
-    private fun executeNavigation(keyCode: Int, root: FrameLayout, isAltOpen: Boolean, isDictionaryOpen: Boolean) {
+    private fun executeNavigation(keyCode: Int) {
+        val root = screenshotOverlay as? FrameLayout ?: return
+        val dictionaryRoot = root.findViewWithTag<LinearLayout>("correction_ui_root")
+        val altContainer = root.findViewWithTag<FrameLayout>("alternatives_container")
+        val isAltOpen = (altContainer?.childCount ?: 0) > 0
+        val isDictionaryOpen = dictionaryRoot != null
+
+        isControllerNavigation = true
+
         if (isAltOpen) {
             navigateAlternatives(keyCode, root)
-        } else if (isDictionaryOpen) {
-            navigateDictionarySelection(keyCode, root)
-        } else {
-            navigateOverlay(keyCode)
+            return
+        }
+
+        navigateOverlay(keyCode)
+        if (isDictionaryOpen) {
+            performLookup(currentTappedLineIdx, currentTappedCharIdxInLine, root)
         }
     }
 
     private fun navigateOverlay(keyCode: Int) {
+        val root = screenshotOverlay as? FrameLayout ?: return
         if (activeLineResults.isEmpty()) return
-        if (currentTappedLineIdx == -1) { 
-            updateCursor() 
+        if (currentTappedLineIdx == -1 || currentTappedCharIdxInLine == -1) {
+            updateCursor()
             if (currentTappedLineIdx == -1) return
         }
-        
+
+        val rootWidth = root.width.toDouble().takeIf { it > 0 } ?: resources.displayMetrics.widthPixels.toDouble()
+        val rootHeight = root.height.toDouble().takeIf { it > 0 } ?: resources.displayMetrics.heightPixels.toDouble()
+
+        val line = activeLineResults[currentTappedLineIdx] ?: return
+        val box = line.charBoxes[currentTappedCharIdxInLine]
+        val centerX = box.centerX().toDouble()
+        val centerY = box.centerY().toDouble()
+
         when (keyCode) {
             KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                val line = activeLineResults.getOrNull(currentTappedLineIdx) ?: return
-                if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT) {
-                    if (currentTappedCharIdxInLine > 0) {
-                        currentTappedCharIdxInLine--
-                    } else if (currentTappedLineIdx > 0) {
-                        for (i in currentTappedLineIdx - 1 downTo 0) {
-                            val prevLine = activeLineResults[i]
-                            if (prevLine != null && prevLine.text.isNotEmpty()) {
-                                currentTappedLineIdx = i
-                                currentTappedCharIdxInLine = prevLine.text.length - 1
-                                break
+                val dir = if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) 1 else -1
+
+                // Try moving within the same line
+                if (currentTappedCharIdxInLine + dir in line.charBoxes.indices) {
+                    currentTappedCharIdxInLine += dir
+                } else {
+                    var bestDist = Double.MAX_VALUE
+                    var bestIdx = -1
+                    var bestCharIdx = -1
+
+                    for (i in activeLineResults.indices) {
+                        val otherLine = activeLineResults[i] ?: continue
+                        for (c in otherLine.charBoxes.indices) {
+                            val cBox = otherLine.charBoxes[c]
+                            val targetX = cBox.centerX().toDouble()
+                            val targetY = cBox.centerY().toDouble()
+
+                            var dx = targetX - centerX
+                            val dy = targetY - centerY
+
+                            // Wrapping logic: if moving in direction dir would go off edge, wrap coordinate
+                            if (dir == 1 && dx <= 5) dx += rootWidth
+                            else if (dir == -1 && dx >= -5) dx -= rootWidth
+
+                            // Check if candidate is in general direction after wrapping
+                            if ((dir == 1 && dx <= 5) || (dir == -1 && dx >= -5)) continue
+
+                            // Acute cone: high penalty for vertical distance to favor horizontal movement
+                            val dist = (dx * dx) + (dy * dy * 64.0)
+
+                            if (dist < bestDist) {
+                                bestDist = dist
+                                bestIdx = i
+                                bestCharIdx = c
                             }
                         }
                     }
-                } else {
-                    if (currentTappedCharIdxInLine < line.text.length - 1) {
-                        currentTappedCharIdxInLine++
-                    } else if (currentTappedLineIdx < activeLineResults.size - 1) {
-                        for (i in currentTappedLineIdx + 1 until activeLineResults.size) {
-                            val nextLine = activeLineResults[i]
-                            if (nextLine != null && nextLine.text.isNotEmpty()) {
-                                currentTappedLineIdx = i
-                                currentTappedCharIdxInLine = 0
-                                break
-                            }
-                        }
+                    if (bestIdx != -1) {
+                        currentTappedLineIdx = bestIdx
+                        currentTappedCharIdxInLine = bestCharIdx
                     }
                 }
             }
             KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN -> {
-                val direction = if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) 1 else -1
-                navigateLinesWithDirection(direction)
+                val dir = if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) 1 else -1
+
+                var bestDist = Double.MAX_VALUE
+                var bestIdx = -1
+                var bestCharIdx = -1
+
+                for (i in activeLineResults.indices) {
+                    val otherLine = activeLineResults[i] ?: continue
+                    for (c in otherLine.charBoxes.indices) {
+                        val cBox = otherLine.charBoxes[c]
+                        val targetX = cBox.centerX().toDouble()
+                        val targetY = cBox.centerY().toDouble()
+
+                        val dx = targetX - centerX
+                        var dy = targetY - centerY
+
+                        // Wrapping logic
+                        if (dir == 1 && dy <= 5) dy += rootHeight
+                        else if (dir == -1 && dy >= -5) dy -= rootHeight
+
+                        if ((dir == 1 && dy <= 5) || (dir == -1 && dy >= -5)) continue
+
+                        // Acute cone for vertical movement
+                        val dist = (dx * dx * 64.0) + (dy * dy)
+
+                        if (dist < bestDist) {
+                            bestDist = dist
+                            bestIdx = i
+                            bestCharIdx = c
+                        }
+                    }
+                }
+
+                if (bestIdx != -1) {
+                    currentTappedLineIdx = bestIdx
+                    currentTappedCharIdxInLine = bestCharIdx
+                }
             }
         }
         updateCursor()
+        centerWordInVisibleArea(root, currentTappedLineIdx, currentTappedCharIdxInLine)
     }
 
     private fun navigateLinesWithDirection(direction: Int) {
@@ -1829,31 +1961,22 @@ class OcrAccessibilityService : AccessibilityService() {
         val x = getCenteredAxis(event, MotionEvent.AXIS_X, MotionEvent.AXIS_HAT_X)
         val y = getCenteredAxis(event, MotionEvent.AXIS_Y, MotionEvent.AXIS_HAT_Y)
 
-        fun detectClick(curr: Float, last: Float): Int {
-            if (last < 0.5f && curr >= 0.5f) return 1
-            if (last > -0.5f && curr <= -0.5f) return -1
-            return 0
+        val threshold = 0.5f
+        val currentKeyCode = when {
+            x > threshold -> KeyEvent.KEYCODE_DPAD_RIGHT
+            x < -threshold -> KeyEvent.KEYCODE_DPAD_LEFT
+            y > threshold -> KeyEvent.KEYCODE_DPAD_DOWN
+            y < -threshold -> KeyEvent.KEYCODE_DPAD_UP
+            else -> 0
         }
-        
-        val clickX = detectClick(x, joystickLastX)
-        val clickY = detectClick(y, joystickLastY)
-        
-        joystickLastX = x
-        joystickLastY = y
-        
-        if (clickX != 0 || clickY != 0) {
-            val keyCode = when {
-                clickX == 1 -> KeyEvent.KEYCODE_DPAD_RIGHT
-                clickX == -1 -> KeyEvent.KEYCODE_DPAD_LEFT
-                clickY == 1 -> KeyEvent.KEYCODE_DPAD_DOWN
-                clickY == -1 -> KeyEvent.KEYCODE_DPAD_UP
-                else -> 0
+
+        if (currentKeyCode != lastJoystickKeyCode) {
+            if (lastJoystickKeyCode != 0) {
+                handleGamepad(KeyEvent(KeyEvent.ACTION_UP, lastJoystickKeyCode))
             }
-            if (keyCode != 0) {
-                // Synthesize Dpad events that the system's onKeyEvent will pick up
-                // or just call handleGamepad directly with appropriate key event actions
-                handleGamepad(KeyEvent(KeyEvent.ACTION_DOWN, keyCode))
-                handleGamepad(KeyEvent(KeyEvent.ACTION_UP, keyCode))
+            lastJoystickKeyCode = currentKeyCode
+            if (lastJoystickKeyCode != 0) {
+                handleGamepad(KeyEvent(KeyEvent.ACTION_DOWN, lastJoystickKeyCode))
             }
         }
         
@@ -1870,12 +1993,9 @@ class OcrAccessibilityService : AccessibilityService() {
         return if (abs(v) > 0.3f) v else 0f
     }
     private fun navigateDictionarySelection(keyCode: Int, root: FrameLayout) {
-        val isLandscape = root.width > root.height
         val next = when (keyCode) {
-            KeyEvent.KEYCODE_DPAD_DOWN -> if (isLandscape) 1 else 0
-            KeyEvent.KEYCODE_DPAD_UP -> if (isLandscape) -1 else 0
-            KeyEvent.KEYCODE_DPAD_RIGHT -> if (!isLandscape) 1 else 0
-            KeyEvent.KEYCODE_DPAD_LEFT -> if (!isLandscape) -1 else 0
+            KeyEvent.KEYCODE_DPAD_RIGHT -> 1
+            KeyEvent.KEYCODE_DPAD_LEFT -> -1
             else -> 0
         }
         if (next == 0) return
@@ -1898,15 +2018,19 @@ class OcrAccessibilityService : AccessibilityService() {
             }
         }
         if (newLineIdx != currentTappedLineIdx || newCharIdx != currentTappedCharIdxInLine) {
+            currentTappedLineIdx = newLineIdx
+            currentTappedCharIdxInLine = newCharIdx
+            updateCursor()
+            centerWordInVisibleArea(root, newLineIdx, newCharIdx)
             performLookup(newLineIdx, newCharIdx, root)
         }
     }
 
     private fun scrollDictionary(keyCode: Int, root: FrameLayout) {
-        val dictPanel = root.findViewWithTag<LinearLayout>("dictionary_content_container") ?: return
-        val scrollView = dictPanel.findViewWithTag<View>("dictionary_scroll_view") as? ScrollView ?: return
-        val amount = (100 * resources.displayMetrics.density).toInt()
-        if (keyCode == KeyEvent.KEYCODE_BUTTON_R1) scrollView.smoothScrollBy(0, amount)
+        val dictionaryRoot = root.findViewWithTag<LinearLayout>("correction_ui_root") ?: return
+        val scrollView = dictionaryRoot.findViewWithTag<View>("dictionary_scroll_view") as? ScrollView ?: return
+        val amount = (20 * resources.displayMetrics.density).toInt() // Smaller steps for smoother continuous feel
+        if (keyCode == KeyEvent.KEYCODE_BUTTON_R1 || keyCode == KeyEvent.KEYCODE_BUTTON_R2) scrollView.smoothScrollBy(0, amount)
         else scrollView.smoothScrollBy(0, -amount)
     }
 
@@ -1959,54 +2083,96 @@ class OcrAccessibilityService : AccessibilityService() {
                         cornerRadius = 4f
                     }
                     tag = "cursor_view"
+                    layoutParams = FrameLayout.LayoutParams(0, 0)
                 }
                 contentContainer.addView(cursorView)
             }
-            val lp = cursorView?.layoutParams as? FrameLayout.LayoutParams ?: FrameLayout.LayoutParams(0, 0)
-            lp.width = charBox.width() + (4 * resources.displayMetrics.density).toInt()
-            lp.height = charBox.height() + (4 * resources.displayMetrics.density).toInt()
-            lp.leftMargin = charBox.left - (2 * resources.displayMetrics.density).toInt()
-            lp.topMargin = charBox.top - (2 * resources.displayMetrics.density).toInt()
-            cursorView?.layoutParams = lp
-            cursorView?.visibility = View.VISIBLE
-            cursorView?.bringToFront()
+            
+            cursorView?.let { v ->
+                val desiredW = charBox.width() + (4 * resources.displayMetrics.density).toInt()
+                val desiredH = charBox.height() + (4 * resources.displayMetrics.density).toInt()
+                
+                if (v.layoutParams.width != desiredW || v.layoutParams.height != desiredH) {
+                    val lp = v.layoutParams as FrameLayout.LayoutParams
+                    lp.width = desiredW
+                    lp.height = desiredH
+                    v.layoutParams = lp
+                }
+                
+                v.translationX = (charBox.left - (2 * resources.displayMetrics.density).toInt()).toFloat()
+                v.translationY = (charBox.top - (2 * resources.displayMetrics.density).toInt()).toFloat()
+                v.visibility = View.VISIBLE
+                v.bringToFront()
+            }
         } else cursorView?.visibility = View.GONE
     }
 
-    private fun centerWordInVisibleArea(root: FrameLayout, lineIdx: Int, charIdx: Int, wordLen: Int) {
+    private fun centerWordInVisibleArea(root: FrameLayout, lineIdx: Int, charIdx: Int) {
         val contentContainer = root.findViewWithTag<FrameLayout>("content_container") ?: return
         val line = activeLineResults.getOrNull(lineIdx) ?: return
-        val wordBoxes = line.charBoxes.subList(charIdx, (charIdx + wordLen).coerceAtMost(line.charBoxes.size))
-        if (wordBoxes.isEmpty()) return
-        val wordRect = Rect(wordBoxes[0])
-        wordBoxes.forEach { wordRect.union(it) }
-        val rootWidth = root.width.toFloat()
-        val rootHeight = root.height.toFloat()
-        if (rootWidth == 0f || rootHeight == 0f) return
-        val isLandscape = rootWidth > rootHeight
-        if (root.findViewWithTag<View>("correction_ui_root") == null) return
-        val panelWidth = if (isLandscape) (rootWidth * 0.4f) else rootWidth
-        val panelHeight = if (isLandscape) rootHeight else (rootHeight * 0.4f)
-        val visibleCenterX: Float
-        val visibleCenterY: Float
-        if (isLandscape) {
-            val isEnd = lastLandscapeGravity == Gravity.END
-            visibleCenterX = if (isEnd) (rootWidth - panelWidth) / 2f else panelWidth + (rootWidth - panelWidth) / 2f
-            visibleCenterY = rootHeight / 2f
-        } else {
-            val isBottom = lastPortraitGravity == Gravity.BOTTOM
-            visibleCenterX = rootWidth / 2f
-            visibleCenterY = if (isBottom) (rootHeight - panelHeight) / 2f else panelHeight + (rootHeight - panelHeight) / 2f
+        val charBox = line.charBoxes.getOrNull(charIdx) ?: return
+
+        if (isControllerNavigation) {
+            isControllerNavigation = false
+            val rootWidth = root.width.toFloat()
+            val rootHeight = root.height.toFloat()
+            if (rootWidth == 0f || rootHeight == 0f) return
+            
+            val dictionaryRoot = root.findViewWithTag<View>("correction_ui_root")
+            
+            val visibleCenterX: Float
+            val visibleCenterY: Float
+            
+            if (dictionaryRoot == null) {
+                // Dictionary closed: nudge view if cursor bounding box is off screen
+                val left = charBox.left * currentScale + currentTransX
+                val right = charBox.right * currentScale + currentTransX
+                val top = charBox.top * currentScale + currentTransY
+                val bottom = charBox.bottom * currentScale + currentTransY
+                
+                var nudgeX = 0f
+                if (left < 0) nudgeX = -left
+                else if (right > rootWidth) nudgeX = rootWidth - right
+                
+                var nudgeY = 0f
+                if (top < 0) nudgeY = -top
+                else if (bottom > rootHeight) nudgeY = rootHeight - bottom
+                
+                if (nudgeX != 0f || nudgeY != 0f) {
+                    currentTransX += nudgeX
+                    currentTransY += nudgeY
+                    contentContainer.translationX = currentTransX
+                    contentContainer.translationY = currentTransY
+                }
+                return
+            } else {
+                val isLandscape = rootWidth > rootHeight
+                val panelWidth = if (isLandscape) (rootWidth * 0.4f) else rootWidth
+                val panelHeight = if (isLandscape) rootHeight else (rootHeight * 0.4f)
+
+                if (isLandscape) {
+                    val isEnd = lastLandscapeGravity == Gravity.END
+                    visibleCenterX = if (isEnd) (rootWidth - panelWidth) / 2f else panelWidth + (rootWidth - panelWidth) / 2f
+                    visibleCenterY = rootHeight / 2f
+                } else {
+                    val isBottom = lastPortraitGravity == Gravity.BOTTOM
+                    visibleCenterX = rootWidth / 2f
+                    visibleCenterY = if (isBottom) (rootHeight - panelHeight) / 2f else panelHeight + (rootHeight - panelHeight) / 2f
+                }
+            }
+            
+            currentTransX = visibleCenterX - charBox.centerX() * currentScale
+            currentTransY = visibleCenterY - charBox.centerY() * currentScale
+            contentContainer.translationX = currentTransX
+            contentContainer.translationY = currentTransY
         }
-        currentTransX = visibleCenterX - wordRect.centerX() * currentScale
-        currentTransY = visibleCenterY - wordRect.centerY() * currentScale
-        contentContainer.translationX = currentTransX
-        contentContainer.translationY = currentTransY
     }
 
     private fun hideScreenshotOverlay() {
         ocrJob?.cancel()
         ocrJob = null
+        lookupJob?.cancel()
+        lookupJob = null
         val root = screenshotOverlay ?: return
         (floatingView?.parent as? android.view.ViewGroup)?.removeView(floatingView)
         if (root.isAttachedToWindow) try { windowManager?.removeViewImmediate(root) } catch (e: Exception) { Log.e("OcrAccessibilityService", "Error removing overlay", e) }
