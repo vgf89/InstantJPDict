@@ -450,6 +450,21 @@ class OcrOverlayStateController {
         return changed
     }
 
+    fun isNearCharacter(screenX: Float, screenY: Float, marginDp: Float, density: Float): Boolean {
+        val s = currentScale
+        val ix = (screenX - currentTransX) / s
+        val iy = (screenY - currentTransY) / s
+        val m = (marginDp * density) / s
+        
+        return activeLineResults.filterNotNull().any { line ->
+            line.charBoxes.any { b ->
+                ix >= b.left - m && ix <= b.right + m && iy >= b.top - m && iy <= b.bottom + m
+            }
+        } || activeLineBoxes.any { b ->
+            ix >= b.left - m && ix <= b.right + m && iy >= b.top - m && iy <= b.bottom + m
+        }
+    }
+
     fun prepareSearchCandidates(
         followingText: String,
         deinflector: Deinflector
