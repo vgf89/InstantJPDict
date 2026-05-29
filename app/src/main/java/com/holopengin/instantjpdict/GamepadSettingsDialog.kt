@@ -16,6 +16,7 @@ fun GamepadSettingsDialog(
     val prefs = remember { context.getSharedPreferences("gamepad_prefs", Context.MODE_PRIVATE) }
     
     var layoutSwap by remember { mutableStateOf(prefs.getBoolean("layout_swap", false)) }
+    var globalShortcutEnabled by remember { mutableStateOf(prefs.getBoolean("global_shortcut_enabled", true)) }
     var repeatDelay by remember { mutableStateOf(prefs.getInt("repeat_delay", 500).toFloat()) }
     var repeatRate by remember { mutableStateOf(prefs.getInt("repeat_rate", 20).toFloat()) }
 
@@ -32,6 +33,19 @@ fun GamepadSettingsDialog(
                     Switch(checked = layoutSwap, onCheckedChange = { 
                         layoutSwap = it
                         prefs.edit().putBoolean("layout_swap", it).apply()
+                    })
+                }
+                
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("L1+R1 Global Shortcut", modifier = Modifier.weight(1f))
+                    Switch(checked = globalShortcutEnabled, onCheckedChange = { 
+                        globalShortcutEnabled = it
+                        prefs.edit().putBoolean("global_shortcut_enabled", it).apply()
                     })
                 }
                 
