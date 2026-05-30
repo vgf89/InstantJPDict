@@ -57,12 +57,10 @@ def update_model(in_path, out_path):
     print(f'Successfully updated: {out_path}')
 
 if __name__ == '__main__':
-    models_dir = '../../models/archive'
-    assets_dir = '../../app/src/main/assets'
-    models = [
-        ('meiki.text.rec.v0.960x32.onnx', 'meiki.text.rec.v0.960x32.with_logits.onnx'),
-        ('meiki.text.rec.v0.vertical.32x480.onnx', 'meiki.text.rec.v0.vertical.32x480.with_logits.onnx')
-    ]
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input", required=True, help="Path to the input ONNX model")
+    parser.add_argument("--output", required=True, help="Path to save the patched ONNX model")
+    args = parser.parse_args()
 
-    for src, dst in models:
-        update_model(os.path.join(models_dir, src), os.path.join(assets_dir, dst))
+    update_model(args.input, args.output)

@@ -47,11 +47,11 @@ class OcrEngine(private val context: Context) {
             val options = SessionOptions()
             options.addNnapi()
             options.setOptimizationLevel(SessionOptions.OptLevel.ALL_OPT)
-            
-            detectSession = env.createSession(loadModel("meiki.text.detect.v0.1.960x544.onnx"), options)
-            recognizeSession = env.createSession(loadModel("meiki.text.rec.v0.960x32.with_logits.onnx"), options)
-            recognizeSessionVertical = env.createSession(loadModel("meiki.text.rec.v0.vertical.32x480.with_logits.onnx"), options)
-            
+
+            detectSession = env.createSession(loadModel("meiki.text.detect.v0.1.960x544.with_logits.quant.onnx"), options)
+            recognizeSession = env.createSession(loadModel("meiki.text.rec.v0.960x32.with_logits.quant.onnx"), options)
+            recognizeSessionVertical = env.createSession(loadModel("meiki.text.rec.v0.vertical.32x480.with_logits.quant.onnx"), options)
+
             // Load character vocabulary mapping
             try {
                 val vocabJson = context.assets.open("char_vocab.json").bufferedReader().use { it.readText() }
@@ -60,7 +60,7 @@ class OcrEngine(private val context: Context) {
             } catch (ve: Exception) {
                 Log.e("MeikiOcrEngine", "Failed to load char_vocab.json", ve)
             }
-            
+
             Log.d("MeikiOcrEngine", "Models loaded successfully with NNAPI acceleration")
         } catch (e: Exception) {
             Log.e("MeikiOcrEngine", "Failed to load models", e)
@@ -82,7 +82,7 @@ class OcrEngine(private val context: Context) {
         val inputs = mutableMapOf<String, OnnxTensor>()
         val imageInputName = session.inputNames.find { it.contains("image") || it.contains("input") } ?: session.inputNames.iterator().next()
         inputs[imageInputName] = inputTensor
-        
+
         if (session.inputNames.contains("orig_target_sizes")) {
             val sizeData = LongBuffer.wrap(longArrayOf(bitmap.width.toLong(), bitmap.height.toLong()))
             inputs["orig_target_sizes"] = OnnxTensor.createTensor(env, sizeData, longArrayOf(1, 2))
@@ -90,7 +90,7 @@ class OcrEngine(private val context: Context) {
 
         val results = session.run(inputs)
         val detectedBoxes = mutableListOf<JpDictRect>()
-        
+
         try {
             val outputNames = session.outputNames.toList()
             val boxesResult = results.get(outputNames.find { it.contains("boxes") } ?: outputNames[0])
@@ -107,7 +107,7 @@ class OcrEngine(private val context: Context) {
                         var top = box[1].toInt()
                         var right = box[2].toInt()
                         var bottom = box[3].toInt()
-                        
+
                         // Add small margins to avoid clipping
                         if (bottom - top > right - left) {
                             // Vertical lines: top and right margins
@@ -120,7 +120,7 @@ class OcrEngine(private val context: Context) {
                             val hMargin = ((bottom - top) * 0.1f).toInt().coerceAtLeast(4)
                             right = (right + hMargin).coerceAtMost(bitmap.width)
                         }
-                        
+
                         detectedBoxes.add(JpDictRect(left, top, right, bottom))
                     }
                 }
@@ -132,38 +132,38 @@ class OcrEngine(private val context: Context) {
             results.close()
             resized.recycle()
         }
-        
+
         // Merge redundant, highly overlapping boxes
         val mergedBoxes = mergeOverlappingBoxes(detectedBoxes)
-        
+
         // Use custom sorting logic to handle mixed horizontal/vertical and RTL/LTR
         return sortDetectedBoxes(mergedBoxes)
     }
 
     private fun mergeOverlappingBoxes(boxes: List<JpDictRect>): List<JpDictRect> {
         if (boxes.size < 2) return boxes
-        
+
         val result = mutableListOf<JpDictRect>()
         val handled = BooleanArray(boxes.size)
-        
+
         // Sort by size to keep the larger/more robust box as the primary
         val sortedBoxes = boxes.withIndex().sortedByDescending { it.value.width() * it.value.height() }
-        
+
         for (i in sortedBoxes.indices) {
             val idx = sortedBoxes[i].index
             if (handled[idx]) continue
-            
+
             val boxA = sortedBoxes[i].value
             handled[idx] = true
-            
+
             var currentMerged = boxA
-            
+
             for (j in i + 1 until sortedBoxes.size) {
                 val idxB = sortedBoxes[j].index
                 if (handled[idxB]) continue
-                
+
                 val boxB = sortedBoxes[j].value
-                
+
                 if (shouldMergeBoxes(currentMerged, boxB)) {
                     // Merge by taking the bounding box of both
                     currentMerged = JpDictRect(
@@ -185,26 +185,26 @@ class OcrEngine(private val context: Context) {
         val interTop = max(a.top, b.top)
         val interRight = min(a.right, b.right)
         val interBottom = min(a.bottom, b.bottom)
-        
+
         if (interLeft >= interRight || interTop >= interBottom) return false
-        
+
         val interArea = (interRight - interLeft).toFloat() * (interBottom - interTop)
         val areaA = (a.right - a.left).toFloat() * (a.bottom - a.top)
         val areaB = (b.right - b.left).toFloat() * (b.bottom - b.top)
-        
+
         // Use Intersection over Minimum (IoM) instead of IoU
         // This handles cases where one box is much shorter than the other
         val minArea = min(areaA, areaB)
         val iom = interArea / minArea
-        
+
         if (iom < 0.8f) return false
 
         // Additionally, verify that they align in their "thickness" dimension
         val isAVertical = a.height() > a.width()
         val isBVertical = b.height() > b.width()
-        
+
         if (isAVertical != isBVertical) return false
-        
+
         return if (isAVertical) {
             // Vertical lines should have similar X and Width
             val xDiff = abs(a.centerX() - b.centerX())
@@ -225,24 +225,24 @@ class OcrEngine(private val context: Context) {
 
         // 1. Sort primarily by top coordinate
         val sortedByTop = boxes.sortedBy { it.top }
-        
+
         val rowGroups = mutableListOf<MutableList<JpDictRect>>()
         if (sortedByTop.isNotEmpty()) {
             var currentGroup = mutableListOf<JpDictRect>()
             currentGroup.add(sortedByTop[0])
             rowGroups.add(currentGroup)
-            
+
             for (i in 1 until sortedByTop.size) {
                 val box = sortedByTop[i]
                 val prevBox = sortedByTop[i-1]
-                
+
                 // Group lines that are vertically similar.
                 // For vertical columns, they often start at similar 'top'.
                 // For horizontal text, they are on the same 'line'.
                 // We use a threshold based on the height of the line.
                 val height = if (box.height() > box.width()) box.width() else box.height()
                 val threshold = height * 0.8
-                
+
                 if (abs(box.top - prevBox.top) < threshold) {
                     currentGroup.add(box)
                 } else {
@@ -259,13 +259,13 @@ class OcrEngine(private val context: Context) {
             // Separate horizontal and vertical lines
             val horizontal = group.filter { it.width() >= it.height() }.sortedBy { it.left } // LTR
             val vertical = group.filter { it.height() > it.width() }.sortedByDescending { it.right } // RTL
-            
+
             // Usually, headers (horizontal) come before the main text (vertical columns)
             // or we just output them in a stable order.
             result.addAll(horizontal)
             result.addAll(vertical)
         }
-        
+
         return result
     }
 
@@ -375,7 +375,7 @@ class OcrEngine(private val context: Context) {
 
         val imgData = bitmapToFloatBuffer(paddedLine, targetW, targetH)
         val inputTensor = OnnxTensor.createTensor(env, imgData, longArrayOf(1, 3, targetH.toLong(), targetW.toLong()))
-        
+
         val inputs = mutableMapOf<String, OnnxTensor>()
         val inputNames = activeSession.inputNames.toList()
         val imageInputName = inputNames.find { it.contains("image") || it.contains("input") } ?: inputNames.iterator().next()
@@ -412,14 +412,14 @@ class OcrEngine(private val context: Context) {
         val boxesArr = extractFloatArray2D(boxesVal)
         val scoresArr = extractFloatArray(scoresVal)
         val indicesArr = extractLongArray(indicesVal)
-        
+
         if (labelsArr == null || boxesArr == null || scoresArr == null) {
             output.close()
             resizedLine.recycle()
             paddedLine.recycle()
             return Triple(emptyList(), effectiveW, effectiveH)
         }
-        
+
         val rawLogits = extractFloatArray(logitsVal)
         val numQueries = 48
         val logitsMatrix = if (rawLogits != null && rawLogits.size % numQueries == 0) {
@@ -441,9 +441,9 @@ class OcrEngine(private val context: Context) {
                             qLogits.withIndex()
                                 .sortedByDescending { it.value }
                                 .take(15)
-                                .map { 
+                                .map {
                                     val char = charVocab?.getOrNull(it.index)?.toChar() ?: ' '
-                                    char to it.value 
+                                    char to it.value
                                 }
                         } else emptyList()
                     } else emptyList()
@@ -489,52 +489,52 @@ class OcrEngine(private val context: Context) {
     private fun recognizeVerticalLongLine(crop: Bitmap, cropX: Int, cropY: Int): LineResult {
         val scaleFactor = 32f / crop.width
         val maxChunkHeight = (350 / scaleFactor).toInt()
-        
+
         val chunkResults = mutableListOf<ChunkResult>()
         var currentY = 0
         while (currentY < crop.height) {
             val remainingH = crop.height - currentY
             if (remainingH < 10) break
-            
+
             val h = min(maxChunkHeight, remainingH)
             val chunkBitmap = Bitmap.createBitmap(crop, 0, currentY, crop.width, h)
             val (candidates, effW, effH) = recognizeSingleChunk(chunkBitmap, true)
-            
+
             if (effH <= 0) {
                 chunkBitmap.recycle()
                 currentY += (h * 0.8f).toInt()
                 continue
             }
-            
+
             chunkResults.add(ChunkResult(candidates, 0, currentY, crop.width, h, effW, effH))
             chunkBitmap.recycle()
-            
+
             if (currentY + h >= crop.height) break
-            
+
             if (candidates.isNotEmpty()) {
                 val sortedCandidates = candidates.sortedBy { it.box[1] }
-                
+
                 // Find a character to anchor on in the bottom portion of the chunk.
                 // We'll look at candidates starting in the last 40% of the current chunk.
                 val overlapStartThreshold = h * 0.6f
-                val anchorOptions = sortedCandidates.filter { 
+                val anchorOptions = sortedCandidates.filter {
                     val localYTop = (it.box[1] / effH.toFloat()) * h
                     localYTop > overlapStartThreshold
                 }
-                
+
                 val anchorCandidate = when {
                     anchorOptions.size >= 2 -> anchorOptions[anchorOptions.size - 2] // Next to last
                     anchorOptions.isNotEmpty() -> anchorOptions.first()
                     else -> sortedCandidates.last()
                 }
-                
+
                 val localYTop = (anchorCandidate.box[1] / effH.toFloat()) * h
-                
-                // Add a small vertical margin (10% of width) when starting the next chunk 
+
+                // Add a small vertical margin (10% of width) when starting the next chunk
                 // to ensure the top of the character isn't clipped.
                 val chunkMargin = (crop.width * 0.1f).toInt().coerceAtLeast(2)
                 val nextY = (currentY + localYTop.toInt() - chunkMargin).coerceAtLeast(0)
-                
+
                 // Safety: ensure we actually progress and don't jump too close to the end of the chunk
                 if (nextY <= currentY || nextY >= currentY + h - 10) {
                     currentY += (h * 0.8f).toInt()
@@ -545,57 +545,57 @@ class OcrEngine(private val context: Context) {
                 currentY += (h * 0.8f).toInt()
             }
         }
-        
+
         return stitchVerticalChunks(chunkResults, cropX, cropY)
     }
 
     private fun recognizeHorizontalLongLine(crop: Bitmap, cropX: Int, cropY: Int): LineResult {
         val scaleFactor = 32f / crop.height
         val maxChunkWidth = (960 / scaleFactor).toInt()
-        
+
         val chunkResults = mutableListOf<ChunkResult>()
         var currentX = 0
         while (currentX < crop.width) {
             val remainingW = crop.width - currentX
             if (remainingW < 10) break
-            
+
             val w = min(maxChunkWidth, remainingW)
             val chunkBitmap = Bitmap.createBitmap(crop, currentX, 0, w, crop.height)
             val (candidates, effW, effH) = recognizeSingleChunk(chunkBitmap, false)
-            
+
             if (effW <= 0) {
                 chunkBitmap.recycle()
                 currentX += (w * 0.8f).toInt()
                 continue
             }
-            
+
             chunkResults.add(ChunkResult(candidates, currentX, 0, w, crop.height, effW, effH))
             chunkBitmap.recycle()
-            
+
             if (currentX + w >= crop.width) break
-            
+
             if (candidates.isNotEmpty()) {
                 val sortedCandidates = candidates.sortedBy { it.box[0] }
-                
+
                 // Find a character to anchor on in the right portion of the chunk.
                 val overlapStartThreshold = w * 0.6f
-                val anchorOptions = sortedCandidates.filter { 
+                val anchorOptions = sortedCandidates.filter {
                     val localXLeft = (it.box[0] / effW.toFloat()) * w
                     localXLeft > overlapStartThreshold
                 }
-                
+
                 val anchorCandidate = when {
                     anchorOptions.size >= 2 -> anchorOptions[anchorOptions.size - 2] // Next to last
                     anchorOptions.isNotEmpty() -> anchorOptions.first()
                     else -> sortedCandidates.last()
                 }
-                
+
                 val localXLeft = (anchorCandidate.box[0] / effW.toFloat()) * w
-                
+
                 // Horizontal margin for better detection start
                 val chunkMargin = (crop.height * 0.1f).toInt().coerceAtLeast(2)
                 val nextX = (currentX + localXLeft.toInt() - chunkMargin).coerceAtLeast(0)
-                
+
                 if (nextX <= currentX || nextX >= currentX + w - 10) {
                     currentX += (w * 0.8f).toInt()
                 } else {
@@ -605,7 +605,7 @@ class OcrEngine(private val context: Context) {
                 currentX += (w * 0.8f).toInt()
             }
         }
-        
+
         return stitchHorizontalChunks(chunkResults, cropX, cropY)
     }
 
@@ -621,45 +621,45 @@ class OcrEngine(private val context: Context) {
 
     private fun stitchVerticalChunks(chunkResults: List<ChunkResult>, cropX: Int, cropY: Int): LineResult {
         if (chunkResults.isEmpty()) return LineResult("", emptyList(), emptyList(), true)
-        
+
         data class GlobalCandidate(val cand: CharCandidate, val globalRect: JpDictRect)
-        
+
         val allGlobalChunks = chunkResults.map { cr ->
             cr.candidates.map { cand ->
                 GlobalCandidate(cand, cand.getGlobalRect(true, cr.chunkW, cr.chunkH, cropX + cr.offsetX, cropY + cr.offsetY, cr.effW, cr.effH))
             }
         }
-        
+
         val chunkBoxes = chunkResults.map { cr ->
             JpDictRect(cropX + cr.offsetX, cropY + cr.offsetY, cropX + cr.offsetX + cr.chunkW, cropY + cr.offsetY + cr.chunkH)
         }
-        
+
         val result = mutableListOf<GlobalCandidate>()
         result.addAll(allGlobalChunks[0])
-        
+
         for (i in 1 until allGlobalChunks.size) {
             val prevChunk = result
             val currentChunk = allGlobalChunks[i]
             if (currentChunk.isEmpty()) continue
-            
+
             var bestPrevIdx = -1
             var bestCurrIdx = -1
             var bestMatchScore = -1f
-            
+
             val pStart = max(0, prevChunk.size - 10)
             val cEnd = min(currentChunk.size, 10)
-            
+
             for (pIdx in prevChunk.size - 1 downTo pStart) {
                 val pGC = prevChunk[pIdx]
                 for (cIdx in 0 until cEnd) {
                     val cGC = currentChunk[cIdx]
-                    
+
                     val dist = abs(pGC.globalRect.centerY() - cGC.globalRect.centerY())
-                    if (dist > 30) continue 
-                    
+                    if (dist > 30) continue
+
                     val predictionScore = comparePredictionVectors(pGC.cand.alternatives, cGC.cand.alternatives)
                     if (predictionScore < 0.4f) continue
-                    
+
                     val score = (1f - dist/30f) * 0.3f + predictionScore * 0.7f
                     if (score > bestMatchScore) {
                         bestMatchScore = score
@@ -668,16 +668,16 @@ class OcrEngine(private val context: Context) {
                     }
                 }
             }
-            
+
             if (bestPrevIdx != -1) {
                 // Interleave alternatives for the anchor character to improve replacement list quality
                 val prevAnchor = result[bestPrevIdx]
                 val currAnchor = currentChunk[bestCurrIdx]
                 val mergedAlts = interleaveAlternatives(prevAnchor.cand.alternatives, currAnchor.cand.alternatives)
-                
+
                 val toKeep = bestPrevIdx + 1
                 while (result.size > toKeep) result.removeAt(result.size - 1)
-                
+
                 // Update the anchor in result with merged alternatives
                 result[bestPrevIdx] = prevAnchor.copy(cand = prevAnchor.cand.copy(alternatives = mergedAlts))
 
@@ -693,7 +693,7 @@ class OcrEngine(private val context: Context) {
                 }
             }
         }
-        
+
         return LineResult(
             result.joinToString("") { it.cand.char.toString() },
             result.map { it.globalRect },
@@ -705,45 +705,45 @@ class OcrEngine(private val context: Context) {
 
     private fun stitchHorizontalChunks(chunkResults: List<ChunkResult>, cropX: Int, cropY: Int): LineResult {
         if (chunkResults.isEmpty()) return LineResult("", emptyList(), emptyList(), false)
-        
+
         data class GlobalCandidate(val cand: CharCandidate, val globalRect: JpDictRect)
-        
+
         val allGlobalChunks = chunkResults.map { cr ->
             cr.candidates.map { cand ->
                 GlobalCandidate(cand, cand.getGlobalRect(false, cr.chunkW, cr.chunkH, cropX + cr.offsetX, cropY + cr.offsetY, cr.effW, cr.effH))
             }
         }
-        
+
         val chunkBoxes = chunkResults.map { cr ->
             JpDictRect(cropX + cr.offsetX, cropY + cr.offsetY, cropX + cr.offsetX + cr.chunkW, cropY + cr.offsetY + cr.chunkH)
         }
-        
+
         val result = mutableListOf<GlobalCandidate>()
         result.addAll(allGlobalChunks[0])
-        
+
         for (i in 1 until allGlobalChunks.size) {
             val prevChunk = result
             val currentChunk = allGlobalChunks[i]
             if (currentChunk.isEmpty()) continue
-            
+
             var bestPrevIdx = -1
             var bestCurrIdx = -1
             var bestMatchScore = -1f
-            
+
             val pStart = max(0, prevChunk.size - 10)
             val cEnd = min(currentChunk.size, 10)
-            
+
             for (pIdx in prevChunk.size - 1 downTo pStart) {
                 val pGC = prevChunk[pIdx]
                 for (cIdx in 0 until cEnd) {
                     val cGC = currentChunk[cIdx]
-                    
+
                     val dist = abs(pGC.globalRect.centerX() - cGC.globalRect.centerX())
-                    if (dist > 30) continue 
-                    
+                    if (dist > 30) continue
+
                     val predictionScore = comparePredictionVectors(pGC.cand.alternatives, cGC.cand.alternatives)
                     if (predictionScore < 0.4f) continue
-                    
+
                     val score = (1f - dist/30f) * 0.3f + predictionScore * 0.7f
                     if (score > bestMatchScore) {
                         bestMatchScore = score
@@ -752,15 +752,15 @@ class OcrEngine(private val context: Context) {
                     }
                 }
             }
-            
+
             if (bestPrevIdx != -1) {
                 val prevAnchor = result[bestPrevIdx]
                 val currAnchor = currentChunk[bestCurrIdx]
                 val mergedAlts = interleaveAlternatives(prevAnchor.cand.alternatives, currAnchor.cand.alternatives)
-                
+
                 val toKeep = bestPrevIdx + 1
                 while (result.size > toKeep) result.removeAt(result.size - 1)
-                
+
                 result[bestPrevIdx] = prevAnchor.copy(cand = prevAnchor.cand.copy(alternatives = mergedAlts))
 
                 for (j in bestCurrIdx + 1 until currentChunk.size) {
@@ -775,7 +775,7 @@ class OcrEngine(private val context: Context) {
                 }
             }
         }
-        
+
         return LineResult(
             result.joinToString("") { it.cand.char.toString() },
             result.map { it.globalRect },
@@ -801,14 +801,14 @@ class OcrEngine(private val context: Context) {
 
     private fun interleaveAlternatives(alt1: List<Pair<Char, Float>>, alt2: List<Pair<Char, Float>>): List<Pair<Char, Float>> {
         val merged = mutableMapOf<Char, Float>()
-        // We use a weighted sum approach. 
+        // We use a weighted sum approach.
         // Characters appearing in both chunks get their scores combined.
         alt1.forEach { (char, score) -> merged[char] = score }
-        alt2.forEach { (char, score) -> 
+        alt2.forEach { (char, score) ->
             val existing = merged[char] ?: 0f
             if (existing > 0f) {
                 // Character found in both chunks - strong signal
-                merged[char] = (existing + score) * 0.8f 
+                merged[char] = (existing + score) * 0.8f
             } else {
                 merged[char] = score * 0.6f // Slightly penalize characters only seen once compared to joint matches
             }
@@ -933,7 +933,7 @@ private data class CharCandidate(
         val y1: Float
         val x2: Float
         val y2: Float
-        
+
         if (isVertical) {
             x1 = (rx1 / 32f) * cropW + cropX
             y1 = (ry1 / effectiveH.toFloat()) * cropH + cropY
@@ -945,8 +945,7 @@ private data class CharCandidate(
             x2 = (rx2 / effectiveW.toFloat()) * cropW + cropX
             y2 = (ry2 / 32f) * cropH + cropY
         }
-        
+
         return JpDictRect(Math.round(x1), Math.round(y1), Math.round(x2), Math.round(y2))
     }
 }
-
