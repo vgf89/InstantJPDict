@@ -33,12 +33,20 @@ object DictionaryManagerDialog {
                 .setTitle("Delete Dictionary")
                 .setMessage("Are you sure you want to delete '${dict.name}'? All entries will be removed.")
                 .setPositiveButton("Delete") { _, _ ->
+                    val progressBar = android.widget.ProgressBar(context)
+                    val dialog = AlertDialog.Builder(context)
+                        .setTitle("Deleting...")
+                        .setView(progressBar)
+                        .setCancelable(false)
+                        .show()
+                    
                     lifecycleOwner?.lifecycleScope?.launch {
                         withContext(Dispatchers.IO) {
                             db.dictionaryDao().deleteEntriesForDictionary(dict.id)
                             db.dictionaryDao().deleteTagsForDictionary(dict.id)
                             db.dictionaryDao().deleteDictionary(dict.id)
                         }
+                        dialog.dismiss()
                         loadDictionaries(context, recyclerView)
                     }
                 }
@@ -70,6 +78,7 @@ object DictionaryManagerDialog {
             }
         })
         touchHelper.attachToRecyclerView(recyclerView)
+        adapter.touchHelper = touchHelper
 
         loadDictionaries(context, recyclerView)
 
@@ -98,13 +107,22 @@ object DictionaryManagerDialog {
         class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
             val name: TextView = view.findViewById(android.R.id.text1)
             val delete: ImageButton = view.findViewById(android.R.id.button1)
+            val handle: ImageButton = view.findViewById(android.R.id.button2)
         }
+
+        var touchHelper: ItemTouchHelper? = null
 
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
             val layout = android.widget.LinearLayout(parent.context).apply {
                 orientation = android.widget.LinearLayout.HORIZONTAL
                 gravity = android.view.Gravity.CENTER_VERTICAL
                 setPadding(32, 16, 32, 16)
+                
+                addView(ImageButton(context).apply {
+                    id = android.R.id.button2
+                    setImageResource(android.R.drawable.ic_menu_sort_by_size)
+                    background = null
+                })
                 
                 addView(TextView(context).apply {
                     id = android.R.id.text1
@@ -124,6 +142,14 @@ object DictionaryManagerDialog {
             val dict = dictionaries[position]
             holder.name.text = dict.name
             holder.delete.setOnClickListener { onDelete(dict) }
+            holder.handle.setOnTouchListener { _, event ->
+                if (event.action == android.view.MotionEvent.ACTION_DOWN) {
+                    holder.handle.performClick()
+                    touchHelper?.startDrag(holder)
+                    return@setOnTouchListener true
+                }
+                false
+            }
         }
 
         override fun getItemCount() = dictionaries.size

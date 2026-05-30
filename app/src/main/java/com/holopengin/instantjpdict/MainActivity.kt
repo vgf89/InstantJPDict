@@ -32,7 +32,19 @@ class MainActivity : AppCompatActivity() {
         val layout = android.widget.LinearLayout(this).apply {
             orientation = android.widget.LinearLayout.VERTICAL
             setPadding(48, 48, 48, 48)
+            fitsSystemWindows = true
         }
+
+        // Apply a FrameLayout wrapper to create a margin around the main layout
+        val root = android.widget.FrameLayout(this).apply {
+            layoutParams = android.widget.FrameLayout.LayoutParams(
+                android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+                android.widget.FrameLayout.LayoutParams.MATCH_PARENT
+            ).apply {
+                setMargins(32, 32, 32, 32)
+            }
+        }
+        root.addView(layout)
 
         val title = TextView(this).apply {
             text = "Instant JP Dict"
@@ -51,6 +63,13 @@ class MainActivity : AppCompatActivity() {
         addButton(layout, "Enable Accessibility Service") {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         }
+
+        val accessibilityHelp = TextView(this).apply {
+            text = "Note: If android displays an \"App access was denied\" popup when attempting to enable it the Accessibility Service, you may need to go to your system settings, find 'InstantJPDict' in the app list, and tap the three-dot menu to select 'Allow restricted settings'."
+            textSize = 12f
+            setPadding(0, 0, 0, 16)
+        }
+        layout.addView(accessibilityHelp)
 
         addButton(layout, "Download Dictionaries") {
             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/yomidevs/jmdict-yomitan")))
@@ -72,7 +91,7 @@ class MainActivity : AppCompatActivity() {
             refreshStatus()
         }
 
-        setContentView(layout)
+        setContentView(root)
         refreshStatus()
     }
 
@@ -95,7 +114,9 @@ class MainActivity : AppCompatActivity() {
             val db = AppDatabase.getDatabase(applicationContext)
             val entryCount = withContext(Dispatchers.IO) { db.dictionaryDao().getCount() }
             val dictCount = withContext(Dispatchers.IO) { db.dictionaryDao().getAllDictionaries().size }
-            tvStatus.text = "DB contains $entryCount entries in $dictCount dictionaries"
+            withContext(Dispatchers.Main) {
+                tvStatus.text = "DB contains $entryCount entries in $dictCount dictionaries"
+            }
         }
     }
 
@@ -110,14 +131,20 @@ class MainActivity : AppCompatActivity() {
             try {
                 val importer = DictionaryImporter(applicationContext)
                 val result = importer.importZip(uri, name) { progress ->
-                    tvStatus.text = "Importing: $progress entries..."
+                    lifecycleScope.launch(Dispatchers.Main) {
+                        tvStatus.text = "Importing: $progress entries..."
+                    }
                 }
-                tvStatus.text = result.fold(
-                    onSuccess = { count -> "Imported $count entries" },
-                    onFailure = { e -> "Error: ${e.message}" }
-                )
+                withContext(Dispatchers.Main) {
+                    tvStatus.text = result.fold(
+                        onSuccess = { count -> "Imported $count entries" },
+                        onFailure = { e -> "Error: ${e.message}" }
+                    )
+                }
             } catch (e: Exception) {
-                tvStatus.text = "Error initializing importer: ${e.message}"
+                withContext(Dispatchers.Main) {
+                    tvStatus.text = "Error initializing importer: ${e.message}"
+                }
             }
         }
     }
