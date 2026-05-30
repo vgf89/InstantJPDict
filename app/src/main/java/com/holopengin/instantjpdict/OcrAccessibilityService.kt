@@ -313,6 +313,10 @@ class OcrAccessibilityService : AccessibilityService() {
             systemUiVisibility = View.SYSTEM_UI_FLAG_LAYOUT_STABLE or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
             setOnClickListener {
                 if (findViewWithTag<View>("manual_input_blocker") != null) { closeManualInput(this); return@setOnClickListener }
+                if (controller.isAlternativesVisible) {
+                    toggleAlternativesPanel(this, controller.currentTappedLineIdx, controller.currentTappedCharIdxInLine, width > height)
+                    return@setOnClickListener
+                }
                 findViewWithTag<View>("correction_ui_root")?.let { removeView(it); resetHighlights(); return@setOnClickListener }
                 if (!controller.isNearCharacter(initialTouchX, initialTouchY, 20f, resources.displayMetrics.density)) hideScreenshotOverlay()
             }
