@@ -48,7 +48,7 @@ class OcrEngine(private val context: Context) {
             options.addNnapi()
             options.setOptimizationLevel(SessionOptions.OptLevel.ALL_OPT)
 
-            detectSession = env.createSession(loadModel("meiki.text.detect.v0.1.960x544.with_logits.quant.onnx"), options)
+            detectSession = env.createSession(loadModel("meiki.text.detect.v0.1.960x544.quant.onnx"), options)
             recognizeSession = env.createSession(loadModel("meiki.text.rec.v0.960x32.with_logits.quant.onnx"), options)
             recognizeSessionVertical = env.createSession(loadModel("meiki.text.rec.v0.vertical.32x480.with_logits.quant.onnx"), options)
 

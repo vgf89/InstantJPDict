@@ -1,4 +1,4 @@
-from onnxruntime.quantization import quantize_dynamic, QuantType
+from onnxruntime.quantization import quantize_static, QuantType
 from pathlib import Path
 import os
 import json
@@ -12,13 +12,12 @@ def quantize_models(input_files, output_dir):
         output_path = Path(output_dir) / p_model.name
 
         try:
-            # Perform dynamic quantization directly using file paths
-            quantize_dynamic(
+            quantize_static(
                 model_input=str(p_model),
                 model_output=str(output_path),
-                weight_type=QuantType.QUInt8,  # Quantize weights to 8-bit integers
-                per_channel=True,
-                reduce_range=True
+                #weight_type=QuantType.QUInt8,  # Quantize weights to 8-bit integers
+                #per_channel=True,
+                #reduce_range=True
             )
 
             results.append({
