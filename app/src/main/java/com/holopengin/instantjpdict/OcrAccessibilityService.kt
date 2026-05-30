@@ -1,5 +1,6 @@
 package com.holopengin.instantjpdict
 
+import android.animation.AnimatorSet
 import android.animation.ObjectAnimator
 import android.view.animation.DecelerateInterpolator
 import android.accessibilityservice.AccessibilityService
@@ -65,6 +66,8 @@ class OcrAccessibilityService : AccessibilityService() {
     private var cursorView: View? = null
     private var scrollAnimator: ObjectAnimator? = null
     private var targetScrollY = 0
+    private var viewportAnimator: AnimatorSet? = null
+    private var neighborAnimator: ObjectAnimator? = null
     
     private val overlayControllerReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -937,12 +940,17 @@ class OcrAccessibilityService : AccessibilityService() {
         val lineContainer = panel.findViewWithTag<LinearLayout>("line_neighbor_$lIdx") ?: return
         val targetView = lineContainer.getChildAt(cIdx) ?: return
         scrollView.post {
-            if (scrollView is ScrollView) {
-                val top = lineContainer.top + targetView.top
-                scrollView.scrollTo(0, top - (scrollView.height / 2) + (targetView.height / 2))
-            } else if (scrollView is HorizontalScrollView) {
-                val left = lineContainer.left + targetView.left
-                scrollView.scrollTo(left - (scrollView.width / 2) + (targetView.width / 2), 0)
+            val target = if (scrollView is ScrollView) {
+                lineContainer.top + targetView.top - (scrollView.height / 2) + (targetView.height / 2)
+            } else {
+                lineContainer.left + targetView.left - (scrollView.width / 2) + (targetView.width / 2)
+            }
+            
+            neighborAnimator?.cancel()
+            neighborAnimator = ObjectAnimator.ofInt(scrollView, if (scrollView is ScrollView) "scrollY" else "scrollX", target).apply {
+                duration = 200
+                interpolator = DecelerateInterpolator()
+                start()
             }
         }
     }
@@ -1548,8 +1556,15 @@ class OcrAccessibilityService : AccessibilityService() {
         val rootHeight = root.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
         
         if (controller.centerOnCharacter(lineIdx, charIdx, rootWidth, rootHeight)) {
-            contentContainer.translationX = controller.currentTransX
-            contentContainer.translationY = controller.currentTransY
+            viewportAnimator?.cancel()
+            val animX = ObjectAnimator.ofFloat(contentContainer, "translationX", controller.currentTransX)
+            val animY = ObjectAnimator.ofFloat(contentContainer, "translationY", controller.currentTransY)
+            viewportAnimator = AnimatorSet().apply {
+                playTogether(animX, animY)
+                duration = 250
+                interpolator = DecelerateInterpolator()
+                start()
+            }
         }
     }
 
