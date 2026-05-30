@@ -1,5 +1,7 @@
 package com.holopengin.instantjpdict
 
+import android.animation.ObjectAnimator
+import android.view.animation.DecelerateInterpolator
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.BroadcastReceiver
@@ -61,6 +63,8 @@ class OcrAccessibilityService : AccessibilityService() {
     private var lookupJob: kotlinx.coroutines.Job? = null
     
     private var cursorView: View? = null
+    private var scrollAnimator: ObjectAnimator? = null
+    private var targetScrollY = 0
     
     private val overlayControllerReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -814,6 +818,8 @@ class OcrAccessibilityService : AccessibilityService() {
 
     private fun updateDictionaryPanel(container: LinearLayout, matches: List<FormattedEntry>) {
         container.removeAllViews()
+        targetScrollY = 0
+        scrollAnimator?.cancel()
         if (matches.isEmpty()) {
             container.addView(TextView(this).apply {
                 text = "No results found"
@@ -1470,10 +1476,25 @@ class OcrAccessibilityService : AccessibilityService() {
 
     private fun scrollDictionary(keyCode: Int, root: FrameLayout) {
         val dictionaryRoot = root.findViewWithTag<LinearLayout>("correction_ui_root") ?: return
-        val scrollView = dictionaryRoot.findViewWithTag<View>("dictionary_scroll_view") as? ScrollView ?: return
-        val amount = (100 * resources.displayMetrics.density).toInt()
-        if (keyCode == KeyEvent.KEYCODE_BUTTON_R1 || keyCode == KeyEvent.KEYCODE_BUTTON_R2) scrollView.smoothScrollBy(0, amount)
-        else scrollView.smoothScrollBy(0, -amount)
+        val scrollView = dictionaryRoot.findViewWithTag<ScrollView>("dictionary_scroll_view") ?: return
+        val content = scrollView.getChildAt(0) ?: return
+        val maxScroll = (content.height - scrollView.height).coerceAtLeast(0)
+
+        val delta = (120 * resources.displayMetrics.density).toInt()
+        val direction = if (keyCode == JpDictKeyEvent.KEYCODE_BUTTON_R1 || keyCode == JpDictKeyEvent.KEYCODE_BUTTON_R2) 1 else -1
+        
+        if (abs(targetScrollY - scrollView.scrollY) > delta * 2) {
+            targetScrollY = scrollView.scrollY
+        }
+
+        targetScrollY = (targetScrollY + direction * delta).coerceIn(0, maxScroll)
+
+        scrollAnimator?.cancel()
+        scrollAnimator = ObjectAnimator.ofInt(scrollView, "scrollY", targetScrollY).apply {
+            duration = 250
+            interpolator = DecelerateInterpolator()
+            start()
+        }
     }
 
     private fun navigateAlternatives(keyCode: Int, root: FrameLayout) {
