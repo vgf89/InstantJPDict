@@ -1,209 +1,137 @@
 package com.holopengin.instantjpdict
 
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Menu
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.mutableStateListOf
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.zIndex
+import android.content.Context
+import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
+import android.widget.ImageButton
+import android.widget.TextView
+import androidx.appcompat.app.AlertDialog
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.lifecycleScope
+import androidx.recyclerview.widget.ItemTouchHelper
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
 import com.holopengin.instantjpdict.data.AppDatabase
 import com.holopengin.instantjpdict.data.DictionaryMeta
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-@Composable
-fun DictionaryManagerDialog(
-    onDismiss: () -> Unit,
-    context: android.content.Context
-) {
-    val scope = rememberCoroutineScope()
-    val dictionaries = remember { mutableStateListOf<DictionaryMeta>() }
-    var dictionaryToDelete by remember { mutableStateOf<DictionaryMeta?>(null) }
-    var isDeleting by remember { mutableStateOf(false) }
-    
-    val listState = rememberLazyListState()
-    var draggedItemIndex by remember { mutableStateOf<Int?>(null) }
-    var dragOffset by remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
-
-    // Refresh function
-    suspend fun refresh() {
+object DictionaryManagerDialog {
+    fun show(context: Context) {
         val db = AppDatabase.getDatabase(context)
-        val loaded = withContext(Dispatchers.IO) { db.dictionaryDao().getAllDictionaries() }
-        dictionaries.clear()
-        dictionaries.addAll(loaded)
-    }
+        val lifecycleOwner = context as? LifecycleOwner
 
-    LaunchedEffect(Unit) {
-        refresh()
-    }
-
-    fun saveOrder() {
-        scope.launch(Dispatchers.IO) {
-            val dao = AppDatabase.getDatabase(context).dictionaryDao()
-            dictionaries.forEachIndexed { index, dict ->
-                dao.updatePriority(dict.id, index)
-            }
+        val recyclerView = RecyclerView(context).apply {
+            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            layoutManager = LinearLayoutManager(context)
         }
-    }
 
-    LaunchedEffect(Unit) {
-        refresh()
-    }
-
-    if (dictionaryToDelete != null) {
-        AlertDialog(
-            onDismissRequest = { dictionaryToDelete = null },
-            title = { Text("Delete Dictionary") },
-            text = { Text("Are you sure you want to delete '${dictionaryToDelete?.name}'? All entries will be removed.") },
-            confirmButton = {
-                TextButton(onClick = {
-                    val dict = dictionaryToDelete
-                    dictionaryToDelete = null
-                    if (dict != null) {
-                        isDeleting = true
-                        scope.launch {
-                            val db = AppDatabase.getDatabase(context)
-                            withContext(Dispatchers.IO) {
-                                db.dictionaryDao().deleteEntriesForDictionary(dict.id)
-                                db.dictionaryDao().deleteTagsForDictionary(dict.id)
-                                db.dictionaryDao().deleteDictionary(dict.id)
-                            }
-                            refresh()
-                            isDeleting = false
+        val adapter = DictionaryAdapter(mutableListOf()) { dict ->
+            AlertDialog.Builder(context)
+                .setTitle("Delete Dictionary")
+                .setMessage("Are you sure you want to delete '${dict.name}'? All entries will be removed.")
+                .setPositiveButton("Delete") { _, _ ->
+                    lifecycleOwner?.lifecycleScope?.launch {
+                        withContext(Dispatchers.IO) {
+                            db.dictionaryDao().deleteEntriesForDictionary(dict.id)
+                            db.dictionaryDao().deleteTagsForDictionary(dict.id)
+                            db.dictionaryDao().deleteDictionary(dict.id)
                         }
+                        loadDictionaries(context, recyclerView)
                     }
-                }) {
-                    Text("Delete", color = MaterialTheme.colorScheme.error)
                 }
-            },
-            dismissButton = {
-                TextButton(onClick = { dictionaryToDelete = null }) {
-                    Text("Cancel")
-                }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }
+        recyclerView.adapter = adapter
+
+        val touchHelper = ItemTouchHelper(object : ItemTouchHelper.SimpleCallback(ItemTouchHelper.UP or ItemTouchHelper.DOWN, 0) {
+            override fun onMove(rv: RecyclerView, vh: RecyclerView.ViewHolder, target: RecyclerView.ViewHolder): Boolean {
+                val fromPos = vh.bindingAdapterPosition
+                val toPos = target.bindingAdapterPosition
+                val list = adapter.dictionaries
+                val item = list.removeAt(fromPos)
+                list.add(toPos, item)
+                adapter.notifyItemMoved(fromPos, toPos)
+                return true
             }
-        )
-    }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Manage Dictionaries") },
-        text = {
-            if (isDeleting) {
-                Box(modifier = Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator()
-                }
-            } else {
-                LazyColumn(state = listState) {
-                    itemsIndexed(dictionaries, key = { _, dict -> dict.id }) { index, dict ->
-                        val isDragging = draggedItemIndex == index
-                        val scale by animateFloatAsState(if (isDragging) 1.05f else 1f)
-                        val elevation by animateFloatAsState(if (isDragging) 8f else 0f)
+            override fun onSwiped(vh: RecyclerView.ViewHolder, direction: Int) {}
 
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .graphicsLayer {
-                                    translationY = if (isDragging) dragOffset else 0f
-                                    scaleX = scale
-                                    scaleY = scale
-                                    shadowElevation = elevation.dp.toPx()
-                                }
-                                .zIndex(if (isDragging) 1f else 0f)
-                                .padding(vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Menu,
-                                contentDescription = "Drag Handle",
-                                modifier = Modifier
-                                    .padding(end = 8.dp)
-                                    .pointerInput(Unit) {
-                                        detectDragGestures(
-                                            onDragStart = { offset ->
-                                                val index = listState.layoutInfo.visibleItemsInfo
-                                                    .firstOrNull { item ->
-                                                        offset.y.toInt() in item.offset..(item.offset + item.size)
-                                                    }?.index
-                                                if (index != null) {
-                                                    draggedItemIndex = index
-                                                }
-                                            },
-                                            onDragEnd = {
-                                                draggedItemIndex = null
-                                                dragOffset = 0f
-                                                saveOrder()
-                                            },
-                                            onDragCancel = {
-                                                draggedItemIndex = null
-                                                dragOffset = 0f
-                                            },
-                                            onDrag = { change, dragAmount ->
-                                                change.consume()
-                                                dragOffset += dragAmount.y
-
-                                                val currentIdx = draggedItemIndex ?: return@detectDragGestures
-                                                val layoutInfo = listState.layoutInfo
-                                                val draggingItem = layoutInfo.visibleItemsInfo
-                                                    .firstOrNull { it.index == currentIdx } ?: return@detectDragGestures
-
-                                                val center = draggingItem.offset + draggingItem.size / 2 + dragOffset
-                                                val targetItem = layoutInfo.visibleItemsInfo.firstOrNull { item ->
-                                                    center.toInt() in item.offset..(item.offset + item.size) && item.index != currentIdx
-                                                }
-
-                                                if (targetItem != null) {
-                                                    dictionaries.add(targetItem.index, dictionaries.removeAt(currentIdx))
-                                                    draggedItemIndex = targetItem.index
-                                                    // This is the key: adjust the offset so the item stays under the finger
-                                                    dragOffset = center - (targetItem.offset + targetItem.size / 2)
-                                                }
-                                            }
-                                        )
-                                    }
-                            )
-                            
-                            Text(text = dict.name, modifier = Modifier.weight(1f))
-                            
-                            IconButton(onClick = { dictionaryToDelete = dict }) {
-                                Icon(Icons.Default.Delete, contentDescription = "Delete")
-                            }
-                        }
+            override fun clearView(recyclerView: RecyclerView, viewHolder: RecyclerView.ViewHolder) {
+                super.clearView(recyclerView, viewHolder)
+                lifecycleOwner?.lifecycleScope?.launch(Dispatchers.IO) {
+                    adapter.dictionaries.forEachIndexed { index, dict ->
+                        db.dictionaryDao().updatePriority(dict.id, index)
                     }
                 }
             }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Close")
-            }
+        })
+        touchHelper.attachToRecyclerView(recyclerView)
+
+        loadDictionaries(context, recyclerView)
+
+        AlertDialog.Builder(context)
+            .setTitle("Manage Dictionaries")
+            .setView(recyclerView)
+            .setPositiveButton("Close", null)
+            .show()
+    }
+
+    private fun loadDictionaries(context: Context, rv: RecyclerView) {
+        val db = AppDatabase.getDatabase(context)
+        val lifecycleOwner = context as? LifecycleOwner
+            
+        lifecycleOwner?.lifecycleScope?.launch {
+            val dicts = withContext(Dispatchers.IO) { db.dictionaryDao().getAllDictionaries() }
+            (rv.adapter as? DictionaryAdapter)?.update(dicts)
         }
-    )
+    }
+
+    private class DictionaryAdapter(
+        val dictionaries: MutableList<DictionaryMeta>,
+        val onDelete: (DictionaryMeta) -> Unit
+    ) : RecyclerView.Adapter<DictionaryAdapter.ViewHolder>() {
+
+        class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
+            val name: TextView = view.findViewById(android.R.id.text1)
+            val delete: ImageButton = view.findViewById(android.R.id.button1)
+        }
+
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
+            val layout = android.widget.LinearLayout(parent.context).apply {
+                orientation = android.widget.LinearLayout.HORIZONTAL
+                gravity = android.view.Gravity.CENTER_VERTICAL
+                setPadding(32, 16, 32, 16)
+                
+                addView(TextView(context).apply {
+                    id = android.R.id.text1
+                    layoutParams = android.widget.LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                })
+                
+                addView(ImageButton(context).apply {
+                    id = android.R.id.button1
+                    setImageResource(android.R.drawable.ic_menu_delete)
+                    background = null
+                })
+            }
+            return ViewHolder(layout)
+        }
+
+        override fun onBindViewHolder(holder: ViewHolder, position: Int) {
+            val dict = dictionaries[position]
+            holder.name.text = dict.name
+            holder.delete.setOnClickListener { onDelete(dict) }
+        }
+
+        override fun getItemCount() = dictionaries.size
+
+        fun update(newList: List<DictionaryMeta>) {
+            dictionaries.clear()
+            dictionaries.addAll(newList)
+            notifyDataSetChanged()
+        }
+    }
 }

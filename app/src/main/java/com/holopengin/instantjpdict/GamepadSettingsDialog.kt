@@ -1,83 +1,107 @@
 package com.holopengin.instantjpdict
 
 import android.content.Context
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
+import android.widget.LinearLayout
+import android.widget.SeekBar
+import android.widget.TextView
+import androidx.appcompat.app.AlertDialog
+import com.google.android.material.materialswitch.MaterialSwitch
 
-@Composable
-fun GamepadSettingsDialog(
-    onDismiss: () -> Unit,
-    context: Context
-) {
-    val prefs = remember { context.getSharedPreferences("gamepad_prefs", Context.MODE_PRIVATE) }
-    
-    var layoutSwap by remember { mutableStateOf(prefs.getBoolean("layout_swap", false)) }
-    var globalShortcutEnabled by remember { mutableStateOf(prefs.getBoolean("global_shortcut_enabled", true)) }
-    var repeatDelay by remember { mutableStateOf(prefs.getInt("repeat_delay", 500).toFloat()) }
-    var repeatRate by remember { mutableStateOf(prefs.getInt("repeat_rate", 20).toFloat()) }
+object GamepadSettingsDialog {
+    fun show(context: Context) {
+        val prefs = context.getSharedPreferences("gamepad_prefs", Context.MODE_PRIVATE)
+        
+        val layout = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(64, 32, 64, 32)
+        }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Gamepad Controls") },
-        text = {
-            Column {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("Layout: ${if (layoutSwap) "B/A (Nintendo)" else "A/B (Xbox)"}", modifier = Modifier.weight(1f))
-                    Switch(checked = layoutSwap, onCheckedChange = { 
-                        layoutSwap = it
-                        prefs.edit().putBoolean("layout_swap", it).apply()
-                    })
-                }
-                
-                Spacer(modifier = Modifier.height(8.dp))
-
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("L1+R1 Global Shortcut", modifier = Modifier.weight(1f))
-                    Switch(checked = globalShortcutEnabled, onCheckedChange = { 
-                        globalShortcutEnabled = it
-                        prefs.edit().putBoolean("global_shortcut_enabled", it).apply()
-                    })
-                }
-                
-                Spacer(modifier = Modifier.height(16.dp))
-                
-                Text("Repeat Delay: ${repeatDelay.toInt()}ms")
-                Slider(
-                    value = repeatDelay,
-                    onValueChange = { 
-                        repeatDelay = it
-                        prefs.edit().putInt("repeat_delay", it.toInt()).apply()
-                    },
-                    valueRange = 100f..1000f
-                )
-
-                Spacer(modifier = Modifier.height(16.dp))
-                
-                Text("Repeat Rate: ${repeatRate.toInt()} repeats/s")
-                Slider(
-                    value = repeatRate,
-                    onValueChange = { 
-                        repeatRate = it
-                        prefs.edit().putInt("repeat_rate", it.toInt()).apply()
-                    },
-                    valueRange = 1f..60f
-                )
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Close")
+        // Layout Swap
+        val layoutRow = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+        }
+        val layoutText = TextView(context).apply {
+            val isNintendo = prefs.getBoolean("layout_swap", false)
+            text = "Layout: ${if (isNintendo) "B/A (Nintendo)" else "A/B (Xbox)"}"
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val layoutSwitch = MaterialSwitch(context).apply {
+            isChecked = prefs.getBoolean("layout_swap", false)
+            setOnCheckedChangeListener { _, isChecked ->
+                prefs.edit().putBoolean("layout_swap", isChecked).apply()
+                layoutText.text = "Layout: ${if (isChecked) "B/A (Nintendo)" else "A/B (Xbox)"}"
             }
         }
-    )
+        layoutRow.addView(layoutText)
+        layoutRow.addView(layoutSwitch)
+        layout.addView(layoutRow)
+
+        // Global Shortcut
+        val shortcutRow = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+            setPadding(0, 32, 0, 32)
+        }
+        val shortcutText = TextView(context).apply {
+            text = "L1+R1 Global Shortcut"
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val shortcutSwitch = MaterialSwitch(context).apply {
+            isChecked = prefs.getBoolean("global_shortcut_enabled", true)
+            setOnCheckedChangeListener { _, isChecked ->
+                prefs.edit().putBoolean("global_shortcut_enabled", isChecked).apply()
+            }
+        }
+        shortcutRow.addView(shortcutText)
+        shortcutRow.addView(shortcutSwitch)
+        layout.addView(shortcutRow)
+
+        // Repeat Delay
+        val delayValue = prefs.getInt("repeat_delay", 500)
+        val delayText = TextView(context).apply { text = "Repeat Delay: ${delayValue}ms" }
+        val delaySeek = SeekBar(context).apply {
+            max = 900 // 100 to 1000
+            progress = delayValue - 100
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                    val value = progress + 100
+                    delayText.text = "Repeat Delay: ${value}ms"
+                    prefs.edit().putInt("repeat_delay", value).apply()
+                }
+                override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+                override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+            })
+        }
+        layout.addView(delayText)
+        layout.addView(delaySeek)
+
+        // Repeat Rate
+        val rateValue = prefs.getInt("repeat_rate", 20)
+        val rateText = TextView(context).apply { 
+            text = "Repeat Rate: $rateValue repeats/s" 
+            setPadding(0, 32, 0, 0)
+        }
+        val rateSeek = SeekBar(context).apply {
+            max = 59 // 1 to 60
+            progress = rateValue - 1
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                    val value = progress + 1
+                    rateText.text = "Repeat Rate: $value repeats/s"
+                    prefs.edit().putInt("repeat_rate", value).apply()
+                }
+                override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+                override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+            })
+        }
+        layout.addView(rateText)
+        layout.addView(rateSeek)
+
+        AlertDialog.Builder(context)
+            .setTitle("Gamepad Controls")
+            .setView(layout)
+            .setPositiveButton("Close", null)
+            .show()
+    }
 }
