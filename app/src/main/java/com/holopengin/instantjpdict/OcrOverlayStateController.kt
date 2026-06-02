@@ -8,7 +8,7 @@ import com.google.gson.Gson
 data class LineResult(
     var text: String,
     val charBoxes: List<JpDictRect>,
-    val alternatives: List<List<Pair<Char, Float>>> = emptyList(),
+    val alternatives: List<MutableList<Pair<Char, Float>>>,
     val isVertical: Boolean = false,
     val chunkBoxes: List<JpDictRect> = emptyList()
 )

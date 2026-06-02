@@ -40,6 +40,16 @@ class OcrEngine(private val context: Context) {
         private const val VERT_REC_HEIGHT = 480
         private const val REC_CONFIDENCE_THRESHOLD = 0.1f
         private const val X_OVERLAP_THRESHOLD = 0.3f
+        private val MEIKI_SWAPPED_PAIRS = mapOf(
+            "儡傀" to "傀儡",
+            "談冗" to "冗談",
+            "汰淘" to "淘汰",
+            "沱滂" to "滂沱",
+            "攣痙" to "痙攣",
+            "酊酩" to "酩酊",
+            "麭麺" to "麺麭",
+            "哭慟" to "慟哭",
+        )
     }
 
     init {
@@ -48,9 +58,9 @@ class OcrEngine(private val context: Context) {
             options.addNnapi()
             options.setOptimizationLevel(SessionOptions.OptLevel.ALL_OPT)
 
-            detectSession = env.createSession(loadModel("meiki.text.detect.v0.1.960x544.quant.onnx"), options)
-            recognizeSession = env.createSession(loadModel("meiki.text.rec.v0.960x32.with_logits.quant.onnx"), options)
-            recognizeSessionVertical = env.createSession(loadModel("meiki.text.rec.v0.vertical.32x480.with_logits.quant.onnx"), options)
+            detectSession = env.createSession(loadModel("meiki.text.detect.v0.1.960x544.onnx"), options)
+            recognizeSession = env.createSession(loadModel("meiki.text.rec.v0.960x32.with_logits.onnx"), options)
+            recognizeSessionVertical = env.createSession(loadModel("meiki.text.rec.v0.vertical.32x480.with_logits.onnx"), options)
 
             // Load character vocabulary mapping
             try {
@@ -297,18 +307,6 @@ class OcrEngine(private val context: Context) {
         Log.d("MeikiOcrEngine", "Streaming recognition for ${lineBoxes.size} lines took ${totalTime}ms")
     }
 
-    suspend fun recognize(bitmap: Bitmap, lineBoxes: List<JpDictRect>): List<LineResult> = withContext(Dispatchers.Default) {
-        val startTime = System.currentTimeMillis()
-        val results = lineBoxes.map { box ->
-            async {
-                recognizeSingleLine(bitmap, box)
-            }
-        }.awaitAll().filterNotNull()
-        val totalTime = System.currentTimeMillis() - startTime
-        Log.d("MeikiOcrEngine", "Full recognition for ${lineBoxes.size} lines took ${totalTime}ms")
-        results
-    }
-
     private fun recognizeSingleLine(bitmap: Bitmap, box: JpDictRect): LineResult? {
         val lineStartTime = System.currentTimeMillis()
         if (recognizeSession == null || recognizeSessionVertical == null) return null
@@ -335,6 +333,16 @@ class OcrEngine(private val context: Context) {
                 val alternativesList = filtered.map { it.alternatives }
                 val charBoxes = filtered.map { it.getGlobalRect(isVertical, crop.width, crop.height, cropX, cropY, effW, effH) }
                 result = LineResult(text, charBoxes, alternativesList, isVertical, listOf(JpDictRect(cropX, cropY, cropX + cropW, cropY + cropH)))
+            }
+
+            // Swapped pair replacements for edge cases in Meiki models
+            for (pair in MEIKI_SWAPPED_PAIRS) {
+                val i = result.text.indexOf(pair.key)
+                if (i != -1) {
+                    result.text = result.text.replace(pair.key, pair.value)
+                    result.alternatives[i][0] = Pair(pair.key[1], 1.0f)
+                    result.alternatives[i][1] = Pair(pair.key[0], 1.0f)
+                }
             }
 
             crop.recycle()
@@ -444,10 +452,10 @@ class OcrEngine(private val context: Context) {
                                 .map {
                                     val char = charVocab?.getOrNull(it.index)?.toChar() ?: ' '
                                     char to it.value
-                                }
-                        } else emptyList()
-                    } else emptyList()
-                } else emptyList()
+                                }.toMutableList()
+                        } else emptyList<Pair<Char, Float>>().toMutableList()
+                    } else emptyList<Pair<Char, Float>>().toMutableList()
+                } else emptyList<Pair<Char, Float>>().toMutableList()
 
                 candidates.add(
                     CharCandidate(
@@ -673,7 +681,7 @@ class OcrEngine(private val context: Context) {
                 // Interleave alternatives for the anchor character to improve replacement list quality
                 val prevAnchor = result[bestPrevIdx]
                 val currAnchor = currentChunk[bestCurrIdx]
-                val mergedAlts = interleaveAlternatives(prevAnchor.cand.alternatives, currAnchor.cand.alternatives)
+                val mergedAlts = interleaveAlternatives(prevAnchor.cand.alternatives, currAnchor.cand.alternatives).toMutableList()
 
                 val toKeep = bestPrevIdx + 1
                 while (result.size > toKeep) result.removeAt(result.size - 1)
@@ -756,7 +764,7 @@ class OcrEngine(private val context: Context) {
             if (bestPrevIdx != -1) {
                 val prevAnchor = result[bestPrevIdx]
                 val currAnchor = currentChunk[bestCurrIdx]
-                val mergedAlts = interleaveAlternatives(prevAnchor.cand.alternatives, currAnchor.cand.alternatives)
+                val mergedAlts = interleaveAlternatives(prevAnchor.cand.alternatives, currAnchor.cand.alternatives).toMutableList()
 
                 val toKeep = bestPrevIdx + 1
                 while (result.size > toKeep) result.removeAt(result.size - 1)
@@ -921,7 +929,7 @@ private data class CharCandidate(
     val char: Char,
     val score: Float,
     val box: FloatArray,
-    val alternatives: List<Pair<Char, Float>> = emptyList()
+    val alternatives: MutableList<Pair<Char, Float>>
 ) {
     fun getGlobalRect(isVertical: Boolean, cropW: Int, cropH: Int, cropX: Int, cropY: Int, effectiveW: Int, effectiveH: Int): JpDictRect {
         val rx1 = box[0]
