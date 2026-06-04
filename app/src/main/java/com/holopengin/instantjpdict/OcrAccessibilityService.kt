@@ -592,6 +592,9 @@ class OcrAccessibilityService : AccessibilityService() {
                 leftMargin = box.left
                 topMargin = box.top
             }
+            if (charContainer.parent != null) {
+                (charContainer.parent as ViewGroup).removeView(charContainer)
+            }
             lineContainer.addView(charContainer, charParams)
 
             val textView = CenteredTextView(this).apply {
@@ -1003,7 +1006,26 @@ class OcrAccessibilityService : AccessibilityService() {
         val itemSize = (if (isLandscape) rootHeight else rootWidth) / 11
         val estimatedTextSize = (itemSize * 0.45 / resources.displayMetrics.density).toFloat().coerceIn(12f, 22f)
 
-        val mainLayout = LinearLayout(this).apply { orientation = if (isLandscape) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL; setBackgroundColor(android.graphics.Color.argb(255, 55, 55, 55)); setPadding(6, 6, 6, 6); elevation = 30f; setOnClickListener { } }
+        // Added Preview Image
+        val bitmap = screenshotBitmap
+        val line = controller.activeLineResults[lIdx]
+        val box = line?.charBoxes?.getOrNull(cIdx)
+        val previewView = android.widget.ImageView(this).apply {
+            tag = "preview_image"
+            if (bitmap != null && box != null) {
+                val padding = (box.height() * 0.2).toInt() // Tightened
+                val cropRect = Rect((box.left - padding).coerceAtLeast(0), (box.top - padding).coerceAtLeast(0), (box.right + padding).coerceAtMost(bitmap.width), (box.bottom + padding).coerceAtMost(bitmap.height))
+                val cropped = Bitmap.createBitmap(bitmap, cropRect.left, cropRect.top, cropRect.width(), cropRect.height())
+                setImageBitmap(cropped)
+            }
+            layoutParams = LinearLayout.LayoutParams(itemSize, itemSize).apply { gravity = Gravity.CENTER; setMargins(2, 2, 2, 2) }
+            scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
+        }
+
+        val mainLayout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(android.graphics.Color.argb(255, 55, 55, 55)); setPadding(6, 6, 6, 6); elevation = 30f; setOnClickListener { } }
+        mainLayout.addView(previewView)
+        
+        val scrollContent = LinearLayout(this).apply { orientation = if (isLandscape) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL }
         val scrollView = if (isLandscape) ScrollView(this) else HorizontalScrollView(this)
         scrollView.apply {
             isVerticalScrollBarEnabled = false; isHorizontalScrollBarEnabled = false
@@ -1011,8 +1033,20 @@ class OcrAccessibilityService : AccessibilityService() {
         }
         val candidateList = LinearLayout(this).apply { tag = "candidate_list_panel"; orientation = if (isLandscape) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL }
         refreshCandidateList(candidateList, lIdx, cIdx, isLandscape, rootLayout)
-        scrollView.addView(candidateList); mainLayout.addView(scrollView)
+        scrollView.addView(candidateList); scrollContent.addView(scrollView)
         
+        // Add manual stub next to candidate list if possible
+        if (altState.showManualInput) {
+            val stubView = TextView(this).apply { tag = "manual_input_stub"; text = "⌨"; setTextColor(android.graphics.Color.GRAY); textSize = estimatedTextSize; gravity = Gravity.CENTER; setBackgroundColor(android.graphics.Color.argb(255, 40, 40, 40)); setOnClickListener { showManualInput(lIdx, cIdx, rootLayout) } }
+            scrollContent.addView(stubView, if (isLandscape) LinearLayout.LayoutParams(itemSize, itemSize).apply { setMargins(2, 2, 2, 2) } else LinearLayout.LayoutParams(itemSize, itemSize).apply { setMargins(2, 2, 2, 2) })
+        }
+        mainLayout.addView(scrollContent, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        
+        if (mainLayout.parent != null) {
+            (mainLayout.parent as ViewGroup).removeView(mainLayout)
+        }
+        container.addView(mainLayout)
+
         // Find and scroll to selected
         scrollView.post {
             var selectedView: View? = null
@@ -1025,9 +1059,8 @@ class OcrAccessibilityService : AccessibilityService() {
             selectedView?.let { view -> if (isLandscape) scrollView.scrollTo(0, view.top) else (scrollView as HorizontalScrollView).scrollTo(view.left, 0) }
         }
 
-        if (altState.showManualInput) {
-            val stubView = TextView(this).apply { tag = "manual_input_stub"; text = "⌨"; setTextColor(android.graphics.Color.GRAY); textSize = estimatedTextSize; gravity = Gravity.CENTER; setBackgroundColor(android.graphics.Color.argb(255, 40, 40, 40)); setOnClickListener { showManualInput(lIdx, cIdx, rootLayout) } }
-            mainLayout.addView(stubView, if (isLandscape) LinearLayout.LayoutParams(itemSize, 0, 1f).apply { setMargins(2, 2, 2, 2) } else LinearLayout.LayoutParams(0, itemSize, 1f).apply { setMargins(2, 2, 2, 2) })
+        if (mainLayout.parent != null) {
+            (mainLayout.parent as ViewGroup).removeView(mainLayout)
         }
         container.addView(mainLayout)
     }
@@ -1066,6 +1099,18 @@ class OcrAccessibilityService : AccessibilityService() {
     private fun updateAlternativesPanelContent(container: FrameLayout, lIdx: Int, cIdx: Int, isLandscape: Boolean, rootLayout: FrameLayout) {
         val candidateList = container.findViewWithTag<LinearLayout>("candidate_list_panel") ?: return
         refreshCandidateList(candidateList, lIdx, cIdx, isLandscape, rootLayout)
+        
+        // Update Preview
+        val previewView = container.findViewWithTag<android.widget.ImageView>("preview_image")
+        val bitmap = screenshotBitmap
+        val line = controller.activeLineResults[lIdx]
+        val box = line?.charBoxes?.getOrNull(cIdx)
+        if (previewView != null && bitmap != null && box != null) {
+            val padding = (box.height() * 0.2).toInt()
+            val cropRect = Rect((box.left - padding).coerceAtLeast(0), (box.top - padding).coerceAtLeast(0), (box.right + padding).coerceAtMost(bitmap.width), (box.bottom + padding).coerceAtMost(bitmap.height))
+            val cropped = Bitmap.createBitmap(bitmap, cropRect.left, cropRect.top, cropRect.width(), cropRect.height())
+            previewView.setImageBitmap(cropped)
+        }
         
         // Update manual input stub too
         val stub = container.findViewWithTag<TextView>("manual_input_stub")
