@@ -100,6 +100,8 @@ class OcrAccessibilityService : AccessibilityService() {
         }
     }
 
+    private fun Int.toPx(): Int = (this * resources.displayMetrics.density).toInt()
+
     private fun createButtonBackground() = ContextCompat.getDrawable(this, R.drawable.logo)!!
 
     override fun onCreate() {
@@ -659,9 +661,9 @@ class OcrAccessibilityService : AccessibilityService() {
         val neighborState = controller.getNeighborUiState().getOrNull(lineIdx) ?: return
         val rootHeight = rootLayout.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
         val rootWidth = rootLayout.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
-        val itemSize = (if (isLandscape) rootHeight else rootWidth) / 11
+        val itemSize = ((if (isLandscape) rootHeight else rootWidth) / 11).coerceAtMost(64.toPx())
         val estimatedTextSize = (itemSize * 0.45 / resources.displayMetrics.density).toFloat().coerceIn(12f, 22f)
-        val itemLp = LinearLayout.LayoutParams(itemSize, itemSize).apply { setMargins(2, 2, 2, 2) }
+        val itemLp = LinearLayout.LayoutParams(itemSize, itemSize).apply { setMargins(2.toPx(), 2.toPx(), 2.toPx(), 2.toPx()) }
 
         neighborState.chars.forEach { charState ->
             val neighborTextView = TextView(this).apply {
@@ -776,14 +778,17 @@ class OcrAccessibilityService : AccessibilityService() {
         
         controller.updateGravity(rootWidth, rootHeight, tappedBox)
         val (panelWidthF, panelHeightF) = controller.getPanelDimensions(rootWidth, rootHeight)
-        val panelWidth = if (isLandscape) panelWidthF.toInt() else FrameLayout.LayoutParams.MATCH_PARENT
-        val panelHeight = if (isLandscape) FrameLayout.LayoutParams.MATCH_PARENT else panelHeightF.toInt()
+        val maxPanelWidth = 500.toPx()
+        val maxPanelHeight = 700.toPx()
+
+        val panelWidth = if (isLandscape) panelWidthF.toInt().coerceAtMost(maxPanelWidth) else FrameLayout.LayoutParams.MATCH_PARENT
+        val panelHeight = if (isLandscape) FrameLayout.LayoutParams.MATCH_PARENT else panelHeightF.toInt().coerceAtMost(maxPanelHeight)
 
         val dictionaryPanel = LinearLayout(this).apply {
             tag = "dictionary_content_container"
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(android.graphics.Color.argb(245, 25, 25, 25))
-            setPadding(40, 40, 40, 40)
+            setPadding(16.toPx(), 16.toPx(), 16.toPx(), 16.toPx())
             elevation = 20f
             setOnClickListener { }
         }
@@ -836,20 +841,20 @@ class OcrAccessibilityService : AccessibilityService() {
                 setTextColor(Color.GRAY)
                 gravity = Gravity.CENTER
                 textSize = 16f
-                setPadding(0, 150, 0, 0)
+                setPadding(0, 20.toPx(), 0, 0)
             })
             return
         }
 
         val scrollContent = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(10, 0, 10, 150)
+            setPadding(0, 0, 0, 0)
         }
 
         matches.forEach { entry ->
             val termSection = LinearLayout(this).apply { 
                 orientation = LinearLayout.VERTICAL
-                setPadding(0, 10, 0, 40)
+                setPadding(0, 10.toPx(), 0, 40.toPx())
             }
             
             entry.readingGroups.forEach { group ->
@@ -857,7 +862,7 @@ class OcrAccessibilityService : AccessibilityService() {
                 renderSensesForReading(termSection, group)
                 
                 termSection.addView(View(this).apply {
-                    layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1).apply { topMargin = 20 }
+                    layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1.toPx()).apply { topMargin = 20.toPx() }
                     setBackgroundColor(Color.DKGRAY)
                     alpha = 0.3f
                 })
@@ -877,7 +882,7 @@ class OcrAccessibilityService : AccessibilityService() {
     private fun renderHeadwordSection(container: LinearLayout, group: FormattedReadingGroup) {
         val headwordList = LinearLayout(this).apply { 
             orientation = LinearLayout.VERTICAL
-            setPadding(0, 0, 0, 10)
+            setPadding(0, 0, 0, 10.toPx())
         }
 
         if (group.isKanjiEntry) {
@@ -885,14 +890,14 @@ class OcrAccessibilityService : AccessibilityService() {
                 val kanjiHeader = LinearLayout(this).apply {
                     orientation = LinearLayout.HORIZONTAL
                     gravity = Gravity.CENTER_VERTICAL
-                    setPadding(0, 5, 0, 5)
+                    setPadding(0, 5.toPx(), 0, 5.toPx())
                 }
                 kanjiHeader.addView(TextView(this).apply {
                     text = hw.kanji
                     setTextColor(Color.CYAN)
                     textSize = 48f
                     typeface = android.graphics.Typeface.DEFAULT_BOLD
-                    setPadding(0, 0, 30, 0)
+                    setPadding(0, 0, 30.toPx(), 0)
                 })
                 val readingStack = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
                 hw.onyomi?.takeIf { it.isNotEmpty() }?.let { readingStack.addView(TextView(this).apply { text = "ON: ${it.replace(" ", "、")}"; setTextColor(Color.LTGRAY); textSize = 14f }) }
@@ -901,11 +906,11 @@ class OcrAccessibilityService : AccessibilityService() {
                 headwordList.addView(kanjiHeader)
             }
         } else {
-            val flow = FlowLayout(this).apply { setPadding(0, 5, 0, 5) }
+            val flow = FlowLayout(this).apply { setPadding(0, 5.toPx(), 0, 5.toPx()) }
             group.headwords.forEachIndexed { i, hw ->
                 flow.addView(createRubyView(hw.kanji, group.reading))
                 if (i < group.headwords.size - 1) {
-                    flow.addView(TextView(this).apply { text = "、"; setTextColor(Color.GRAY); textSize = 24f; setPadding(5, 0, 5, 0) })
+                    flow.addView(TextView(this).apply { text = "、"; setTextColor(Color.GRAY); textSize = 24f; setPadding(5.toPx(), 0, 5.toPx(), 0) })
                 }
             }
             headwordList.addView(flow)
@@ -965,7 +970,7 @@ class OcrAccessibilityService : AccessibilityService() {
     private fun createCorrectionPanel(tappedLIdx: Int, tappedCIdx: Int, isLandscape: Boolean, rootLayout: FrameLayout, skipCenter: Boolean = false): View {
         val rootHeight = rootLayout.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
         val rootWidth = rootLayout.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
-        val itemSize = (if (isLandscape) rootHeight else rootWidth) / 11
+        val itemSize = ((if (isLandscape) rootHeight else rootWidth) / 11).coerceAtMost(64.toPx())
 
         val outerContainer = FrameLayout(this).apply { setBackgroundColor(android.graphics.Color.argb(255, 45, 45, 45)); elevation = 25f }
         val scrollView = if (isLandscape) ScrollView(this) else HorizontalScrollView(this)
@@ -1003,7 +1008,7 @@ class OcrAccessibilityService : AccessibilityService() {
         val altState = controller.getAlternativesUiState() ?: return
         val rootHeight = rootLayout.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
         val rootWidth = rootLayout.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
-        val itemSize = (if (isLandscape) rootHeight else rootWidth) / 11
+        val itemSize = ((if (isLandscape) rootHeight else rootWidth) / 11).coerceAtMost(64.toPx())
         val estimatedTextSize = (itemSize * 0.45 / resources.displayMetrics.density).toFloat().coerceIn(12f, 22f)
 
         // Added Preview Image
@@ -1018,11 +1023,11 @@ class OcrAccessibilityService : AccessibilityService() {
                 val cropped = Bitmap.createBitmap(bitmap, cropRect.left, cropRect.top, cropRect.width(), cropRect.height())
                 setImageBitmap(cropped)
             }
-            layoutParams = LinearLayout.LayoutParams(itemSize, itemSize).apply { gravity = Gravity.CENTER; setMargins(2, 2, 2, 2) }
+            layoutParams = LinearLayout.LayoutParams(itemSize, itemSize).apply { gravity = Gravity.CENTER; setMargins(2.toPx(), 2.toPx(), 2.toPx(), 2.toPx()) }
             scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
         }
 
-        val mainLayout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(android.graphics.Color.argb(255, 55, 55, 55)); setPadding(6, 6, 6, 6); elevation = 30f; setOnClickListener { } }
+        val mainLayout = LinearLayout(this).apply { orientation = if (isLandscape) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL; setBackgroundColor(android.graphics.Color.argb(255, 55, 55, 55)); setPadding(6, 6, 6, 6); elevation = 30f; setOnClickListener { } }
         mainLayout.addView(previewView)
         
         val scrollContent = LinearLayout(this).apply { orientation = if (isLandscape) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL }
@@ -1038,7 +1043,7 @@ class OcrAccessibilityService : AccessibilityService() {
         // Add manual stub next to candidate list if possible
         if (altState.showManualInput) {
             val stubView = TextView(this).apply { tag = "manual_input_stub"; text = "⌨"; setTextColor(android.graphics.Color.GRAY); textSize = estimatedTextSize; gravity = Gravity.CENTER; setBackgroundColor(android.graphics.Color.argb(255, 40, 40, 40)); setOnClickListener { showManualInput(lIdx, cIdx, rootLayout) } }
-            scrollContent.addView(stubView, if (isLandscape) LinearLayout.LayoutParams(itemSize, itemSize).apply { setMargins(2, 2, 2, 2) } else LinearLayout.LayoutParams(itemSize, itemSize).apply { setMargins(2, 2, 2, 2) })
+            scrollContent.addView(stubView, if (isLandscape) LinearLayout.LayoutParams(itemSize, itemSize).apply { setMargins(2.toPx(), 2.toPx(), 2.toPx(), 2.toPx()) } else LinearLayout.LayoutParams(itemSize, itemSize).apply { setMargins(2.toPx(), 2.toPx(), 2.toPx(), 2.toPx()) })
         }
         mainLayout.addView(scrollContent, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         
@@ -1070,10 +1075,10 @@ class OcrAccessibilityService : AccessibilityService() {
         val altState = controller.getAlternativesUiState() ?: return
         val rootHeight = rootLayout.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
         val rootWidth = rootLayout.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
-        val itemSize = (if (isLandscape) rootHeight else rootWidth) / 11
+        val itemSize = ((if (isLandscape) rootHeight else rootWidth) / 11).coerceAtMost(64.toPx())
         val estimatedTextSize = (itemSize * 0.45 / resources.displayMetrics.density).toFloat().coerceIn(12f, 22f)
 
-        altState.candidates.forEach { cand ->
+        altState.candidates.take(25).forEach { cand ->
             val textView = TextView(this).apply {
                 text = cand.char.toString(); setTextColor(android.graphics.Color.WHITE); textSize = estimatedTextSize; gravity = Gravity.CENTER
                 if (cand.isSelected) { setBackgroundColor(android.graphics.Color.YELLOW); setTextColor(android.graphics.Color.BLACK) }
@@ -1092,7 +1097,7 @@ class OcrAccessibilityService : AccessibilityService() {
                     }
                 }
             }
-            candidateList.addView(textView, LinearLayout.LayoutParams(itemSize, itemSize).apply { setMargins(2, 2, 2, 2) })
+            candidateList.addView(textView, LinearLayout.LayoutParams(itemSize, itemSize).apply { setMargins(2.toPx(), 2.toPx(), 2.toPx(), 2.toPx()) })
         }
     }
 
@@ -1198,13 +1203,13 @@ class OcrAccessibilityService : AccessibilityService() {
             setTextColor(Color.WHITE)
             textSize = 10f
             typeface = android.graphics.Typeface.DEFAULT_BOLD
-            setPadding(12, 2, 12, 2)
+            setPadding(12.toPx(), 2.toPx(), 12.toPx(), 2.toPx())
             background = GradientDrawable().apply { 
                 setColor(color)
                 cornerRadius = 6f 
             }
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { 
-                setMargins(0, 0, 12, 0) 
+                setMargins(0, 0, 12.toPx(), 0) 
             }
             includeFontPadding = false
         }
@@ -1249,7 +1254,7 @@ class OcrAccessibilityService : AccessibilityService() {
         if (senseGroup.senses.isEmpty()) return
         
         if (senseGroup.tags.isNotEmpty()) {
-            val header = FlowLayout(this).apply { setPadding(20, 15, 0, 5) }
+            val header = FlowLayout(this).apply { setPadding(20.toPx(), 15.toPx(), 0, 5.toPx()) }
             senseGroup.tags.forEach { header.addView(createTagView(it)) }
             container.addView(header)
         }
@@ -1257,10 +1262,10 @@ class OcrAccessibilityService : AccessibilityService() {
         if (senseGroup.isForms) {
             val table = LinearLayout(this).apply { 
                 orientation = LinearLayout.VERTICAL
-                setPadding(30, 5, 10, 5)
+                setPadding(30.toPx(), 5.toPx(), 10.toPx(), 5.toPx())
             }
             senseGroup.senses.forEach { sense ->
-                val row = FlowLayout(this).apply { setPadding(0, 5, 0, 5) }
+                val row = FlowLayout(this).apply { setPadding(0, 5.toPx(), 0, 5.toPx()) }
                 renderDefinition(row, sense.nodes)
                 table.addView(row)
             }
@@ -1269,17 +1274,17 @@ class OcrAccessibilityService : AccessibilityService() {
             senseGroup.senses.forEach { sense ->
                 val senseLayout = LinearLayout(this).apply { 
                     orientation = LinearLayout.HORIZONTAL
-                    setPadding(30, 5, 10, 5)
+                    setPadding(30.toPx(), 5.toPx(), 10.toPx(), 5.toPx())
                 }
                 senseLayout.addView(TextView(this).apply {
                     text = "${sense.index}. "
                     setTextColor(Color.WHITE)
                     textSize = 15f
-                    setPadding(0, 0, 10, 0)
+                    setPadding(0, 0, 10.toPx(), 0)
                 })
                 
                 val contentContainer = FlowLayout(this).apply {
-                    setPadding(0, 0, 0, 15)
+                    setPadding(0, 0, 0, 15.toPx())
                 }
                 renderDefinition(contentContainer, sense.nodes)
                 senseLayout.addView(contentContainer, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
@@ -1319,16 +1324,16 @@ class OcrAccessibilityService : AccessibilityService() {
                 is DefinitionNode.Example -> {
                     val box = LinearLayout(this).apply {
                         orientation = LinearLayout.VERTICAL
-                        setPadding(30, 15, 30, 25)
+                        setPadding(30.toPx(), 15.toPx(), 30.toPx(), 25.toPx())
                         background = GradientDrawable().apply {
                             setColor(android.graphics.Color.argb(10, 255, 255, 255))
                             setStroke(3, android.graphics.Color.argb(80, 255, 255, 255))
                             cornerRadius = 12f
                         }
-                        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(0, 15, 0, 15) }
+                        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(0.toPx(), 15.toPx(), 0.toPx(), 15.toPx()) }
                     }
                     if (node.japanese != null) {
-                        box.addView(TextView(this).apply { text = node.japanese; setTextColor(Color.WHITE); textSize = 16f; setPadding(0, 0, 0, 10) })
+                        box.addView(TextView(this).apply { text = node.japanese; setTextColor(Color.WHITE); textSize = 16f; setPadding(0, 0, 0, 10.toPx()) })
                         node.english?.let { en -> box.addView(TextView(this).apply { text = en; setTextColor(Color.LTGRAY); textSize = 14f }) }
                     } else if (node.content != null) {
                         val flow = FlowLayout(this)
@@ -1341,10 +1346,10 @@ class OcrAccessibilityService : AccessibilityService() {
                 is DefinitionNode.ListBlock -> {
                     val block = LinearLayout(this).apply { 
                         orientation = LinearLayout.VERTICAL
-                        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(0, 10, 0, 10) } 
+                        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(0.toPx(), 10.toPx(), 0.toPx(), 10.toPx()) }
                     }
                     node.items.forEach { itemNodes ->
-                        val itemRow = FlowLayout(this).apply { setPadding(0, 0, 0, 5) }
+                        val itemRow = FlowLayout(this).apply { setPadding(0, 0, 0, 5.toPx()) }
                         renderDefinition(itemRow, itemNodes)
                         block.addView(itemRow)
                     }
