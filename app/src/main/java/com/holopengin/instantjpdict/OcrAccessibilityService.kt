@@ -12,8 +12,10 @@ import android.content.IntentFilter
 import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.graphics.Paint
 import android.graphics.PixelFormat
 import android.graphics.Rect
+import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.util.Log
 import android.view.Display
@@ -45,6 +47,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -576,12 +579,22 @@ class OcrAccessibilityService : AccessibilityService() {
         controller.updateGlobalData()
 
         val lineContainer = clicksLayer.findViewWithTag<FrameLayout>("line_clicks_$lineIdx") ?: clicksLayer
-        val displayBoxes = controller.calculateDisplayBoxes(line)
         val fixedSize = if (line.isVertical) {
             line.charBoxes.map { it.width() }.maxOrNull() ?: 0
         } else {
             line.charBoxes.map { it.height() }.maxOrNull() ?: 0
         }
+
+        val paintForMeasure = Paint().apply {
+            textSize = fixedSize.toFloat() // Measure at full box size for better spacing
+            typeface = Typeface.DEFAULT
+            if (line.isVertical) {
+                textLocale = Locale.JAPANESE
+                fontFeatureSettings = "'vert' 1"
+            }
+        }
+        val advances = line.text.map { paintForMeasure.measureText(it.toString()) }
+        val displayBoxes = controller.calculateDisplayBoxes(line, advances)
 
         for (i in line.charBoxes.indices) {
             val box = displayBoxes[i]

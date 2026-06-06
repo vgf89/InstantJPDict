@@ -566,36 +566,50 @@ class OcrOverlayStateController {
         }
     }
 
-    fun calculateDisplayBoxes(line: LineResult): List<JpDictRect> {
+    fun calculateDisplayBoxes(line: LineResult, advances: List<Float>? = null): List<JpDictRect> {
         val fixedSize = if (line.isVertical) {
             line.charBoxes.map { it.width() }.maxOrNull() ?: 0
         } else {
             line.charBoxes.map { it.height() }.maxOrNull() ?: 0
         }
 
-        val result = mutableListOf<JpDictRect>()
-        var lastX = -1
-        var lastY = -1
-
-        for (i in line.charBoxes.indices) {
-            val originalBox = line.charBoxes[i]
-            var centerX = originalBox.centerX()
-            var centerY = originalBox.centerY()
-            
-            if (i == line.charBoxes.size - 1 && i > 0) {
-                if (line.isVertical) centerY = lastY + fixedSize
-                else centerX = lastX + fixedSize
+        val refinedBoxes = mutableListOf<JpDictRect>()
+        if (line.charBoxes.isNotEmpty()) {
+            refinedBoxes.add(line.charBoxes[0])
+            for (i in 1 until line.charBoxes.size) {
+                // To eliminate cumulative drift, we anchor the advance constraint to the
+                // ORIGINAL position of the previous character. This ensures that any
+                // necessary push (e.g. for punctuation) only affects the character
+                // relative to its immediate predecessor's detection, rather than
+                // snowballing across the entire line.
+                val prevOriginal = line.charBoxes[i - 1]
+                val curOriginal = line.charBoxes[i]
+                val advance = advances?.getOrNull(i - 1)?.toInt() ?: fixedSize
+                
+                if (line.isVertical) {
+                    val newTop = maxOf(prevOriginal.top + advance, curOriginal.top)
+                    refinedBoxes.add(JpDictRect(curOriginal.left, newTop, curOriginal.right, curOriginal.bottom))
+                } else {
+                    val newLeft = maxOf(prevOriginal.left + advance, curOriginal.left)
+                    refinedBoxes.add(JpDictRect(newLeft, curOriginal.top, curOriginal.right, curOriginal.bottom))
+                }
             }
+        }
 
-            val left = centerX - fixedSize / 2
-            val top = centerY - fixedSize / 2
-            val right = centerX + fixedSize / 2
-            val bottom = centerY + fixedSize / 2
+        val result = mutableListOf<JpDictRect>()
+        for (i in refinedBoxes.indices) {
+            val box = refinedBoxes[i]
+            // Calculate center using refined boundaries.
+            // The right/bottom edges remain at their original detected positions.
+            val centerX = (box.left.toDouble() + box.right.toDouble()) / 2.0
+            val centerY = (box.top.toDouble() + box.bottom.toDouble()) / 2.0
+
+            val left = (centerX - fixedSize / 2.0).toInt()
+            val top = (centerY - fixedSize / 2.0).toInt()
+            val right = left + fixedSize
+            val bottom = top + fixedSize
             
             result.add(JpDictRect(left, top, right, bottom))
-            
-            lastX = centerX
-            lastY = centerY
         }
         return result
     }
