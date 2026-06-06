@@ -17,21 +17,22 @@ class CenteredTextView @JvmOverloads constructor(
 ) : TextView(context, attrs, defStyleAttr) {
 
     private val bounds = Rect()
+    private val refBounds = Rect()
 
     override fun onDraw(canvas: Canvas) {
         val textStr = text.toString()
         if (textStr.isEmpty()) return
 
-        // Get the bounding box of the actual rendered character(s) in the text
-        paint.getTextBounds(textStr, 0, textStr.length, bounds)
-        
-        // Center vertically based on the exact visual bounds of the rendered glyphs.
-        val baselineOffsetY = (height / 2f) - (bounds.top + bounds.bottom) / 2f
+        // We use a reference character to determine a stable baseline.
+        val refChar = "あ" 
+        paint.getTextBounds(refChar, 0, 1, refBounds)
+        val fixedBaselineOffsetY = (height / 2f) - (refBounds.top + refBounds.bottom) / 2f
         
         // Center horizontally based on the exact visual bounds of the rendered glyphs.
+        paint.getTextBounds(textStr, 0, textStr.length, bounds)
         val x = (width / 2f) - (bounds.left + bounds.right) / 2f
 
         paint.color = currentTextColor
-        canvas.drawText(textStr, x, baselineOffsetY, paint)
+        canvas.drawText(textStr, x, fixedBaselineOffsetY, paint)
     }
 }
