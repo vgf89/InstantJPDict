@@ -656,6 +656,7 @@ class OcrAccessibilityService : AccessibilityService() {
 
     private fun fillLineNeighborContainer(lineContainer: LinearLayout, lineIdx: Int, isLandscape: Boolean, rootLayout: FrameLayout) {
         lineContainer.removeAllViews()
+        lineContainer.isBaselineAligned = false
         val neighborState = controller.getNeighborUiState().getOrNull(lineIdx) ?: return
         val rootHeight = rootLayout.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
         val rootWidth = rootLayout.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
@@ -670,6 +671,7 @@ class OcrAccessibilityService : AccessibilityService() {
                 setTextColor(if (charState.isSelected) android.graphics.Color.BLACK else android.graphics.Color.WHITE)
                 textSize = estimatedTextSize
                 gravity = Gravity.CENTER
+                includeFontPadding = false
                 setBackgroundColor(if (charState.isSelected) android.graphics.Color.YELLOW else android.graphics.Color.argb(255, 65, 65, 65))
                 
                 if (isLandscape) {
@@ -1022,30 +1024,56 @@ class OcrAccessibilityService : AccessibilityService() {
             scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
         }
 
-        val mainLayout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(android.graphics.Color.argb(255, 55, 55, 55)); setPadding(6, 6, 6, 6); elevation = 30f; setOnClickListener { } }
+        val mainLayout = LinearLayout(this).apply { 
+            orientation = if (isLandscape) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
+            setBackgroundColor(android.graphics.Color.argb(255, 55, 55, 55))
+            setPadding(6, 6, 6, 6)
+            elevation = 30f
+            setOnClickListener { } 
+        }
         mainLayout.addView(previewView)
         
-        val scrollContent = LinearLayout(this).apply { orientation = if (isLandscape) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL }
+        val scrollContent = LinearLayout(this).apply { 
+            orientation = if (isLandscape) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
+            isBaselineAligned = false
+        }
         val scrollView = if (isLandscape) ScrollView(this) else HorizontalScrollView(this)
         scrollView.apply {
             isVerticalScrollBarEnabled = false; isHorizontalScrollBarEnabled = false
             layoutParams = if (isLandscape) LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 10f) else LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 10f)
         }
-        val candidateList = LinearLayout(this).apply { tag = "candidate_list_panel"; orientation = if (isLandscape) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL }
+        val candidateList = LinearLayout(this).apply { 
+            tag = "candidate_list_panel"
+            orientation = if (isLandscape) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
+            isBaselineAligned = false
+        }
         refreshCandidateList(candidateList, lIdx, cIdx, isLandscape, rootLayout)
         scrollView.addView(candidateList); scrollContent.addView(scrollView)
         
         // Add manual stub next to candidate list if possible
         if (altState.showManualInput) {
-            val stubView = TextView(this).apply { tag = "manual_input_stub"; text = "⌨"; setTextColor(android.graphics.Color.GRAY); textSize = estimatedTextSize; gravity = Gravity.CENTER; setBackgroundColor(android.graphics.Color.argb(255, 40, 40, 40)); setOnClickListener { showManualInput(lIdx, cIdx, rootLayout) } }
-            scrollContent.addView(stubView, if (isLandscape) LinearLayout.LayoutParams(itemSize, itemSize).apply { setMargins(2, 2, 2, 2) } else LinearLayout.LayoutParams(itemSize, itemSize).apply { setMargins(2, 2, 2, 2) })
+            val stubView = TextView(this).apply { 
+                tag = "manual_input_stub"
+                text = "⌨"
+                setTextColor(android.graphics.Color.GRAY)
+                textSize = estimatedTextSize
+                gravity = Gravity.CENTER
+                includeFontPadding = false
+                setBackgroundColor(android.graphics.Color.argb(255, 40, 40, 40))
+                setOnClickListener { showManualInput(lIdx, cIdx, rootLayout) } 
+            }
+            scrollContent.addView(stubView, LinearLayout.LayoutParams(itemSize, itemSize).apply { setMargins(2, 2, 2, 2) })
         }
-        mainLayout.addView(scrollContent, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        mainLayout.addView(scrollContent, if (isLandscape) {
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
+        } else {
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f)
+        })
         
         if (mainLayout.parent != null) {
             (mainLayout.parent as ViewGroup).removeView(mainLayout)
         }
-        container.addView(mainLayout)
+        container.addView(mainLayout, if (isLandscape) FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.MATCH_PARENT) else FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT))
 
         // Find and scroll to selected
         scrollView.post {
@@ -1059,14 +1087,11 @@ class OcrAccessibilityService : AccessibilityService() {
             selectedView?.let { view -> if (isLandscape) scrollView.scrollTo(0, view.top) else (scrollView as HorizontalScrollView).scrollTo(view.left, 0) }
         }
 
-        if (mainLayout.parent != null) {
-            (mainLayout.parent as ViewGroup).removeView(mainLayout)
-        }
-        container.addView(mainLayout)
     }
 
     private fun refreshCandidateList(candidateList: LinearLayout, lIdx: Int, cIdx: Int, isLandscape: Boolean, rootLayout: FrameLayout) {
         candidateList.removeAllViews()
+        candidateList.isBaselineAligned = false
         val altState = controller.getAlternativesUiState() ?: return
         val rootHeight = rootLayout.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
         val rootWidth = rootLayout.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
@@ -1076,6 +1101,7 @@ class OcrAccessibilityService : AccessibilityService() {
         altState.candidates.forEach { cand ->
             val textView = TextView(this).apply {
                 text = cand.char.toString(); setTextColor(android.graphics.Color.WHITE); textSize = estimatedTextSize; gravity = Gravity.CENTER
+                includeFontPadding = false
                 if (cand.isSelected) { setBackgroundColor(android.graphics.Color.YELLOW); setTextColor(android.graphics.Color.BLACK) }
                 else setBackgroundColor(android.graphics.Color.argb(255, 85, 85, 85))
                 
