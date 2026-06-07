@@ -72,6 +72,12 @@ class OcrAccessibilityService : AccessibilityService() {
     private var viewportAnimator: AnimatorSet? = null
     private var neighborAnimator: ObjectAnimator? = null
     
+    private val dictionaryViewCache = object : java.util.LinkedHashMap<String, View>(50, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, View>?): Boolean {
+            return size > 50
+        }
+    }
+
     private val overlayControllerReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
@@ -734,13 +740,9 @@ class OcrAccessibilityService : AccessibilityService() {
 
             val result = controller.lookup(lineIdx, charIdx) ?: return@launch
 
-            val formattedMatches = result.first
-            val maxMatchedLen = result.second
-            val finalTappedBox = result.third
+            updateLookupHighlights(lineIdx, charIdx, result.maxLen)
 
-            updateLookupHighlights(lineIdx, charIdx, maxMatchedLen)
-
-            showResultsUi(rootLayout, formattedMatches, finalTappedBox, skipCenter)
+            showResultsUi(rootLayout, result.matches, result.tappedBox, skipCenter, result.cacheKey)
         }
     }
 
@@ -764,13 +766,13 @@ class OcrAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun showResultsUi(rootLayout: FrameLayout, matches: List<FormattedEntry>, tappedBox: JpDictRect, skipCenter: Boolean = false) {
+    private fun showResultsUi(rootLayout: FrameLayout, matches: List<FormattedEntry>, tappedBox: JpDictRect, skipCenter: Boolean = false, cacheKey: String? = null) {
         controller.isDictionaryVisible = true
         val existingRoot = rootLayout.findViewWithTag<LinearLayout>("correction_ui_root")
         
         if (existingRoot != null) {
             val dictionaryContainer = existingRoot.findViewWithTag<LinearLayout>("dictionary_content_container")
-            if (dictionaryContainer != null) updateDictionaryPanel(dictionaryContainer, matches)
+            if (dictionaryContainer != null) updateDictionaryPanel(dictionaryContainer, matches, cacheKey)
             
             val neighborPanel = existingRoot.findViewWithTag<LinearLayout>("neighbor_scroll_panel")
             if (neighborPanel != null) updateNeighborHighlights(neighborPanel)
@@ -808,7 +810,7 @@ class OcrAccessibilityService : AccessibilityService() {
             elevation = 20f
             setOnClickListener { }
         }
-        updateDictionaryPanel(dictionaryPanel, matches)
+        updateDictionaryPanel(dictionaryPanel, matches, cacheKey)
 
         val correctionPanel = createCorrectionPanel(controller.currentTappedLineIdx, controller.currentTappedCharIdxInLine, isLandscape, rootLayout, skipCenter)
         val alternativesPanelContainer = FrameLayout(this).apply {
@@ -847,10 +849,20 @@ class OcrAccessibilityService : AccessibilityService() {
         updateCursor()
     }
 
-    private fun updateDictionaryPanel(container: LinearLayout, matches: List<FormattedEntry>) {
+    private fun updateDictionaryPanel(container: LinearLayout, matches: List<FormattedEntry>, cacheKey: String? = null) {
         container.removeAllViews()
         targetScrollY = 0
         scrollAnimator?.cancel()
+
+        if (cacheKey != null) {
+            val cachedView = dictionaryViewCache[cacheKey]
+            if (cachedView != null) {
+                (cachedView.parent as? ViewGroup)?.removeView(cachedView)
+                container.addView(cachedView)
+                return
+            }
+        }
+
         if (matches.isEmpty()) {
             container.addView(TextView(this).apply {
                 text = "No results found"
@@ -893,6 +905,9 @@ class OcrAccessibilityService : AccessibilityService() {
             addView(scrollContent)
         }
         container.addView(scrollView)
+        if (cacheKey != null) {
+            dictionaryViewCache[cacheKey] = scrollView
+        }
     }
 
     private fun renderHeadwordSection(container: LinearLayout, group: FormattedReadingGroup) {
@@ -1672,7 +1687,8 @@ class OcrAccessibilityService : AccessibilityService() {
         if (root.isAttachedToWindow) try { windowManager?.removeViewImmediate(root) } catch (e: Exception) { Log.e("OcrAccessibilityService", "Error removing overlay", e) }
         screenshotOverlay = null; screenshotBitmap = null; floatingView?.visibility = View.VISIBLE
         controller.resetState()
-        try { windowManager?.updateViewLayout(floatingView, floatingParams) } catch (e: Exception) { Log.e("OcrAccessibilityService", "Error restoring button", e) }
+        dictionaryViewCache.clear()
+        try { windowManager?.updateViewLayout(floatingView, floatingParams) } catch (e: Exception) { Log.e("OcrAccessibilityService", "Error removing overlay", e) }
         textViews.clear()
         cursorView = null
     }
