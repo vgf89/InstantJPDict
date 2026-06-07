@@ -774,6 +774,12 @@ class OcrAccessibilityService : AccessibilityService() {
             
             val neighborPanel = existingRoot.findViewWithTag<LinearLayout>("neighbor_scroll_panel")
             if (neighborPanel != null) updateNeighborHighlights(neighborPanel)
+
+            val altContainer = existingRoot.findViewWithTag<FrameLayout>("alternatives_container")
+            if (altContainer != null && altContainer.childCount > 0) {
+                val isLandscape = rootLayout.width > rootLayout.height
+                updateAlternativesPanelContent(altContainer, controller.currentTappedLineIdx, controller.currentTappedCharIdxInLine, isLandscape, rootLayout)
+            }
             
             if (!skipCenter) {
                 val neighborScrollView = existingRoot.findViewWithTag<View>("neighbor_scroll_view")
