@@ -104,7 +104,7 @@ class OcrAccessibilityService : AccessibilityService() {
 
     private val borderDrawable by lazy {
         GradientDrawable().apply {
-            setColor(android.graphics.Color.argb(100, 0, 0, 0))
+            setColor(android.graphics.Color.argb(140, 0, 0, 0))
             cornerRadius = 4f
         }
     }
@@ -618,7 +618,7 @@ class OcrAccessibilityService : AccessibilityService() {
 
             val textView = CenteredTextView(this).apply {
                 text = char
-                setTextColor(android.graphics.Color.parseColor("#FF7777"))
+                setTextColor(android.graphics.Color.parseColor("#FFBBBB"))
                 typeface = android.graphics.Typeface.DEFAULT
                 setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, fixedSize.toFloat() * 0.90f)
                 setPadding(0, 0, 0, 0)
@@ -749,7 +749,7 @@ class OcrAccessibilityService : AccessibilityService() {
     private fun resetHighlights() {
         controller.lastHighlightedCoords.forEach { coords ->
             textViews[coords]?.let { tv ->
-                tv.setTextColor(android.graphics.Color.parseColor("#FF7777"))
+                tv.setTextColor(android.graphics.Color.parseColor("#FF9999"))
                 tv.typeface = android.graphics.Typeface.DEFAULT
             }
         }
