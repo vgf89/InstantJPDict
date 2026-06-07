@@ -53,6 +53,11 @@ import kotlin.math.roundToInt
 
 class OcrAccessibilityService : AccessibilityService() {
 
+    companion object {
+        private const val DEFAULT_OVERLAY_COLOR_HEX = "#FFBBBB"
+        private val DEFAULT_OVERLAY_COLOR = Color.parseColor(DEFAULT_OVERLAY_COLOR_HEX)
+    }
+
     private var windowManager: WindowManager? = null
     private var floatingView: View? = null
     private var floatingParams: WindowManager.LayoutParams? = null
@@ -619,7 +624,7 @@ class OcrAccessibilityService : AccessibilityService() {
 
             val textView = CenteredTextView(this).apply {
                 text = char
-                setTextColor(android.graphics.Color.parseColor("#FFBBBB"))
+                setTextColor(DEFAULT_OVERLAY_COLOR)
                 typeface = android.graphics.Typeface.DEFAULT
                 setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, fixedSize.toFloat() * 0.90f)
                 setPadding(0, 0, 0, 0)
@@ -749,7 +754,7 @@ class OcrAccessibilityService : AccessibilityService() {
 
     private fun resetHighlights() {
         textViews.values.forEach { tv ->
-            tv.setTextColor(android.graphics.Color.parseColor("#FF9999"))
+            tv.setTextColor(DEFAULT_OVERLAY_COLOR)
             tv.typeface = android.graphics.Typeface.DEFAULT
         }
         controller.lastHighlightedCoords.clear()
