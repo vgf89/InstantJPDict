@@ -767,7 +767,10 @@ class OcrAccessibilityService : AccessibilityService() {
     }
 
     private fun showResultsUi(rootLayout: FrameLayout, matches: List<FormattedEntry>, tappedBox: JpDictRect, skipCenter: Boolean = false, cacheKey: String? = null) {
-        controller.isDictionaryVisible = true
+        val rootWidth = rootLayout.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
+        val rootHeight = rootLayout.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
+        val isLandscape = rootWidth > rootHeight
+
         val existingRoot = rootLayout.findViewWithTag<LinearLayout>("correction_ui_root")
         
         if (existingRoot != null) {
@@ -779,7 +782,6 @@ class OcrAccessibilityService : AccessibilityService() {
 
             val altContainer = existingRoot.findViewWithTag<FrameLayout>("alternatives_container")
             if (altContainer != null && altContainer.childCount > 0) {
-                val isLandscape = rootLayout.width > rootLayout.height
                 updateAlternativesPanelContent(altContainer, controller.currentTappedLineIdx, controller.currentTappedCharIdxInLine, isLandscape, rootLayout)
             }
             
@@ -789,15 +791,13 @@ class OcrAccessibilityService : AccessibilityService() {
             }
             centerWordInVisibleArea(rootLayout, controller.currentTappedLineIdx, controller.currentTappedCharIdxInLine)
             existingRoot.bringToFront()
+            controller.isDictionaryVisible = true
             updateCursor()
             return
         }
 
-        val rootWidth = rootLayout.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
-        val rootHeight = rootLayout.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
-        val isLandscape = rootWidth > rootHeight
-        
         controller.updateGravity(rootWidth, rootHeight, tappedBox)
+        controller.isDictionaryVisible = true
         val (panelWidthF, panelHeightF) = controller.getPanelDimensions(rootWidth, rootHeight)
         val panelWidth = if (isLandscape) panelWidthF.toInt() else FrameLayout.LayoutParams.MATCH_PARENT
         val panelHeight = if (isLandscape) FrameLayout.LayoutParams.MATCH_PARENT else panelHeightF.toInt()
@@ -1003,7 +1003,7 @@ class OcrAccessibilityService : AccessibilityService() {
         val rootWidth = rootLayout.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
         val itemSize = (if (isLandscape) rootHeight else rootWidth) / 11
 
-        val outerContainer = FrameLayout(this).apply { setBackgroundColor(android.graphics.Color.argb(255, 45, 45, 45)); elevation = 25f }
+        val outerContainer = FrameLayout(this).apply { tag = "correction_panel"; setBackgroundColor(android.graphics.Color.argb(255, 45, 45, 45)); elevation = 25f }
         val scrollView = if (isLandscape) ScrollView(this) else HorizontalScrollView(this)
         scrollView.apply {
             tag = "neighbor_scroll_view"; isVerticalScrollBarEnabled = false; isHorizontalScrollBarEnabled = false
