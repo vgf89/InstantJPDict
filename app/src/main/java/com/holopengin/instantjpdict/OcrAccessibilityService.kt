@@ -585,6 +585,7 @@ class OcrAccessibilityService : AccessibilityService() {
         controller.updateGlobalData()
 
         val lineContainer = clicksLayer.findViewWithTag<FrameLayout>("line_clicks_$lineIdx") ?: clicksLayer
+        lineContainer.removeAllViews()
         val fixedSize = if (line.isVertical) {
             line.charBoxes.map { it.width() }.maxOrNull() ?: 0
         } else {
@@ -747,12 +748,11 @@ class OcrAccessibilityService : AccessibilityService() {
     }
 
     private fun resetHighlights() {
-        controller.lastHighlightedCoords.forEach { coords ->
-            textViews[coords]?.let { tv ->
-                tv.setTextColor(android.graphics.Color.parseColor("#FF9999"))
-                tv.typeface = android.graphics.Typeface.DEFAULT
-            }
+        textViews.values.forEach { tv ->
+            tv.setTextColor(android.graphics.Color.parseColor("#FF9999"))
+            tv.typeface = android.graphics.Typeface.DEFAULT
         }
+        controller.lastHighlightedCoords.clear()
     }
 
     private fun updateLookupHighlights(lineIdx: Int, charIdx: Int, wordLength: Int) {
@@ -956,13 +956,13 @@ class OcrAccessibilityService : AccessibilityService() {
     }
 
     private fun updateNeighborHighlights(panel: LinearLayout) {
-        // Clear previous highlight
-        if (controller.lastNeighborHighlightedLine != -1 && controller.lastNeighborHighlightedChar != -1) {
-            val oldLineContainer = panel.findViewWithTag<LinearLayout>("line_neighbor_${controller.lastNeighborHighlightedLine}")
-            val oldView = oldLineContainer?.getChildAt(controller.lastNeighborHighlightedChar) as? TextView
-            oldView?.let {
-                it.setBackgroundColor(android.graphics.Color.argb(255, 65, 65, 65))
-                it.setTextColor(android.graphics.Color.WHITE)
+        // Clear all existing highlights in the neighbor panel
+        for (i in 0 until panel.childCount) {
+            val lineContainer = panel.getChildAt(i) as? LinearLayout ?: continue
+            for (j in 0 until lineContainer.childCount) {
+                val tv = lineContainer.getChildAt(j) as? TextView ?: continue
+                tv.setBackgroundColor(android.graphics.Color.argb(255, 65, 65, 65))
+                tv.setTextColor(android.graphics.Color.WHITE)
             }
         }
         

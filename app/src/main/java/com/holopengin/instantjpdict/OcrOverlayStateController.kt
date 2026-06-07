@@ -152,6 +152,8 @@ class OcrOverlayStateController {
         currentTappedCharIdxInLine = -1
         activeLineResults.clear()
         activeLineBoxes = emptyList()
+        lastNeighborHighlightedLine = -1
+        lastNeighborHighlightedChar = -1
         isControllerNavigation = false
         isDictionaryVisible = false
         isAlternativesVisible = false
