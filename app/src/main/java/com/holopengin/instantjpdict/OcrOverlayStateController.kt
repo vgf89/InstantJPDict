@@ -112,7 +112,6 @@ class OcrOverlayStateController {
     var isDictionaryVisible = false
     var isAlternativesVisible = false
 
-
     fun updateGlobalData() {
         activeAllChars.clear()
         activeAllAlternatives.clear()
@@ -291,7 +290,7 @@ class OcrOverlayStateController {
         }
     }
 
-    suspend fun lookup(lineIdx: Int, charIdx: Int): Triple<List<FormattedEntry>, Int, JpDictRect>? {
+    suspend fun lookup(lineIdx: Int, charIdx: Int): Result? {
         val deinf = deinflector ?: return null
         val provider = dictionaryProvider ?: return null
         val g = gson ?: return null
@@ -314,8 +313,10 @@ class OcrOverlayStateController {
         val formatted = formatDictionaryResults(uniqueMatches, g)
         currentWordLength = maxLen
         
-        return Triple(formatted, maxLen, tappedBox)
+        return Result(formatted, maxLen, tappedBox, followingText)
     }
+
+    data class Result(val matches: List<FormattedEntry>, val maxLen: Int, val tappedBox: JpDictRect, val cacheKey: String)
 
     fun getNeighborUiState(): List<NeighborLine> {
         return activeLineResults.mapIndexed { lIdx, line ->
