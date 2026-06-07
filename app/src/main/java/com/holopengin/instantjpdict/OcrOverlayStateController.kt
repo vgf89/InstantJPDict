@@ -382,20 +382,23 @@ class OcrOverlayStateController {
     }
 
     fun updateGravity(rootWidth: Int, rootHeight: Int, tappedBox: JpDictRect) {
-        val (panelWidth, panelHeight) = getPanelDimensions(rootWidth, rootHeight)
         val isLandscape = rootWidth > rootHeight
 
+        // Calculate screen center of the character, taking into account current scale and translation
+        val screenCenterX = tappedBox.centerX() * currentScale + currentTransX
+        val screenCenterY = tappedBox.centerY() * currentScale + currentTransY
+
         if (isLandscape) {
-            if (lastLandscapeGravity == JpDictGravity.END) {
-                if (tappedBox.right > rootWidth - panelWidth) lastLandscapeGravity = JpDictGravity.START
+            lastLandscapeGravity = if (screenCenterX < rootWidth / 2f) {
+                JpDictGravity.END
             } else {
-                if (tappedBox.left < panelWidth) lastLandscapeGravity = JpDictGravity.END
+                JpDictGravity.START
             }
         } else {
-            if (lastPortraitGravity == JpDictGravity.BOTTOM) {
-                if (tappedBox.bottom > rootHeight - panelHeight) lastPortraitGravity = JpDictGravity.TOP
+            lastPortraitGravity = if (screenCenterY < rootHeight / 2f) {
+                JpDictGravity.BOTTOM
             } else {
-                if (tappedBox.top < panelHeight) lastPortraitGravity = JpDictGravity.BOTTOM
+                JpDictGravity.TOP
             }
         }
     }
