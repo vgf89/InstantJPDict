@@ -34,6 +34,7 @@ import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
+import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
 import android.view.ViewGroup
@@ -445,6 +446,75 @@ class OcrAccessibilityService : AccessibilityService() {
         }
         rootLayout.addView(progressBar, progressParams)
 
+        // Confidence Controls (Left Side)
+        val controlsRoot = LinearLayout(this).apply {
+            tag = "confidence_controls"
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setBackgroundColor(android.graphics.Color.TRANSPARENT)
+            setPadding(10, 10, 10, 10)
+            isVisible = false // Hidden until recognition starts
+        }
+        val controlsParams = FrameLayout.LayoutParams(
+            (60 * resources.displayMetrics.density).toInt(),
+            (450 * resources.displayMetrics.density).toInt()
+        ).apply {
+            gravity = Gravity.CENTER_VERTICAL or Gravity.START
+            marginStart = (5 * resources.displayMetrics.density).toInt()
+        }
+        rootLayout.addView(controlsRoot, controlsParams)
+
+        val thresholdSlider = SeekBar(this).apply {
+            max = 195
+            // Maps 20% to progress 0 (top) and 0.5% to progress 195 (bottom)
+            progress = (200 - (controller.recConfidenceThreshold * 1000).toInt()).coerceIn(0, 195)
+            rotation = 90f // 0 is top, max is bottom. Fill top -> bottom.
+            val sliderWidth = (300 * resources.displayMetrics.density).toInt()
+            val sliderHeight = (40 * resources.displayMetrics.density).toInt()
+            layoutParams = LinearLayout.LayoutParams(sliderWidth, sliderHeight).apply {
+                val margin = (sliderWidth - sliderHeight) / 2
+                topMargin = margin
+                bottomMargin = margin
+            }
+        }
+        controlsRoot.addView(thresholdSlider)
+
+        thresholdSlider.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                if (fromUser) {
+                    val actualP = 200 - progress
+                    val newThreshold = actualP / 1000f
+                    controller.recConfidenceThreshold = newThreshold
+                    controller.refreshLinesWithThreshold(ocrEngine)
+                    refreshOcrResults()
+                }
+            }
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+        })
+
+        val resetButton = TextView(this).apply {
+            text = "↺"
+            setTextColor(android.graphics.Color.WHITE)
+            textSize = 28f
+            setShadowLayer(4f, 2f, 2f, android.graphics.Color.BLACK)
+            gravity = Gravity.CENTER
+            isClickable = true
+            isFocusable = true
+            setOnClickListener {
+                controller.recConfidenceThreshold = 0.1f
+                thresholdSlider.progress = 100
+                controller.refreshLinesWithThreshold(ocrEngine)
+                refreshOcrResults()
+            }
+        }
+        controlsRoot.addView(resetButton, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+        })
+
         screenshotOverlay = rootLayout
         windowManager?.addView(screenshotOverlay, params)
         
@@ -536,6 +606,8 @@ class OcrAccessibilityService : AccessibilityService() {
                     val clicksLayer = FrameLayout(this@OcrAccessibilityService).apply { tag = "clicks_layer" }
                     contentContainer.addView(clicksLayer, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
 
+                    rootLayout.findViewWithTag<View>("confidence_controls")?.isVisible = true
+
                     // Pre-create line containers to maintain Z-order and simplify updates
                     lineBoxes.forEachIndexed { i, _ ->
                         val lineContainer = FrameLayout(this@OcrAccessibilityService).apply { tag = "line_clicks_$i" }
@@ -587,6 +659,8 @@ class OcrAccessibilityService : AccessibilityService() {
         controller.updateGlobalData()
 
         val lineContainer = clicksLayer.findViewWithTag<FrameLayout>("line_clicks_$lineIdx") ?: clicksLayer
+        lineContainer.removeAllViews() // Clear existing character views for refresh
+
         val fixedSize = if (line.isVertical) {
             line.charBoxes.map { it.width() }.maxOrNull() ?: 0
         } else {
@@ -646,6 +720,26 @@ class OcrAccessibilityService : AccessibilityService() {
             }
         }
         updateNeighborPanelForLine(rootLayout, lineIdx)
+    }
+
+    private fun refreshOcrResults() {
+        val overlay = screenshotOverlay as? FrameLayout ?: return
+        val contentContainer = overlay.findViewWithTag<FrameLayout>("content_container") ?: return
+        val clicksLayer = contentContainer.findViewWithTag<FrameLayout>("clicks_layer") ?: return
+
+        controller.activeLineResults.forEachIndexed { index, lineResult ->
+            if (lineResult != null) {
+                addLineToResults(overlay, clicksLayer, index, lineResult)
+            }
+        }
+        updateCursor()
+
+        if (controller.isAlternativesVisible) {
+            val altContainer = overlay.findViewWithTag<FrameLayout>("alternatives_container")
+            if (altContainer != null && altContainer.childCount > 0) {
+                updateAlternativesPanelContent(altContainer, controller.currentTappedLineIdx, controller.currentTappedCharIdxInLine, overlay.width > overlay.height, overlay)
+            }
+        }
     }
 
     private fun updateNeighborPanelForLine(rootLayout: FrameLayout, lineIdx: Int) {

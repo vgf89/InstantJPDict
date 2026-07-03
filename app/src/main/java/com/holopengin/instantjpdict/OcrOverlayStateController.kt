@@ -10,7 +10,21 @@ data class LineResult(
     val charBoxes: List<JpDictRect>,
     val alternatives: List<MutableList<Pair<Char, Float>>>,
     val isVertical: Boolean = false,
-    val chunkBoxes: List<JpDictRect> = emptyList()
+    val chunkBoxes: List<JpDictRect> = emptyList(),
+    val rawChunks: List<RawChunkResult> = emptyList(),
+    val cropX: Int = 0,
+    val cropY: Int = 0,
+    val overrides: MutableMap<Pair<Int, Int>, Char> = mutableMapOf()
+)
+
+data class RawChunkResult(
+    val candidates: List<CharCandidate>,
+    val offsetX: Int,
+    val offsetY: Int,
+    val chunkW: Int,
+    val chunkH: Int,
+    val effW: Int,
+    val effH: Int
 )
 
 sealed class DefinitionNode {
@@ -90,6 +104,64 @@ class OcrOverlayStateController {
     var currentTransX = 0f
     var currentTransY = 0f
     var currentWordLength = 0
+    var recConfidenceThreshold = 0.1f
+
+    fun refreshLinesWithThreshold(ocrEngine: OcrEngine) {
+        val oldTappedBoxCenter = if (currentTappedLineIdx != -1 && currentTappedCharIdxInLine != -1) {
+            activeLineResults.getOrNull(currentTappedLineIdx)?.charBoxes?.getOrNull(currentTappedCharIdxInLine)?.let {
+                Pair(it.centerX(), it.centerY())
+            }
+        } else null
+
+        activeLineResults.forEachIndexed { i, line ->
+            line?.let { oldLine ->
+                if (oldLine.rawChunks.isNotEmpty()) {
+                    val newLine = ocrEngine.processLineFromRawChunks(oldLine.rawChunks, oldLine.isVertical, oldLine.cropX, oldLine.cropY, recConfidenceThreshold)
+                    
+                    // Transfer overrides
+                    newLine.overrides.putAll(oldLine.overrides)
+                    
+                    // Apply overrides to the new text
+                    val textChars = newLine.text.toCharArray()
+                    for (j in newLine.charBoxes.indices) {
+                        val box = newLine.charBoxes[j]
+                        val override = newLine.overrides[Pair(box.centerX(), box.centerY())]
+                        if (override != null) {
+                            textChars[j] = override
+                        }
+                    }
+                    newLine.text = String(textChars)
+                    
+                    activeLineResults[i] = newLine
+                }
+            }
+        }
+        
+        // Re-find the tapped character by its position
+        if (oldTappedBoxCenter != null) {
+            val line = activeLineResults.getOrNull(currentTappedLineIdx)
+            if (line != null) {
+                var bestIdx = -1
+                var minDist = 1000f
+                for (j in line.charBoxes.indices) {
+                    val box = line.charBoxes[j]
+                    val dx = (box.centerX() - oldTappedBoxCenter.first).toDouble()
+                    val dy = (box.centerY() - oldTappedBoxCenter.second).toDouble()
+                    val dist = kotlin.math.sqrt(dx * dx + dy * dy).toFloat()
+                    if (dist < minDist && dist < 20) { // small radius to ensure it's the same char
+                        minDist = dist
+                        bestIdx = j
+                    }
+                }
+                if (bestIdx != -1) {
+                    currentTappedCharIdxInLine = bestIdx
+                    currentTappedIdx = getGlobalIdx(currentTappedLineIdx, currentTappedCharIdxInLine)
+                }
+            }
+        }
+
+        updateGlobalData()
+    }
     
     var activeLineBoxes: List<JpDictRect> = emptyList()
     var activeAllChars = mutableListOf<String>()
@@ -164,6 +236,11 @@ class OcrOverlayStateController {
         if (charIdx in charArray.indices) {
             charArray[charIdx] = newChar
             line.text = String(charArray)
+            
+            // Save override
+            val box = line.charBoxes[charIdx]
+            line.overrides[Pair(box.centerX(), box.centerY())] = newChar
+
             updateGlobalData()
         }
     }
@@ -277,10 +354,12 @@ class OcrOverlayStateController {
     }
 
     fun ensureCursorPosition() {
-        if (currentTappedLineIdx == -1 || currentTappedCharIdxInLine == -1) {
+        val currentLine = activeLineResults.getOrNull(currentTappedLineIdx)
+        if (currentTappedLineIdx == -1 || currentTappedCharIdxInLine == -1 || 
+            currentLine == null || currentTappedCharIdxInLine >= currentLine.charBoxes.size) {
             for (i in activeLineResults.indices) {
                 val line = activeLineResults[i]
-                if (line != null && line.text.isNotEmpty()) {
+                if (line != null && line.charBoxes.isNotEmpty()) {
                     currentTappedLineIdx = i
                     currentTappedCharIdxInLine = 0
                     currentTappedIdx = getGlobalIdx(i, 0)
