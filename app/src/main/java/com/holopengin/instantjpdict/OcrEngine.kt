@@ -13,6 +13,8 @@ import com.google.gson.Gson
 import java.nio.FloatBuffer
 import java.nio.LongBuffer
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
 import kotlin.math.max
@@ -274,6 +276,15 @@ class OcrEngine(private val context: Context) {
         return result
     }
 
+    private data class PreparedBatch(
+        val isVertical: Boolean,
+        val floatBuffer: FloatBuffer,
+        val effectiveSizes: List<Pair<Int, Int>>,
+        val batchIndices: List<Int>,
+        val batchBoxes: List<JpDictRect>,
+        val cropDimensions: List<Pair<Int, Int>>
+    )
+
     suspend fun recognizeStreaming(bitmap: Bitmap, lineBoxes: List<JpDictRect>, onLinesRecognized: (List<Pair<Int, LineResult>>) -> Unit) = withContext(Dispatchers.Default) {
         val startTime = System.currentTimeMillis()
         val horizontalShort = mutableListOf<Pair<Int, JpDictRect>>()
@@ -293,13 +304,16 @@ class OcrEngine(private val context: Context) {
             else horizontalShort.add(index to box)
         }
 
-        horizontalShort.chunked(BATCH_SIZE).forEach { batch ->
-            val results = recognizeShortLinesBatch(bitmap, batch, false)
-            withContext(Dispatchers.Main) { onLinesRecognized(results) }
+        val channel = Channel<PreparedBatch>(capacity = 1)
+        
+        launch {
+            horizontalShort.chunked(BATCH_SIZE).forEach { channel.send(prepareShortLinesBatch(bitmap, it, false)) }
+            verticalShort.chunked(BATCH_SIZE).forEach { channel.send(prepareShortLinesBatch(bitmap, it, true)) }
+            channel.close()
         }
 
-        verticalShort.chunked(BATCH_SIZE).forEach { batch ->
-            val results = recognizeShortLinesBatch(bitmap, batch, true)
+        for (prepared in channel) {
+            val results = runInferenceOnPreparedBatch(prepared)
             withContext(Dispatchers.Main) { onLinesRecognized(results) }
         }
 
@@ -314,13 +328,14 @@ class OcrEngine(private val context: Context) {
         Log.d("MeikiOcrEngine", "Streaming recognition for ${lineBoxes.size} lines took ${totalTime}ms")
     }
 
-    private fun recognizeShortLinesBatch(bitmap: Bitmap, batch: List<Pair<Int, JpDictRect>>, isVertical: Boolean): List<Pair<Int, LineResult>> {
+    private fun prepareShortLinesBatch(bitmap: Bitmap, batch: List<Pair<Int, JpDictRect>>, isVertical: Boolean): PreparedBatch {
         val targetW = if (isVertical) VERT_REC_WIDTH else REC_WIDTH
         val targetH = if (isVertical) VERT_REC_HEIGHT else REC_HEIGHT
         
         val paint = android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG)
         val tempBitmaps = mutableListOf<Bitmap>()
         val effectiveSizes = mutableListOf<Pair<Int, Int>>()
+        val cropDimensions = mutableListOf<Pair<Int, Int>>()
 
         for ((_, box) in batch) {
             val effW: Int
@@ -340,37 +355,158 @@ class OcrEngine(private val context: Context) {
             val canvas = Canvas(padded)
             canvas.drawColor(Color.BLACK)
             
-            val srcRect = android.graphics.Rect(
-                max(0, box.left),
-                max(0, box.top),
-                min(bitmap.width, box.right),
-                min(bitmap.height, box.bottom)
-            )
+            val cropX = max(0, box.left)
+            val cropY = max(0, box.top)
+            val cropW = min(bitmap.width - cropX, box.width())
+            val cropH = min(bitmap.height - cropY, box.height())
+            cropDimensions.add(cropW to cropH)
+
+            val srcRect = android.graphics.Rect(cropX, cropY, cropX + cropW, cropY + cropH)
             val dstRect = android.graphics.Rect(0, 0, effW, effH)
             canvas.drawBitmap(bitmap, srcRect, dstRect, paint)
             tempBitmaps.add(padded)
         }
 
-        val chunkResults = recognizeChunksBatched(tempBitmaps, isVertical, effectiveSizes)
+        val imgData = bitmapsToFloatBuffer(tempBitmaps, targetW, targetH)
+        tempBitmaps.forEach { it.recycle() }
+
+        return PreparedBatch(
+            isVertical = isVertical,
+            floatBuffer = imgData,
+            effectiveSizes = effectiveSizes,
+            batchIndices = batch.map { it.first },
+            batchBoxes = batch.map { it.second },
+            cropDimensions = cropDimensions
+        )
+    }
+
+    private fun runInferenceOnPreparedBatch(prepared: PreparedBatch): List<Pair<Int, LineResult>> {
+        val chunkResults = recognizeChunksBatchedFromBuffer(
+            prepared.floatBuffer, 
+            prepared.isVertical, 
+            prepared.effectiveSizes
+        )
 
         val results = mutableListOf<Pair<Int, LineResult>>()
-        for (i in batch.indices) {
-            val index = batch[i].first
-            val box = batch[i].second
+        for (i in prepared.batchIndices.indices) {
+            val index = prepared.batchIndices[i]
+            val box = prepared.batchBoxes[i]
             val (allCandidates, effW, effH) = chunkResults[i]
 
             val cropX = max(0, box.left)
             val cropY = max(0, box.top)
-            val cropW = min(bitmap.width - cropX, box.width())
-            val cropH = min(bitmap.height - cropY, box.height())
+            val (cropW, cropH) = prepared.cropDimensions[i]
 
             val rawChunk = RawChunkResult(allCandidates, 0, 0, cropW, cropH, effW, effH)
-            val result = processLineFromRawChunks(listOf(rawChunk), isVertical, cropX, cropY)
+            val result = processLineFromRawChunks(listOf(rawChunk), prepared.isVertical, cropX, cropY)
 
             results.add(index to result)
-            tempBitmaps[i].recycle()
         }
         return results
+    }
+
+    private fun recognizeChunksBatchedFromBuffer(
+        imgData: FloatBuffer,
+        isVertical: Boolean,
+        effectiveSizes: List<Pair<Int, Int>>
+    ): List<Triple<List<CharCandidate>, Int, Int>> {
+        val session = (if (isVertical) recognizeSessionVertical else recognizeSession) ?: return effectiveSizes.map { Triple(emptyList(), it.first, it.second) }
+
+        val targetW = if (isVertical) VERT_REC_WIDTH else REC_WIDTH
+        val targetH = if (isVertical) VERT_REC_HEIGHT else REC_HEIGHT
+        val batchSize = effectiveSizes.size
+
+        val inputTensor = OnnxTensor.createTensor(env, imgData, longArrayOf(batchSize.toLong(), 3, targetH.toLong(), targetW.toLong()))
+
+        val inputs = mutableMapOf<String, OnnxTensor>()
+        val inputNames = session.inputNames.toList()
+        val imageInputName = inputNames.find { it.contains("image") || it.contains("input") } ?: inputNames.iterator().next()
+        inputs[imageInputName] = inputTensor
+
+        val sizeDataArr = LongArray(batchSize * 2)
+        for (i in 0 until batchSize) {
+            sizeDataArr[i * 2] = targetW.toLong()
+            sizeDataArr[i * 2 + 1] = targetH.toLong()
+        }
+        val sizeData = LongBuffer.wrap(sizeDataArr)
+        inputs["orig_target_sizes"] = OnnxTensor.createTensor(env, sizeData, longArrayOf(batchSize.toLong(), 2))
+
+        val output = session.run(inputs)
+        inputs.values.forEach { it.close() }
+
+        val outputNames = session.outputNames.toList()
+        val labelsName = outputNames.find { it.contains("labels") || it.contains("char_codes") } ?: outputNames[0]
+        val boxesName = outputNames.find { it.contains("boxes") } ?: outputNames.getOrNull(1) ?: outputNames[0]
+        val scoresName = outputNames.find { it.contains("scores") } ?: outputNames.getOrNull(2) ?: outputNames[0]
+        val logitsName = outputNames.find { it.contains("logits") }
+        val indicesName = outputNames.find { it.contains("indices") }
+
+        val labelsVal = output.get(labelsName).get().value
+        val boxesVal = output.get(boxesName).get().value
+        val scoresVal = output.get(scoresName).get().value
+        val logitsVal = logitsName?.let { output.get(it).get().value }
+        val indicesVal = indicesName?.let { output.get(it).get().value }
+
+        val finalResults = mutableListOf<Triple<List<CharCandidate>, Int, Int>>()
+
+        for (b in 0 until batchSize) {
+            val labelsArr = extractLongArrayAt(labelsVal, b)
+            val boxesArr = extractFloatArray2DAt(boxesVal, b)
+            val scoresArr = extractFloatArrayAt(scoresVal, b)
+            val indicesArr = extractLongArrayAt(indicesVal, b)
+            val rawLogits = extractFloatArrayAt(logitsVal, b)
+
+            val effW = effectiveSizes[b].first
+            val effH = effectiveSizes[b].second
+
+            if (labelsArr == null || boxesArr == null || scoresArr == null) {
+                finalResults.add(Triple(emptyList(), effW, effH))
+                continue
+            }
+
+            val numQueries = 48
+            val logitsMatrix = if (rawLogits != null && rawLogits.size % numQueries == 0) {
+                val numClasses = rawLogits.size / numQueries
+                Array(numQueries) { q ->
+                    FloatArray(numClasses) { c -> rawLogits[q * numClasses + c] }
+                }
+            } else null
+
+            val candidates = mutableListOf<CharCandidate>()
+            for (i in scoresArr.indices) {
+                if (scoresArr[i] > 0.01f) {
+                    val alternatives = if (logitsMatrix != null && indicesArr != null && i < indicesArr.size) {
+                        val numClasses = rawLogits?.let { it.size / numQueries } ?: 0
+                        if (numClasses > 0) {
+                            val queryIdx = (indicesArr[i] / numClasses).toInt()
+                            if (queryIdx < logitsMatrix.size) {
+                                val qLogits = logitsMatrix[queryIdx]
+                                qLogits.withIndex()
+                                    .sortedByDescending { it.value }
+                                    .take(15)
+                                    .map {
+                                        val char = charVocab?.getOrNull(it.index)?.toChar() ?: ' '
+                                        char to it.value
+                                    }.toMutableList()
+                            } else emptyList<Pair<Char, Float>>().toMutableList()
+                        } else emptyList<Pair<Char, Float>>().toMutableList()
+                    } else emptyList<Pair<Char, Float>>().toMutableList()
+
+                    candidates.add(
+                        CharCandidate(
+                            char = labelsArr[i].toInt().toChar(),
+                            score = scoresArr[i],
+                            box = boxesArr[i],
+                            alternatives = alternatives
+                        )
+                    )
+                }
+            }
+            finalResults.add(Triple(candidates, effW, effH))
+        }
+
+        output.close()
+        return finalResults
     }
 
     private fun postProcessLineResult(result: LineResult) {
@@ -463,14 +599,12 @@ class OcrEngine(private val context: Context) {
 
     private fun recognizeChunksBatched(chunks: List<Bitmap>, isVertical: Boolean, providedEffectiveSizes: List<Pair<Int, Int>>? = null): List<Triple<List<CharCandidate>, Int, Int>> {
         if (chunks.isEmpty()) return emptyList()
-        val session = (if (isVertical) recognizeSessionVertical else recognizeSession) ?: return chunks.map { Triple(emptyList(), 0, 0) }
 
         val targetW = if (isVertical) VERT_REC_WIDTH else REC_WIDTH
         val targetH = if (isVertical) VERT_REC_HEIGHT else REC_HEIGHT
-        val batchSize = chunks.size
-
-        val paddedBitmaps = mutableListOf<Bitmap>()
+        
         val effectiveSizes = mutableListOf<Pair<Int, Int>>()
+        val paddedBitmaps = mutableListOf<Bitmap>()
 
         if (providedEffectiveSizes != null) {
             paddedBitmaps.addAll(chunks)
@@ -501,100 +635,11 @@ class OcrEngine(private val context: Context) {
         }
 
         val imgData = bitmapsToFloatBuffer(paddedBitmaps, targetW, targetH)
-        val inputTensor = OnnxTensor.createTensor(env, imgData, longArrayOf(batchSize.toLong(), 3, targetH.toLong(), targetW.toLong()))
-
-        val inputs = mutableMapOf<String, OnnxTensor>()
-        val inputNames = session.inputNames.toList()
-        val imageInputName = inputNames.find { it.contains("image") || it.contains("input") } ?: inputNames.iterator().next()
-        inputs[imageInputName] = inputTensor
-
-        val sizeDataArr = LongArray(batchSize * 2)
-        for (i in 0 until batchSize) {
-            sizeDataArr[i * 2] = targetW.toLong()
-            sizeDataArr[i * 2 + 1] = targetH.toLong()
-        }
-        val sizeData = LongBuffer.wrap(sizeDataArr)
-        inputs["orig_target_sizes"] = OnnxTensor.createTensor(env, sizeData, longArrayOf(batchSize.toLong(), 2))
-
-        val output = session.run(inputs)
-        inputs.values.forEach { it.close() }
         if (providedEffectiveSizes == null) {
             paddedBitmaps.forEach { it.recycle() }
         }
 
-        val outputNames = session.outputNames.toList()
-        val labelsName = outputNames.find { it.contains("labels") || it.contains("char_codes") } ?: outputNames[0]
-        val boxesName = outputNames.find { it.contains("boxes") } ?: outputNames.getOrNull(1) ?: outputNames[0]
-        val scoresName = outputNames.find { it.contains("scores") } ?: outputNames.getOrNull(2) ?: outputNames[0]
-        val logitsName = outputNames.find { it.contains("logits") }
-        val indicesName = outputNames.find { it.contains("indices") }
-
-        val labelsVal = output.get(labelsName).get().value
-        val boxesVal = output.get(boxesName).get().value
-        val scoresVal = output.get(scoresName).get().value
-        val logitsVal = logitsName?.let { output.get(it).get().value }
-        val indicesVal = indicesName?.let { output.get(it).get().value }
-
-        val finalResults = mutableListOf<Triple<List<CharCandidate>, Int, Int>>()
-
-        for (b in 0 until batchSize) {
-            val labelsArr = extractLongArrayAt(labelsVal, b)
-            val boxesArr = extractFloatArray2DAt(boxesVal, b)
-            val scoresArr = extractFloatArrayAt(scoresVal, b)
-            val indicesArr = extractLongArrayAt(indicesVal, b)
-            val rawLogits = extractFloatArrayAt(logitsVal, b)
-
-            val effW = effectiveSizes[b].first
-            val effH = effectiveSizes[b].second
-
-            if (labelsArr == null || boxesArr == null || scoresArr == null) {
-                finalResults.add(Triple(emptyList(), effW, effH))
-                continue
-            }
-
-            val numQueries = 48
-            val logitsMatrix = if (rawLogits != null && rawLogits.size % numQueries == 0) {
-                val numClasses = rawLogits.size / numQueries
-                Array(numQueries) { q ->
-                    FloatArray(numClasses) { c -> rawLogits[q * numClasses + c] }
-                }
-            } else null
-
-            val candidates = mutableListOf<CharCandidate>()
-            for (i in scoresArr.indices) {
-                if (scoresArr[i] > 0.01f) { // Low floor for dynamic thresholding
-                    val alternatives = if (logitsMatrix != null && indicesArr != null && i < indicesArr.size) {
-                        val numClasses = rawLogits?.let { it.size / numQueries } ?: 0
-                        if (numClasses > 0) {
-                            val queryIdx = (indicesArr[i] / numClasses).toInt()
-                            if (queryIdx < logitsMatrix.size) {
-                                val qLogits = logitsMatrix[queryIdx]
-                                qLogits.withIndex()
-                                    .sortedByDescending { it.value }
-                                    .take(15)
-                                    .map {
-                                        val char = charVocab?.getOrNull(it.index)?.toChar() ?: ' '
-                                        char to it.value
-                                    }.toMutableList()
-                            } else emptyList<Pair<Char, Float>>().toMutableList()
-                        } else emptyList<Pair<Char, Float>>().toMutableList()
-                    } else emptyList<Pair<Char, Float>>().toMutableList()
-
-                    candidates.add(
-                        CharCandidate(
-                            char = labelsArr[i].toInt().toChar(),
-                            score = scoresArr[i],
-                            box = boxesArr[i],
-                            alternatives = alternatives
-                        )
-                    )
-                }
-            }
-            finalResults.add(Triple(candidates, effW, effH))
-        }
-
-        output.close()
-        return finalResults
+        return recognizeChunksBatchedFromBuffer(imgData, isVertical, effectiveSizes)
     }
 
     private fun recognizeVerticalLongLine(crop: Bitmap, cropX: Int, cropY: Int): LineResult {
