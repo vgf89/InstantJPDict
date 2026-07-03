@@ -222,6 +222,7 @@ class OcrOverlayStateController {
         currentTappedIdx = -1
         currentTappedLineIdx = -1
         currentTappedCharIdxInLine = -1
+        recConfidenceThreshold = 0.1f
         activeLineResults.clear()
         activeLineBoxes = emptyList()
         isControllerNavigation = false

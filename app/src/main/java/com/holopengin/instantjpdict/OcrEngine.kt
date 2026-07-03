@@ -13,14 +13,7 @@ import com.google.gson.Gson
 import java.nio.FloatBuffer
 import java.nio.LongBuffer
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -39,7 +32,7 @@ class OcrEngine(private val context: Context) {
         private const val REC_HEIGHT = 32
         private const val VERT_REC_WIDTH = 32
         private const val VERT_REC_HEIGHT = 480
-        private const val BATCH_SIZE = 8
+        private const val BATCH_SIZE = 4
         private const val REC_CONFIDENCE_THRESHOLD = 0.1f
         private const val X_OVERLAP_THRESHOLD = 0.3f
         private val MEIKI_SWAPPED_PAIRS = mapOf(
@@ -300,39 +293,22 @@ class OcrEngine(private val context: Context) {
             else horizontalShort.add(index to box)
         }
 
-        val semaphore = Semaphore(3)
-        val jobs = mutableListOf<kotlinx.coroutines.Job>()
-
         horizontalShort.chunked(BATCH_SIZE).forEach { batch ->
-            jobs.add(launch {
-                semaphore.withPermit {
-                    val results = recognizeShortLinesBatch(bitmap, batch, false)
-                    withContext(Dispatchers.Main) { onLinesRecognized(results) }
-                }
-            })
+            val results = recognizeShortLinesBatch(bitmap, batch, false)
+            withContext(Dispatchers.Main) { onLinesRecognized(results) }
         }
 
         verticalShort.chunked(BATCH_SIZE).forEach { batch ->
-            jobs.add(launch {
-                semaphore.withPermit {
-                    val results = recognizeShortLinesBatch(bitmap, batch, true)
-                    withContext(Dispatchers.Main) { onLinesRecognized(results) }
-                }
-            })
+            val results = recognizeShortLinesBatch(bitmap, batch, true)
+            withContext(Dispatchers.Main) { onLinesRecognized(results) }
         }
 
         longLines.forEach { (index, box) ->
-            jobs.add(launch {
-                semaphore.withPermit {
-                    val result = recognizeSingleLine(bitmap, box)
-                    if (result != null) {
-                        withContext(Dispatchers.Main) { onLinesRecognized(listOf(index to result)) }
-                    }
-                }
-            })
+            val result = recognizeSingleLine(bitmap, box)
+            if (result != null) {
+                withContext(Dispatchers.Main) { onLinesRecognized(listOf(index to result)) }
+            }
         }
-
-        jobs.joinAll()
 
         val totalTime = System.currentTimeMillis() - startTime
         Log.d("MeikiOcrEngine", "Streaming recognition for ${lineBoxes.size} lines took ${totalTime}ms")
