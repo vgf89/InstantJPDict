@@ -549,10 +549,12 @@ class OcrAccessibilityService : AccessibilityService() {
 
                     val startTime = System.currentTimeMillis()
                     withContext(Dispatchers.IO) {
-                        ocrEngine.recognizeStreaming(bitmap, lineBoxes) { index, lineResult ->
+                        ocrEngine.recognizeStreaming(bitmap, lineBoxes) { results ->
                             if (screenshotOverlay == null) return@recognizeStreaming
                             serviceScope.launch {
-                                addLineToResults(rootLayout, clicksLayer, index, lineResult)
+                                results.forEach { (index, lineResult) ->
+                                    addLineToResults(rootLayout, clicksLayer, index, lineResult)
+                                }
                                 if (controller.currentTappedLineIdx == -1) {
                                     updateCursor()
                                 }
