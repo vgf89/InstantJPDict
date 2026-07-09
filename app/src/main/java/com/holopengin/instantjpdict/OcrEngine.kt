@@ -13,8 +13,11 @@ import com.google.gson.Gson
 import java.nio.FloatBuffer
 import java.nio.LongBuffer
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
 import kotlin.math.max
@@ -285,7 +288,7 @@ class OcrEngine(private val context: Context) {
         val cropDimensions: List<Pair<Int, Int>>
     )
 
-    suspend fun recognizeStreaming(bitmap: Bitmap, lineBoxes: List<JpDictRect>, onLinesRecognized: (List<Pair<Int, LineResult>>) -> Unit) = withContext(Dispatchers.Default) {
+    suspend fun recognizeStreaming(bitmap: Bitmap, lineBoxes: List<JpDictRect>, onLinesRecognized: (List<Pair<Int, LineResult>>) -> Unit) = coroutineScope {
         val startTime = System.currentTimeMillis()
         val horizontalShort = mutableListOf<Pair<Int, JpDictRect>>()
         val verticalShort = mutableListOf<Pair<Int, JpDictRect>>()
@@ -306,6 +309,8 @@ class OcrEngine(private val context: Context) {
 
         val channel = Channel<PreparedBatch>(capacity = 1)
         
+        val deferredResults = mutableListOf<kotlinx.coroutines.Deferred<List<Pair<Int, LineResult>>>>()
+        
         launch {
             horizontalShort.chunked(BATCH_SIZE).forEach { channel.send(prepareShortLinesBatch(bitmap, it, false)) }
             verticalShort.chunked(BATCH_SIZE).forEach { channel.send(prepareShortLinesBatch(bitmap, it, true)) }
@@ -313,7 +318,11 @@ class OcrEngine(private val context: Context) {
         }
 
         for (prepared in channel) {
-            val results = runInferenceOnPreparedBatch(prepared)
+            deferredResults.add(async(Dispatchers.Default) { runInferenceOnPreparedBatch(prepared) })
+        }
+
+        for (deferred in deferredResults) {
+            val results = deferred.await()
             withContext(Dispatchers.Main) { onLinesRecognized(results) }
         }
 
