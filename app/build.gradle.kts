@@ -52,7 +52,23 @@ dependencies {
     implementation(libs.androidx.appcompat)
     implementation(libs.material)
     implementation(libs.androidx.recyclerview)
+    implementation("net.java.dev.jna:jna:5.14.0@aar")
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(libs.androidx.junit)
+}
+
+// Build nav_graph_core Rust library for Android (only if NDK available)
+tasks.register<Exec>("buildNavGraphCore") {
+    workingDir = file("${project.rootDir}/nav_graph_core")
+    commandLine("bash", "./build_nav_graph.sh")
+    // Skip if NDK not installed or if running on CI without NDK
+    isIgnoreExitValue = true
+}
+
+// Ensure Rust library is built before merging JNI libs
+tasks.whenTaskAdded {
+    if (name.contains("mergeDebugJniLibFolders") || name.contains("mergeReleaseJniLibFolders")) {
+        dependsOn("buildNavGraphCore")
+    }
 }

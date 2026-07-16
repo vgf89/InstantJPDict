@@ -4,6 +4,7 @@ import com.holopengin.instantjpdict.util.JapaneseUtil
 import com.holopengin.instantjpdict.util.Deinflector
 import com.holopengin.instantjpdict.data.DictionaryEntry
 import com.google.gson.Gson
+import uniffi.nav_graph_core.*
 
 data class LineResult(
     var text: String,
@@ -172,6 +173,7 @@ class OcrOverlayStateController {
     var currentTappedCharIdxInLine = -1
     
     var activeLineResults: MutableList<LineResult?> = mutableListOf()
+    var navGraph: NavGraph? = null
     var lastHighlightedCoords = mutableListOf<Pair<Int, Int>>()
     var lastJoystickKeyCode = 0
     var lastLandscapeGravity = JpDictGravity.END
@@ -193,6 +195,19 @@ class OcrOverlayStateController {
                 it.alternatives.forEach { alts -> activeAllAlternatives.add(alts) }
             }
         }
+        rebuildNavGraph()
+    }
+
+    fun rebuildNavGraph() {
+        val boxes = mutableListOf<BoundingBox>()
+        for (line in activeLineResults) {
+            line?.let {
+                for (box in it.charBoxes) {
+                    boxes.add(BoundingBox(box.left, box.top, box.width(), box.height()))
+                }
+            }
+        }
+        navGraph = if (boxes.size >= 5) buildNavGraph(boxes) else null
     }
 
     fun getGlobalIdx(lineIdx: Int, charIdxInLine: Int): Int {
@@ -250,15 +265,26 @@ class OcrOverlayStateController {
         if (activeLineResults.isEmpty()) return false
         if (currentTappedLineIdx == -1 || currentTappedCharIdxInLine == -1) return false
 
+        // Use nav graph if available
+        val graph = navGraph
+        if (graph != null) {
+            val dir = when (keyCode) {
+                JpDictKeyEvent.KEYCODE_DPAD_UP -> 0
+                JpDictKeyEvent.KEYCODE_DPAD_DOWN -> 1
+                JpDictKeyEvent.KEYCODE_DPAD_RIGHT -> 2
+                JpDictKeyEvent.KEYCODE_DPAD_LEFT -> 3
+                else -> return false
+            }
+            val target = navigate(graph, currentTappedIdx, dir) ?: return false
+            val coords = getCoordsFromGlobalIdx(target) ?: return false
+            currentTappedLineIdx = coords.first
+            currentTappedCharIdxInLine = coords.second
+            currentTappedIdx = target
+            return true
+        }
+
+        // Legacy fallback: same-line left/right
         val line = activeLineResults[currentTappedLineIdx] ?: return false
-        val box = line.charBoxes[currentTappedCharIdxInLine]
-        val centerX = box.centerX().toDouble()
-        val centerY = box.centerY().toDouble()
-
-        var bestDist = Double.MAX_VALUE
-        var bestIdx = -1
-        var bestCharIdx = -1
-
         when (keyCode) {
             JpDictKeyEvent.KEYCODE_DPAD_LEFT, JpDictKeyEvent.KEYCODE_DPAD_RIGHT -> {
                 val dir = if (keyCode == JpDictKeyEvent.KEYCODE_DPAD_RIGHT) 1 else -1
@@ -267,58 +293,7 @@ class OcrOverlayStateController {
                     currentTappedIdx = getGlobalIdx(currentTappedLineIdx, currentTappedCharIdxInLine)
                     return true
                 }
-
-                for (i in activeLineResults.indices) {
-                    val otherLine = activeLineResults[i] ?: continue
-                    for (c in otherLine.charBoxes.indices) {
-                        val cBox = otherLine.charBoxes[c]
-                        var dx = cBox.centerX().toDouble() - centerX
-                        val dy = cBox.centerY().toDouble() - centerY
-
-                        if (dir == 1 && dx <= 5) dx += rootWidth
-                        else if (dir == -1 && dx >= -5) dx -= rootWidth
-
-                        if ((dir == 1 && dx <= 5) || (dir == -1 && dx >= -5)) continue
-
-                        val dist = (dx * dx) + (dy * dy * 64.0)
-                        if (dist < bestDist) {
-                            bestDist = dist
-                            bestIdx = i
-                            bestCharIdx = c
-                        }
-                    }
-                }
             }
-            JpDictKeyEvent.KEYCODE_DPAD_UP, JpDictKeyEvent.KEYCODE_DPAD_DOWN -> {
-                val dir = if (keyCode == JpDictKeyEvent.KEYCODE_DPAD_DOWN) 1 else -1
-                for (i in activeLineResults.indices) {
-                    val otherLine = activeLineResults[i] ?: continue
-                    for (c in otherLine.charBoxes.indices) {
-                        val cBox = otherLine.charBoxes[c]
-                        val dx = cBox.centerX().toDouble() - centerX
-                        var dy = cBox.centerY().toDouble() - centerY
-
-                        if (dir == 1 && dy <= 5) dy += rootHeight
-                        else if (dir == -1 && dy >= -5) dy -= rootHeight
-
-                        if ((dir == 1 && dy <= 5) || (dir == -1 && dy >= -5)) continue
-
-                        val dist = (dx * dx * 64.0) + (dy * dy)
-                        if (dist < bestDist) {
-                            bestDist = dist
-                            bestIdx = i
-                            bestCharIdx = c
-                        }
-                    }
-                }
-            }
-        }
-
-        if (bestIdx != -1) {
-            currentTappedLineIdx = bestIdx
-            currentTappedCharIdxInLine = bestCharIdx
-            currentTappedIdx = getGlobalIdx(currentTappedLineIdx, currentTappedCharIdxInLine)
-            return true
         }
         return false
     }
