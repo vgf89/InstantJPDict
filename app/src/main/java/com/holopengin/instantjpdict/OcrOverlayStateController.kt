@@ -367,6 +367,31 @@ class OcrOverlayStateController {
         
         val formatted = formatDictionaryResults(uniqueMatches, g)
         currentWordLength = maxLen
+
+        // ── Second pass: look up each individual kanji in the matched term ──
+        val matchedTerm = followingText.take(maxLen)
+        val appendKanji = mutableListOf<FormattedEntry>()
+        for (ch in matchedTerm) {
+            // Only CJK Unified Ideographs (kanji)
+            if (ch !in '\u4E00'..'\u9FFF' && ch !in '\u3400'..'\u4DBF') {
+                continue
+            }
+            val kanjiStr = ch.toString()
+            // Deduplicate: skip if this kanji already has an entry from the
+            // first-pass term lookup or we already appended it above
+            if (formatted.any { it.term == kanjiStr } || appendKanji.any { it.term == kanjiStr }) {
+                continue
+            }
+            val kanjiResults = provider.findByTexts(listOf(kanjiStr))
+            val kanjiOnly = kanjiResults.filter { it.onyomi != null || it.kunyomi != null }
+            if (kanjiOnly.isNotEmpty()) {
+                val formattedKanji = formatDictionaryResults(listOf(kanjiStr to kanjiOnly), g)
+                appendKanji.addAll(formattedKanji)
+            }
+        }
+        if (appendKanji.isNotEmpty()) {
+            formatted.addAll(appendKanji)
+        }
         
         return Result(formatted, maxLen, tappedBox, followingText)
     }

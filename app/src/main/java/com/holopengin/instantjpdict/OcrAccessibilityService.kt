@@ -485,12 +485,16 @@ class OcrAccessibilityService : AccessibilityService() {
                     val actualP = 200 - progress
                     val newThreshold = actualP / 1000f
                     controller.recConfidenceThreshold = newThreshold
-                    controller.refreshLinesWithThreshold(ocrEngine)
-                    refreshOcrResults()
+                    // Update visibility immediately while dragging
+                    refreshOcrResults() 
                 }
             }
             override fun onStartTrackingTouch(seekBar: SeekBar?) {}
-            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {
+                // Perform heavy graph reconstruction/lookup after release
+                controller.refreshLinesWithThreshold(ocrEngine)
+                refreshOcrResults()
+            }
         })
 
         val resetButton = TextView(this).apply {

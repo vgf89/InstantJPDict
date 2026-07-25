@@ -38,6 +38,7 @@ class OcrEngine(private val context: Context) {
         private const val VERT_REC_WIDTH = 32
         private const val VERT_REC_HEIGHT = 480
         private const val BATCH_SIZE = 4
+        private const val PARALLEL_RECOGNITION_THREADS = 4
         private const val REC_CONFIDENCE_THRESHOLD = 0.1f
         private const val X_OVERLAP_THRESHOLD = 0.3f
         private val MEIKI_SWAPPED_PAIRS = mapOf(
@@ -307,29 +308,33 @@ class OcrEngine(private val context: Context) {
             else horizontalShort.add(index to box)
         }
 
-        val channel = Channel<PreparedBatch>(capacity = 1)
+        // Process all lines sequentially as a single batch for stability and efficiency
+        val allLines = horizontalShort + verticalShort + longLines
         
-        val deferredResults = mutableListOf<kotlinx.coroutines.Deferred<List<Pair<Int, LineResult>>>>()
+        // Use a semaphore to limit parallelism
+        val semaphore = kotlinx.coroutines.sync.Semaphore(PARALLEL_RECOGNITION_THREADS)
         
-        launch {
-            horizontalShort.chunked(BATCH_SIZE).forEach { channel.send(prepareShortLinesBatch(bitmap, it, false)) }
-            verticalShort.chunked(BATCH_SIZE).forEach { channel.send(prepareShortLinesBatch(bitmap, it, true)) }
-            channel.close()
-        }
+        allLines.chunked(BATCH_SIZE).forEach { batch ->
+            launch(Dispatchers.Default) {
+                semaphore.acquire()
+                try {
+                    val horizontalBatch = batch.filter { !lineBoxes[it.first].let { b -> b.height() > b.width() } }
+                    val verticalBatch = batch.filter { lineBoxes[it.first].let { b -> b.height() > b.width() } }
+                    val longBatch = batch.filter { longLines.contains(it) }
 
-        for (prepared in channel) {
-            deferredResults.add(async(Dispatchers.Default) { runInferenceOnPreparedBatch(prepared) })
-        }
-
-        for (deferred in deferredResults) {
-            val results = deferred.await()
-            withContext(Dispatchers.Main) { onLinesRecognized(results) }
-        }
-
-        longLines.forEach { (index, box) ->
-            val result = recognizeSingleLine(bitmap, box)
-            if (result != null) {
-                withContext(Dispatchers.Main) { onLinesRecognized(listOf(index to result)) }
+                    val results = mutableListOf<Pair<Int, LineResult>>()
+                    if (horizontalBatch.isNotEmpty()) results.addAll(runInferenceOnPreparedBatch(prepareShortLinesBatch(bitmap, horizontalBatch, false)))
+                    if (verticalBatch.isNotEmpty()) results.addAll(runInferenceOnPreparedBatch(prepareShortLinesBatch(bitmap, verticalBatch, true)))
+                    
+                    longBatch.forEach { (index, box) ->
+                        val result = recognizeSingleLine(bitmap, box)
+                        if (result != null) results.add(index to result)
+                    }
+                    
+                    withContext(Dispatchers.Main) { onLinesRecognized(results) }
+                } finally {
+                    semaphore.release()
+                }
             }
         }
 
