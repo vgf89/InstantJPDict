@@ -111,7 +111,7 @@ class OcrOverlayStateController {
                     val cropY = minOf(firstBox.top, box.top).coerceAtLeast(0)
                     val cropW = (maxOf(firstBox.right, box.right) - cropX).coerceAtMost(screenshotBitmap.width - cropX)
                     val cropH = (maxOf(firstBox.bottom, box.bottom) - cropY).coerceAtMost(screenshotBitmap.height - cropY)
-                    if (cropW > 0 && cropH > 0) {
+                    if (cropW >= 4 && cropH >= 4) {
                         val crop = Bitmap.createBitmap(screenshotBitmap, cropX, cropY, cropW, cropH)
                         val newLine = ocrEngine.processLineFromRawChunks(oldLine, crop)
                         crop.recycle()
@@ -634,7 +634,7 @@ class OcrOverlayStateController {
 
     fun calculateDisplayBoxes(line: LineResult, advances: List<Float>? = null): List<JpDictRect> {
         val fixedSize = if (line.isVertical) {
-            line.charBoxes.map { it.width() }.maxOrNull() ?: 0
+            line.charBoxes.map { it.height() }.maxOrNull() ?: 0
         } else {
             line.charBoxes.map { it.height() }.maxOrNull() ?: 0
         }

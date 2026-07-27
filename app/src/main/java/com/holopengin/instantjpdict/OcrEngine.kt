@@ -133,14 +133,14 @@ class OcrEngine(private val context: Context) {
                 val yClip = y.coerceAtMost(resizeH - 1)
                 px = resized.getPixel(xClip, yClip)
 
-                val r = ((px shr 16 and 0xFF) / 255f - mean[0]) / std[0]
+                val b = ((px shr 16 and 0xFF) / 255f - mean[0]) / std[0]
                 val g = ((px shr 8 and 0xFF) / 255f - mean[1]) / std[1]
-                val b = ((px and 0xFF) / 255f - mean[2]) / std[2]
+                val r = ((px and 0xFF) / 255f - mean[2]) / std[2]
 
                 val idx = y * w + x
-                imgData[idx] = r
+                imgData[idx] = b
                 imgData[h * w + idx] = g
-                imgData[2 * h * w + idx] = b
+                imgData[2 * h * w + idx] = r
             }
         }
         resized.recycle()
@@ -152,9 +152,11 @@ class OcrEngine(private val context: Context) {
         // 3. Run detection
         val inputs = mutableMapOf<String, OnnxTensor>()
         val inputName = session.inputNames.iterator().next()
+        Log.d(TAG, "detect: input name='$inputName' shape=[1,3,$h,$w] total=${imgData.size} resize=${resizeW}x${resizeH}")
         inputs[inputName] = inputTensor
 
         val results = session.run(inputs)
+        Log.d(TAG, "detect: output names=${session.outputNames.toList()}")
         inputs.values.forEach { it.close() }
 
         // 4. Extract probability map [1,1,outH,outW]
@@ -164,7 +166,38 @@ class OcrEngine(private val context: Context) {
         val probShape = outputTensor?.info?.shape
         val outH = if (probShape != null && probShape.size == 4) probShape[2].toInt() else h
         val outW = if (probShape != null && probShape.size == 4) probShape[3].toInt() else w
-        val probArr = extractFloatArray(outputVal.value) ?: floatArrayOf()
+        Log.d(TAG, "output name=$outputName shape=${probShape?.contentToString()} outH=$outH outW=$outW")
+
+        // Read output directly from OnnxTensor
+        val probArr: FloatArray
+        if (outputTensor != null && outH > 0 && outW > 0) {
+            val value = outputTensor.value
+            when (value) {
+                is java.nio.FloatBuffer -> {
+                    val remaining = value.remaining()
+                    Log.d(TAG, "output FloatBuffer remaining=$remaining expected=${outH * outW}")
+                    probArr = FloatArray(remaining)
+                    value.duplicate().get(probArr)
+                }
+                is Array<*> -> {
+                    // ONNX Runtime returns 4D Java arrays on Android ([[[[F)
+                    // Flatten to 1D: shape [1,1,outH,outW]
+                    Log.d(TAG, "output is Array<*> (${value.javaClass.name}) dims=${value.size}")
+                    val expected = 1 * 1 * outH * outW
+                    val flat = mutableListOf<Float>()
+                    flattenFloats(value, flat)
+                    Log.d(TAG, "flattened ${flat.size} values, expected $expected")
+                    probArr = flat.toFloatArray()
+                }
+                else -> {
+                    Log.w(TAG, "unexpected output value type: ${value?.javaClass?.name}")
+                    probArr = extractFloatArray(value) ?: floatArrayOf()
+                }
+            }
+        } else {
+            probArr = extractFloatArray(outputVal.value) ?: floatArrayOf()
+        }
+        Log.d(TAG, "probArr size=${probArr.size}")
 
         // 5. Threshold → binary image
         val probMap = Array(outH) { y ->
@@ -487,27 +520,37 @@ class OcrEngine(private val context: Context) {
 
         // Extract logits — expected shape [N, seqLenTotal, REC_NUM_CLASSES]
         val outputName = sess.outputNames.iterator().next()
-        val flatLogits = extractFloatArray(outputs.get(outputName).get().value) ?: floatArrayOf()
-        outputs.close()
+        val outputVal = outputs.get(outputName).get()
+        val outputTensor = outputVal as? ai.onnxruntime.OnnxTensor
+        val logitShape = outputTensor?.info?.shape
+        Log.d(TAG, "rec output name=$outputName shape=${logitShape?.contentToString()}")
 
+        // Decode directly from the nested Java array to avoid massive flatten copies.
+        // ONNX Runtime on Android returns [[[F (Array<Array<FloatArray>>) for 3D output.
+        // Shape is [batch=1, seqLen, 18710].
         val numClasses = REC_NUM_CLASSES
-        val seqLenTotal = if (numCrops > 0) flatLogits.size / (numCrops * numClasses) else 0
+        val seqLenTotal = if (logitShape != null && logitShape.size == 3) logitShape[1].toInt() else 0
+
+        val outputArray = outputTensor?.value as? Array<*>
+        outputs.close()
 
         // ── CTC decode ──
         val results = mutableListOf<PPOcrResult>()
 
         for (i in 0 until numCrops) {
             val seqLen = minOf(prepped[i].seqLen, seqLenTotal)
-            val baseOff = i * seqLenTotal * numClasses
 
             val text = StringBuilder()
             val alts = mutableListOf<MutableList<Pair<Char, Float>>>()
             val charCols = mutableListOf<Float>()
             var prevClass = 0
 
+            // Get logits for this crop as Array<FloatArray> (2D: [seqLen, 18710])
+            val cropLogits = outputArray?.getOrNull(i) as? Array<*>
+
             for (t in 0 until seqLen) {
-                val offset = baseOff + t * numClasses
-                val slice = flatLogits.sliceArray(offset until offset + numClasses)
+                val slice = cropLogits?.getOrNull(t) as? FloatArray
+                if (slice == null || slice.size < numClasses) continue
 
                 // Argmax
                 var maxIdx = 0
@@ -817,13 +860,11 @@ class OcrEngine(private val context: Context) {
             val result = ppocrResults[0]
             if (result.text.isEmpty()) return oldLine
 
-            // Determine vertical from original box dimensions
+            // Use actual crop bitmap dimensions
             val isVertical = oldLine.isVertical
-            val box = oldLine.charBoxes.firstOrNull() ?: return oldLine
-            val cropW = box.width(); val cropH = box.height()
-
-            // Reconstruct crop coordinates from first char box
-            val cropX = box.left; val cropY = box.top
+            val cropW = crop.width; val cropH = crop.height
+            val cropX = oldLine.charBoxes.firstOrNull()?.left ?: 0
+            val cropY = oldLine.charBoxes.firstOrNull()?.top ?: 0
 
             val charBoxes = computeCharBoxes(
                 result.text, result.charCols, result.seqLenTotal,
@@ -915,4 +956,16 @@ private fun toVerticalGlyph(ch: Char): Char {
         // Dash/hyphen → vertical bar
         if (ch == '-' || ch == '‐' || ch == '–' || ch == '—') '｜'
         else ch
+}
+
+/** Recursively flatten nested Java arrays of Float into a MutableList. */
+private fun flattenFloats(value: Any?, out: MutableList<Float>) {
+    when (value) {
+        is FloatArray -> { for (v in value) out.add(v) }
+        is DoubleArray -> { for (v in value) out.add(v.toFloat()) }
+        is IntArray -> { for (v in value) out.add(v.toFloat()) }
+        is LongArray -> { for (v in value) out.add(v.toFloat()) }
+        is Array<*> -> { for (e in value) flattenFloats(e, out) }
+        is Number -> out.add(value.toFloat())
+    }
 }

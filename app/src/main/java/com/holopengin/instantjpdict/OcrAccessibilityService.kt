@@ -666,7 +666,7 @@ class OcrAccessibilityService : AccessibilityService() {
         lineContainer.removeAllViews() // Clear existing character views for refresh
 
         val fixedSize = if (line.isVertical) {
-            line.charBoxes.map { it.width() }.maxOrNull() ?: 0
+            line.charBoxes.map { it.height() }.maxOrNull() ?: 0
         } else {
             line.charBoxes.map { it.height() }.maxOrNull() ?: 0
         }
