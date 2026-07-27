@@ -54,6 +54,8 @@ class OcrEngine(private val context: Context) {
         private const val REC_CONFIDENCE_THRESHOLD = 0.1f
         private const val PARALLEL_POOL_SIZE = 4
         private const val BATCH_SIZE = 4
+        /** Placeholder for timesteps where blank (0) is top-1 but a non-blank alternative has meaningful score. */
+        const val GAP_CHAR = '\u25CC'
     }
 
     init {
@@ -574,7 +576,19 @@ class OcrEngine(private val context: Context) {
                 // CTC: skip blank (0). Collapse repeats (same non-blank class
                 // as previous timestep). Space (18709) can repeat.
                 when {
-                    classIdx == 0 -> { prevClass = 0 }
+                    classIdx == 0 -> {
+                        // Check if a non-blank alternative has meaningful score.
+                        // If so, insert a placeholder so the user can tap & fix.
+                        val topNonBlank = indexed.firstOrNull { (ch, sc) ->
+                            ch != GAP_CHAR && ch != '　' && sc > 0.0f && sc > maxVal * 0.5f
+                        }
+                        if (topNonBlank != null) {
+                            text.append(GAP_CHAR)
+                            charCols.add(t.toFloat())
+                            alts.add(indexed)
+                        }
+                        prevClass = 0
+                    }
                     classIdx == 18709 -> {
                         text.append(' ')
                         prevClass = 18709
