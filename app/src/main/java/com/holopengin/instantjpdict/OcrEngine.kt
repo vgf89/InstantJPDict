@@ -26,42 +26,6 @@ import kotlin.math.sqrt
 // ─────────────────────────────────────────────────────────────────────────────
 // PP-OCRv6 data types
 // ─────────────────────────────────────────────────────────────────────────────
-
-data class CharCandidate(
-    val char: Char,
-    val score: Float,
-    val box: FloatArray,
-    val alternatives: MutableList<Pair<Char, Float>>,
-)
-
-data class JpDictRect(val left: Int, val top: Int, val right: Int, val bottom: Int) {
-    fun width() = right - left
-    fun height() = bottom - top
-    fun centerX() = (left + right) / 2f
-    fun centerY() = (top + bottom) / 2f
-    fun area() = width() * height()
-}
-
-enum class JpDictGravity { START, END, TOP, BOTTOM }
-
-enum class JpDictKeyEvent {
-    KEYCODE_UNKNOWN;
-    companion object {
-        const val KEYCODE_DPAD_UP = 19
-        const val KEYCODE_DPAD_DOWN = 20
-        const val KEYCODE_DPAD_LEFT = 21
-        const val KEYCODE_DPAD_RIGHT = 22
-        const val KEYCODE_BUTTON_A = 96
-        const val KEYCODE_BUTTON_B = 97
-        const val KEYCODE_BUTTON_X = 99
-        const val KEYCODE_DPAD_CENTER = 23
-        const val KEYCODE_BUTTON_START = 108
-        const val KEYCODE_BACK = 4
-        const val KEYCODE_ESCAPE = 111
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // PP-OCRv6 OcrEngine — replaces meiki DETR with PP-OCR segmentation + CTC
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -195,20 +159,12 @@ class OcrEngine(private val context: Context) {
 
         // 4. Extract probability map [1,1,outH,outW]
         val outputName = session.outputNames.iterator().next()
-        val probArr = extractFloatArray(results.get(outputName).get().value) ?: floatArrayOf()
-
-        // Determine output dimensions
-        val outputInfo = results.get(outputName).get()
-        val outputShape = outputInfo.info
-        val outW: Int
-        val outH: Int
-        if (outputShape is ai.onnxruntime.OnnxTensor.TensorInfo) {
-            val shape = outputShape.shape
-            outH = if (shape.size == 4) shape[2].toInt() else h
-            outW = if (shape.size == 4) shape[3].toInt() else w
-        } else {
-            outH = h; outW = w
-        }
+        val outputVal = results.get(outputName).get()
+        val outputTensor = outputVal as? ai.onnxruntime.OnnxTensor
+        val probShape = outputTensor?.info?.shape
+        val outH = if (probShape != null && probShape.size == 4) probShape[2].toInt() else h
+        val outW = if (probShape != null && probShape.size == 4) probShape[3].toInt() else w
+        val probArr = extractFloatArray(outputVal.value) ?: floatArrayOf()
 
         // 5. Threshold → binary image
         val probMap = Array(outH) { y ->
@@ -295,8 +251,8 @@ class OcrEngine(private val context: Context) {
 
                 val ux = (bx - expand).coerceAtLeast(0f).roundToInt()
                 val uy = (by - expand).coerceAtLeast(0f).roundToInt()
-                val ux2 = (bx2 + expand).coerceAtMost(origW.toInt()).roundToInt()
-                val uy2 = (by2 + expand).coerceAtMost(origH.toInt()).roundToInt()
+                val ux2 = (bx2 + expand).coerceAtMost(origW).roundToInt()
+                val uy2 = (by2 + expand).coerceAtMost(origH).roundToInt()
 
                 if (ux2 - ux < 4 || uy2 - uy < 4) continue
                 rawBoxes.add(JpDictRect(ux, uy, ux2, uy2))
@@ -365,7 +321,7 @@ class OcrEngine(private val context: Context) {
         if (boxes.size < 2) return boxes
         val result = mutableListOf<JpDictRect>()
         val handled = BooleanArray(boxes.size)
-        val sortedBoxes = boxes.withIndex().sortedByDescending { it.value.area() }
+        val sortedBoxes = boxes.withIndex().sortedByDescending { it.value.width() * it.value.height() }
 
         for (i in sortedBoxes.indices) {
             val idx = sortedBoxes[i].index
@@ -400,10 +356,10 @@ class OcrEngine(private val context: Context) {
         if (ix >= ix2 || iy >= iy2) return false
 
         val interArea = (ix2 - ix).toFloat() * (iy2 - iy)
-        val minArea = minOf(a.area(), b.area())
+        val minArea = minOf(a.width() * a.height(), b.width() * b.height())
         if (minArea <= 0) return false
 
-        val iom = interArea / minArea
+        val iom = interArea / minArea.toFloat()
         if (iom < X_OVERLAP_THRESHOLD) return false
 
         val yDiff = abs((a.top + a.bottom) / 2f - (b.top + b.bottom) / 2f)
@@ -934,26 +890,29 @@ class OcrEngine(private val context: Context) {
     //  Japanese text utilities
     // ═════════════════════════════════════════════════════════════════════════
 
-    companion object GlyphConversion {
-        // Map horizontal glyphs to vertical equivalents
-        private val VERTICAL_GLYPH_MAP = mapOf(
-            '「' to '「', '」' to '」', '『' to '『', '』' to '』',
-            '（' to '（', '）' to '）', '［' to '［', '］' to '］',
-            '〔' to '〔', '〕' to '〕', '｛' to '｛', '｝' to '｝',
-            '〈' to '〈', '〉' to '〉', '《' to '《', '》' to '》',
-            '【' to '【', '】' to '】', '〘' to '〘', '〙' to '〙',
-            '〚' to '〚', '〛' to '〛',
-            '、' to '、', '。' to '。', '・' to '・',
-            '—' to '—', '…' to '…', '‥' to '‥',
-            '〜' to '〜',
-            'ー' to '｜', // chōonpu → vertical bar
-        )
-
-        fun toVerticalGlyph(ch: Char): Char {
-            return VERTICAL_GLYPH_MAP[ch] ?:
-                // Dash/hyphen → vertical bar
-                if (ch == '-' || ch == '‐' || ch == '–' || ch == '—') '｜'
-                else ch
-        }
+    fun close() {
+        try { detectSession?.close() } catch (_: Exception) {}
+        recSessions.forEach { try { it.close() } catch (_: Exception) {} }
     }
+}
+
+// Map horizontal glyphs to vertical equivalents (file-level for easy access)
+private val VERTICAL_GLYPH_MAP = mapOf(
+    '「' to '「', '」' to '」', '『' to '『', '』' to '』',
+    '（' to '（', '）' to '）', '［' to '［', '］' to '］',
+    '〔' to '〔', '〕' to '〕', '｛' to '｛', '｝' to '｝',
+    '〈' to '〈', '〉' to '〉', '《' to '《', '》' to '》',
+    '【' to '【', '】' to '】', '〘' to '〘', '〙' to '〙',
+    '〚' to '〚', '〛' to '〛',
+    '、' to '、', '。' to '。', '・' to '・',
+    '—' to '—', '…' to '…', '‥' to '‥',
+    '〜' to '〜',
+    'ー' to '｜', // chōonpu → vertical bar
+)
+
+private fun toVerticalGlyph(ch: Char): Char {
+    return VERTICAL_GLYPH_MAP[ch] ?:
+        // Dash/hyphen → vertical bar
+        if (ch == '-' || ch == '‐' || ch == '–' || ch == '—') '｜'
+        else ch
 }

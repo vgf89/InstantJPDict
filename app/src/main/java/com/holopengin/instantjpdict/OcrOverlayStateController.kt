@@ -347,7 +347,7 @@ class OcrOverlayStateController {
         val dbResults = provider.findByTexts(allTermsToSearch.toList())
         val (uniqueMatches, maxLen) = processResults(dbResults, candidatesByLength, allTermsToSearch, followingText)
         
-        val formatted = formatDictionaryResults(uniqueMatches, g)
+        val formatted = formatDictionaryResults(uniqueMatches, g).toMutableList()
         currentWordLength = maxLen
 
         // ── Second pass: look up each individual kanji in the matched term ──
