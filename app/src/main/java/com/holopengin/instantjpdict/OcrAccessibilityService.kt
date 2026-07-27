@@ -492,7 +492,7 @@ class OcrAccessibilityService : AccessibilityService() {
             override fun onStartTrackingTouch(seekBar: SeekBar?) {}
             override fun onStopTrackingTouch(seekBar: SeekBar?) {
                 // Perform heavy graph reconstruction/lookup after release
-                controller.refreshLinesWithThreshold(ocrEngine)
+                controller.refreshLinesWithThreshold(ocrEngine, screenshotBitmap)
                 refreshOcrResults()
             }
         })
@@ -508,7 +508,7 @@ class OcrAccessibilityService : AccessibilityService() {
             setOnClickListener {
                 controller.recConfidenceThreshold = 0.1f
                 thresholdSlider.progress = 100
-                controller.refreshLinesWithThreshold(ocrEngine)
+                controller.refreshLinesWithThreshold(ocrEngine, screenshotBitmap)
                 refreshOcrResults()
             }
         }

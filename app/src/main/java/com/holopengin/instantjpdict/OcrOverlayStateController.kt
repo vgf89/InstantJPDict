@@ -4,6 +4,7 @@ import com.holopengin.instantjpdict.util.JapaneseUtil
 import com.holopengin.instantjpdict.util.Deinflector
 import com.holopengin.instantjpdict.data.DictionaryEntry
 import com.google.gson.Gson
+import android.graphics.Bitmap
 import uniffi.nav_graph_core.*
 
 data class LineResult(
@@ -11,21 +12,7 @@ data class LineResult(
     val charBoxes: List<JpDictRect>,
     val alternatives: List<MutableList<Pair<Char, Float>>>,
     val isVertical: Boolean = false,
-    val chunkBoxes: List<JpDictRect> = emptyList(),
-    val rawChunks: List<RawChunkResult> = emptyList(),
-    val cropX: Int = 0,
-    val cropY: Int = 0,
-    val overrides: MutableMap<Pair<Int, Int>, Char> = mutableMapOf()
-)
-
-data class RawChunkResult(
-    val candidates: List<CharCandidate>,
-    val offsetX: Int,
-    val offsetY: Int,
-    val chunkW: Int,
-    val chunkH: Int,
-    val effW: Int,
-    val effH: Int
+    val overrides: MutableMap<Int, Pair<Char, Float>> = mutableMapOf()
 )
 
 sealed class DefinitionNode {
@@ -107,7 +94,7 @@ class OcrOverlayStateController {
     var currentWordLength = 0
     var recConfidenceThreshold = 0.1f
 
-    fun refreshLinesWithThreshold(ocrEngine: OcrEngine) {
+    fun refreshLinesWithThreshold(ocrEngine: OcrEngine, screenshotBitmap: Bitmap?) {
         val oldTappedBoxCenter = if (currentTappedLineIdx != -1 && currentTappedCharIdxInLine != -1) {
             activeLineResults.getOrNull(currentTappedLineIdx)?.charBoxes?.getOrNull(currentTappedCharIdxInLine)?.let {
                 Pair(it.centerX(), it.centerY())
@@ -116,24 +103,20 @@ class OcrOverlayStateController {
 
         activeLineResults.forEachIndexed { i, line ->
             line?.let { oldLine ->
-                if (oldLine.rawChunks.isNotEmpty()) {
-                    val newLine = ocrEngine.processLineFromRawChunks(oldLine.rawChunks, oldLine.isVertical, oldLine.cropX, oldLine.cropY, recConfidenceThreshold)
-                    
-                    // Transfer overrides
-                    newLine.overrides.putAll(oldLine.overrides)
-                    
-                    // Apply overrides to the new text
-                    val textChars = newLine.text.toCharArray()
-                    for (j in newLine.charBoxes.indices) {
-                        val box = newLine.charBoxes[j]
-                        val override = newLine.overrides[Pair(box.centerX(), box.centerY())]
-                        if (override != null) {
-                            textChars[j] = override
-                        }
+                // Re-recognize from bitmap crop (PP-OCR is fast enough to re-run)
+                if (screenshotBitmap != null && oldLine.charBoxes.isNotEmpty()) {
+                    val firstBox = oldLine.charBoxes.first()
+                    val box = oldLine.charBoxes.last()
+                    val cropX = minOf(firstBox.left, box.left).coerceAtLeast(0)
+                    val cropY = minOf(firstBox.top, box.top).coerceAtLeast(0)
+                    val cropW = (maxOf(firstBox.right, box.right) - cropX).coerceAtMost(screenshotBitmap.width - cropX)
+                    val cropH = (maxOf(firstBox.bottom, box.bottom) - cropY).coerceAtMost(screenshotBitmap.height - cropY)
+                    if (cropW > 0 && cropH > 0) {
+                        val crop = Bitmap.createBitmap(screenshotBitmap, cropX, cropY, cropW, cropH)
+                        val newLine = ocrEngine.processLineFromRawChunks(oldLine, crop)
+                        crop.recycle()
+                        activeLineResults[i] = newLine
                     }
-                    newLine.text = String(textChars)
-                    
-                    activeLineResults[i] = newLine
                 }
             }
         }
@@ -253,9 +236,8 @@ class OcrOverlayStateController {
             charArray[charIdx] = newChar
             line.text = String(charArray)
             
-            // Save override
-            val box = line.charBoxes[charIdx]
-            line.overrides[Pair(box.centerX(), box.centerY())] = newChar
+            // Save override (charIdx-based for PP-OCR)
+            line.overrides[charIdx] = newChar to 1f
 
             updateGlobalData()
         }
