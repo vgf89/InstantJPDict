@@ -466,9 +466,9 @@ class OcrAccessibilityService : AccessibilityService() {
 
         val thresholdSlider = SeekBar(this).apply {
             max = 195
-            // Maps 20% to progress 0 (top) and 0.5% to progress 195 (bottom)
-            progress = (200 - (controller.recConfidenceThreshold * 1000).toInt()).coerceIn(0, 195)
-            rotation = 90f // 0 is top, max is bottom. Fill top -> bottom.
+            // -90° so visually bottom = 0 (off) and top = 195 (max placeholders)
+            progress = 0
+            rotation = 90f // 0 is bottom, max is top. Fill bottom -> top.
             val sliderWidth = (300 * resources.displayMetrics.density).toInt()
             val sliderHeight = (40 * resources.displayMetrics.density).toInt()
             layoutParams = LinearLayout.LayoutParams(sliderWidth, sliderHeight).apply {
@@ -482,17 +482,22 @@ class OcrAccessibilityService : AccessibilityService() {
         thresholdSlider.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                 if (fromUser) {
-                    val actualP = 200 - progress
-                    val newThreshold = actualP / 1000f
-                    controller.recConfidenceThreshold = newThreshold
+                    // Bottom (0) = off. First tick above = 0.5 (strictest).
+                    // Higher = decreasing threshold = more placeholders.
+                    val blankThreshold = if (progress == 0) 0f else
+                        (0.5f - (progress - 1) * 0.01f).coerceAtLeast(0f)
+                    controller.recConfidenceThreshold = blankThreshold
                     // Update visibility immediately while dragging
-                    refreshOcrResults() 
+                    refreshOcrResults()
                 }
             }
             override fun onStartTrackingTouch(seekBar: SeekBar?) {}
             override fun onStopTrackingTouch(seekBar: SeekBar?) {
-                // Perform heavy graph reconstruction/lookup after release
-                controller.refreshLinesWithThreshold(ocrEngine, screenshotBitmap)
+                // Re-decode from cache with the new threshold — no model re-run
+                val p = thresholdSlider.progress
+                val blankThreshold = if (p == 0) 0f else
+                    (0.5f - (p - 1) * 0.01f).coerceAtLeast(0f)
+                controller.refreshLinesWithThreshold(ocrEngine, screenshotBitmap, blankThreshold)
                 refreshOcrResults()
             }
         })
@@ -507,8 +512,8 @@ class OcrAccessibilityService : AccessibilityService() {
             isFocusable = true
             setOnClickListener {
                 controller.recConfidenceThreshold = 0.1f
-                thresholdSlider.progress = 100
-                controller.refreshLinesWithThreshold(ocrEngine, screenshotBitmap)
+                thresholdSlider.progress = 0  // off (no placeholders)
+                controller.refreshLinesWithThreshold(ocrEngine, screenshotBitmap, 0f)
                 refreshOcrResults()
             }
         }
@@ -670,6 +675,8 @@ class OcrAccessibilityService : AccessibilityService() {
         } else {
             line.charBoxes.map { it.height() }.maxOrNull() ?: 0
         }
+        Log.d("OcrAccessibilityService", "addLineToResults line=$lineIdx text='${line.text}' boxes=${line.charBoxes.size} fixedSize=$fixedSize isVertical=${line.isVertical}")
+        if (fixedSize == 0) return
 
         val paintForMeasure = Paint().apply {
             textSize = fixedSize.toFloat() // Measure at full box size for better spacing

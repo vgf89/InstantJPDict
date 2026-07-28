@@ -12,7 +12,14 @@ data class LineResult(
     val charBoxes: List<JpDictRect>,
     val alternatives: List<MutableList<Pair<Char, Float>>>,
     val isVertical: Boolean = false,
-    val overrides: MutableMap<Int, Pair<Char, Float>> = mutableMapOf()
+    val overrides: MutableMap<Int, Pair<Char, Float>> = mutableMapOf(),
+    /** Cached top-15 alternatives for EVERY timestep, for slider re-decode without re-running model. */
+    val rawAlternatives: List<List<Pair<Char, Float>>> = emptyList(),
+    val seqLenTotal: Int = 0,
+    val cropW: Int = 0,
+    val cropH: Int = 0,
+    val cropX: Int = 0,
+    val cropY: Int = 0,
 )
 
 sealed class DefinitionNode {
@@ -94,7 +101,7 @@ class OcrOverlayStateController {
     var currentWordLength = 0
     var recConfidenceThreshold = 0.1f
 
-    fun refreshLinesWithThreshold(ocrEngine: OcrEngine, screenshotBitmap: Bitmap?) {
+    fun refreshLinesWithThreshold(ocrEngine: OcrEngine, screenshotBitmap: Bitmap?, blankThreshold: Float = 0f) {
         val oldTappedBoxCenter = if (currentTappedLineIdx != -1 && currentTappedCharIdxInLine != -1) {
             activeLineResults.getOrNull(currentTappedLineIdx)?.charBoxes?.getOrNull(currentTappedCharIdxInLine)?.let {
                 Pair(it.centerX(), it.centerY())
@@ -103,20 +110,10 @@ class OcrOverlayStateController {
 
         activeLineResults.forEachIndexed { i, line ->
             line?.let { oldLine ->
-                // Re-recognize from bitmap crop (PP-OCR is fast enough to re-run)
-                if (screenshotBitmap != null && oldLine.charBoxes.isNotEmpty()) {
-                    val firstBox = oldLine.charBoxes.first()
-                    val box = oldLine.charBoxes.last()
-                    val cropX = minOf(firstBox.left, box.left).coerceAtLeast(0)
-                    val cropY = minOf(firstBox.top, box.top).coerceAtLeast(0)
-                    val cropW = (maxOf(firstBox.right, box.right) - cropX).coerceAtMost(screenshotBitmap.width - cropX)
-                    val cropH = (maxOf(firstBox.bottom, box.bottom) - cropY).coerceAtMost(screenshotBitmap.height - cropY)
-                    if (cropW >= 4 && cropH >= 4) {
-                        val crop = Bitmap.createBitmap(screenshotBitmap, cropX, cropY, cropW, cropH)
-                        val newLine = ocrEngine.processLineFromRawChunks(oldLine, crop)
-                        crop.recycle()
-                        activeLineResults[i] = newLine
-                    }
+                if (oldLine.rawAlternatives.isNotEmpty()) {
+                    // Re-decode from cached logits — no model re-run
+                    val newLine = ocrEngine.reDecodeLineResult(oldLine, blankThreshold)
+                    activeLineResults[i] = newLine
                 }
             }
         }
@@ -332,12 +329,15 @@ class OcrOverlayStateController {
         val provider = dictionaryProvider ?: return null
         val g = gson ?: return null
 
+        val line = activeLineResults.getOrNull(lineIdx) ?: return null
+        // Skip lookup on placeholder characters — user must pick an alternative first
+        if (line.text.getOrNull(charIdx) == OcrEngine.GAP_CHAR) return null
+
         val globalIdx = getGlobalIdx(lineIdx, charIdx)
         currentTappedIdx = globalIdx
         currentTappedLineIdx = lineIdx
         currentTappedCharIdxInLine = charIdx
 
-        val line = activeLineResults.getOrNull(lineIdx) ?: return null
         val tappedBox = line.charBoxes.getOrNull(charIdx) ?: JpDictRect(0, 0, 0, 0)
 
         val endIdx = kotlin.math.min(globalIdx + 20, activeAllChars.size)

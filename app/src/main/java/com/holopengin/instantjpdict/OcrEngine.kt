@@ -35,8 +35,8 @@ class OcrEngine(private val context: Context) {
     // PP-OCRv6 detection session
     private var detectSession: OrtSession? = null
 
-    // PP-OCRv6 recognition: pool of 4 sessions for both horizontal and vertical
-    private var recSessions: MutableList<OrtSession> = mutableListOf()
+    // PP-OCRv6 recognition session
+    private var recSession: OrtSession? = null
     private var ppocrVocab: List<String> = emptyList()
 
     companion object {
@@ -52,9 +52,7 @@ class OcrEngine(private val context: Context) {
         private const val REC_TARGET_H = 48
         private const val REC_NUM_CLASSES = 18710  // 0=blank, 1..18708=chars, 18709=space
         private const val REC_CONFIDENCE_THRESHOLD = 0.1f
-        private const val PARALLEL_POOL_SIZE = 4
-        private const val BATCH_SIZE = 4
-        /** Placeholder for timesteps where blank (0) is top-1 but a non-blank alternative has meaningful score. */
+        private const val BATCH_SIZE = 1
         const val GAP_CHAR = '\u25CC'
     }
 
@@ -63,23 +61,23 @@ class OcrEngine(private val context: Context) {
             // ── Load PP-OCRv6 detection model ──
             val detOptions = SessionOptions()
             detOptions.addNnapi()
+            detOptions.addXnnpack(mapOf("intra_op_num_threads" to "4"))
             detOptions.setOptimizationLevel(SessionOptions.OptLevel.ALL_OPT)
             detectSession = env.createSession(
                 loadModel("PP-OCRv6_small_det_onnx/inference.onnx"), detOptions
             )
-            Log.d(TAG, "Detection model loaded")
+            Log.d(TAG, "Detection model loaded (NNAPI+XNNPACK)")
 
-            // ── Load PP-OCRv6 recognition sessions (pool) ──
+            // ── Load PP-OCRv6 recognition session ──
             val recOptions = SessionOptions()
             recOptions.addNnapi()
+            // XNNPACK on ARM64 is typically faster than NNAPI fallback for CNN+BiLSTM
+            recOptions.addXnnpack(mapOf("intra_op_num_threads" to "4"))
             recOptions.setOptimizationLevel(SessionOptions.OptLevel.ALL_OPT)
-            for (i in 0 until PARALLEL_POOL_SIZE) {
-                val sess = env.createSession(
-                    loadModel("PP-OCRv6_small_rec_onnx/inference.onnx"), recOptions
-                )
-                recSessions.add(sess)
-            }
-            Log.d(TAG, "Recognition pool loaded ($PARALLEL_POOL_SIZE sessions)")
+            recSession = env.createSession(
+                loadModel("PP-OCRv6_small_rec_onnx/inference.onnx"), recOptions
+            )
+            Log.d(TAG, "Recognition session loaded (NNAPI+XNNPACK)")
 
             // ── Load vocabulary ──
             val vocabJson = context.assets.open("PP-OCRv6_small_rec_onnx/vocab.json")
@@ -98,7 +96,7 @@ class OcrEngine(private val context: Context) {
     }
 
     fun isReady(): Boolean =
-        detectSession != null && recSessions.isNotEmpty() && ppocrVocab.isNotEmpty()
+        detectSession != null && recSession != null && ppocrVocab.isNotEmpty()
 
     // ═════════════════════════════════════════════════════════════════════════
     //  PP-OCRv6 DETECTION (DB segmentation → contours → bounding boxes)
@@ -419,6 +417,8 @@ class OcrEngine(private val context: Context) {
         val alternatives: List<List<Pair<Char, Float>>>,
         val charCols: FloatArray,   // CTC timestep positions
         val seqLenTotal: Int,
+        /** Top-15 alternatives for EVERY timestep (including blanks), for cache re-decode. */
+        val rawAlternatives: List<List<Pair<Char, Float>>> = emptyList(),
     )
 
     /**
@@ -542,76 +542,122 @@ class OcrEngine(private val context: Context) {
         for (i in 0 until numCrops) {
             val seqLen = minOf(prepped[i].seqLen, seqLenTotal)
 
-            val text = StringBuilder()
-            val alts = mutableListOf<MutableList<Pair<Char, Float>>>()
-            val charCols = mutableListOf<Float>()
-            var prevClass = 0
-
             // Get logits for this crop as Array<FloatArray> (2D: [seqLen, 18710])
             val cropLogits = outputArray?.getOrNull(i) as? Array<*>
 
+            // Collect top-15 alternatives for EVERY timestep (including blanks).
+            val rawAlts = mutableListOf<List<Pair<Char, Float>>>()
             for (t in 0 until seqLen) {
                 val slice = cropLogits?.getOrNull(t) as? FloatArray
-                if (slice == null || slice.size < numClasses) continue
-
-                // Argmax
-                var maxIdx = 0
-                var maxVal = Float.NEGATIVE_INFINITY
+                if (slice == null || slice.size < numClasses) {
+                    rawAlts.add(emptyList())
+                    continue
+                }
+                // Priority queue keeps top 15 in O(N log 15) instead of O(N log N) full sort
+                val pq = java.util.PriorityQueue<Int>(16, compareBy { slice[it] })
                 for (k in slice.indices) {
-                    if (slice[k] > maxVal) { maxVal = slice[k]; maxIdx = k }
+                    pq.add(k)
+                    if (pq.size > 15) pq.poll()
                 }
-
-                val classIdx = maxIdx
-
-                // Collect top-15 alternatives
-                val indexed = slice.withIndex()
-                    .sortedByDescending { it.value }
-                    .take(15)
-                    .map { (idx, score) ->
-                        val ch = decodeChar(idx)
-                        ch to score
-                    }
-                    .toMutableList()
-
-                // CTC: skip blank (0). Collapse repeats (same non-blank class
-                // as previous timestep). Space (18709) can repeat.
-                when {
-                    classIdx == 0 -> {
-                        // Check if a non-blank alternative has meaningful score.
-                        // If so, insert a placeholder so the user can tap & fix.
-                        val topNonBlank = indexed.firstOrNull { (ch, sc) ->
-                            ch != GAP_CHAR && ch != '　' && sc > 0.0f && sc > maxVal * 0.5f
-                        }
-                        if (topNonBlank != null) {
-                            text.append(GAP_CHAR)
-                            charCols.add(t.toFloat())
-                            alts.add(indexed)
-                        }
-                        prevClass = 0
-                    }
-                    classIdx == 18709 -> {
-                        text.append(' ')
-                        prevClass = 18709
-                        charCols.add(t.toFloat())
-                        alts.add(indexed)
-                    }
-                    classIdx == prevClass -> { /* collapse repeat */ }
-                    else -> {
-                        val ch = decodeChar(classIdx)
-                        if (ch != '\uFFFD') {
-                            text.append(ch)
-                            charCols.add(t.toFloat())
-                            alts.add(indexed)
-                            prevClass = classIdx
-                        }
-                    }
-                }
+                val top15 = pq.toList().sortedByDescending { slice[it] }
+                rawAlts.add(top15.map { decodeChar(it) to slice[it] })
             }
 
-            results.add(PPOcrResult(text.toString(), alts, charCols.toFloatArray(), seqLenTotal))
+            // Decode with blank threshold = 0.0 (default: no placeholders)
+            val result = ctcDecode(cropLogits, seqLen, numClasses, 0f, seqLenTotal)
+            results.add(result.copy(rawAlternatives = rawAlts))
         }
 
         return results
+    }
+
+    /**
+     * CTC-decoded text + alternatives.  `blankThreshold` 0 means pure greedy
+     * (default PP-OCR behaviour); values >0 insert [GAP_CHAR] placeholders for
+     * blank timesteps where the top non-blank alternative score exceeds
+     * `blank_threshold * blank_score`.
+     */
+    private fun ctcDecode(
+        cropLogits: Array<*>?,
+        seqLen: Int,
+        numClasses: Int,
+        blankThreshold: Float,
+        seqLenTotal: Int,
+    ): PPOcrResult {
+        val text = StringBuilder()
+        val alts = mutableListOf<MutableList<Pair<Char, Float>>>()
+        val charCols = mutableListOf<Float>()
+        var prevClass = 0
+
+        for (t in 0 until seqLen) {
+            val slice = cropLogits?.getOrNull(t) as? FloatArray
+            if (slice == null || slice.size < numClasses) continue
+
+            // Argmax
+            var maxIdx = 0
+            var maxVal = Float.NEGATIVE_INFINITY
+            for (k in slice.indices) {
+                if (slice[k] > maxVal) { maxVal = slice[k]; maxIdx = k }
+            }
+
+            val classIdx = maxIdx
+
+            // Collect top-15 alternatives
+            val indexed = {
+                val pq = java.util.PriorityQueue<Int>(16, compareBy { slice[it] })
+                for (k in slice.indices) {
+                    pq.add(k)
+                    if (pq.size > 15) pq.poll()
+                }
+                pq.toList().sortedByDescending { slice[it] }
+                    .map { decodeChar(it) to slice[it] }
+                    .toMutableList()
+            }()
+
+            // CTC: skip blank (0). Collapse repeats.
+            when {
+                classIdx == 0 -> {
+                    if (blankThreshold > 0f) {
+                        // Check if a non-blank alternative has meaningful score.
+                        val topNonBlank = indexed.firstOrNull { (ch, sc) ->
+                            ch != GAP_CHAR && ch != '　' && (1f / (1f + abs(maxVal - sc)) > blankThreshold)
+                        }
+                        if (topNonBlank != null) {
+                            // Show the best non-blank character; put GAP_CHAR as an alternative
+                            text.append(topNonBlank.first)
+                            charCols.add(t.toFloat())
+                            val reordered = mutableListOf(topNonBlank)
+                            reordered.add(GAP_CHAR to 0f) // blank as selectable option
+                            for (alt in indexed) {
+                                if (alt != topNonBlank && alt.first != '\u3000' && alt !in reordered) {
+                                    reordered.add(alt)
+                                }
+                            }
+                            alts.add(reordered)
+                        }
+                    }
+                    prevClass = 0
+                }
+                classIdx == 18709 -> {
+                    text.append(' ')
+                    prevClass = 18709
+                    charCols.add(t.toFloat())
+                    alts.add(indexed)
+                }
+                classIdx == prevClass -> { /* collapse repeat */ }
+                else -> {
+                    val ch = decodeChar(classIdx)
+                    if (ch != '\uFFFD') {
+                        text.append(ch)
+                        charCols.add(t.toFloat())
+                        alts.add(indexed)
+                        prevClass = classIdx
+                    }
+                }
+            }
+        }
+
+        return PPOcrResult(text.toString(), alts, charCols.toFloatArray(), seqLenTotal)
     }
 
     private fun decodeChar(classIdx: Int): Char {
@@ -633,11 +679,11 @@ class OcrEngine(private val context: Context) {
 
     /**
      * Compute per-character bounding boxes from CTC timestep columns.
-     * The logic matches accessibility_daemon exactly:
-     *   - Horizontal: x-axis centers from (t+0.5)*avg_col_width, split overlaps evenly
-     *   - Vertical:   y-axis centers, with punctuation squashing/expansion
-     */
-    private fun computeCharBoxes(
+ * The logic matches accessibility_daemon exactly:
+ *   - Horizontal: x-axis centers from (t+0.5)*avg_col_width, split overlaps evenly
+ *   - Vertical:   y-axis centers, with punctuation squashing/expansion
+ */
+fun computeCharBoxes(
         text: String,
         charCols: FloatArray,
         seqLenTotal: Int,
@@ -760,7 +806,7 @@ class OcrEngine(private val context: Context) {
         onLinesRecognized: (List<Pair<Int, LineResult>>) -> Unit
     ) = coroutineScope {
         val startTime = System.currentTimeMillis()
-        if (recSessions.isEmpty() || ppocrVocab.isEmpty()) return@coroutineScope
+        if (recSession == null || ppocrVocab.isEmpty()) return@coroutineScope
 
         // Build job queue: crop each box, determine orientation
         data class Job(val idx: Int, val bbox: JpDictRect, val crop: Bitmap, val isVertical: Boolean)
@@ -778,70 +824,73 @@ class OcrEngine(private val context: Context) {
 
         if (jobs.isEmpty()) return@coroutineScope
 
-        // ── Worker pool: each worker pulls jobs from a shared queue ──
-        val jobQueue = java.util.concurrent.ConcurrentLinkedQueue(jobs)
-        val poolSize = minOf(recSessions.size, jobs.size)
-        Log.d(TAG, "Processing ${jobs.size} boxes with $poolSize workers")
+        Log.d(TAG, "Processing ${jobs.size} boxes in batches of $BATCH_SIZE")
 
-        // Collect all results into a thread-safe map
-        val resultMap = java.util.concurrent.ConcurrentHashMap<Int, LineResult>()
-        val workerThreads = mutableListOf<Thread>()
+        // Sort by effective width so similar-sized lines batch together,
+        // minimising padding waste in the recognition model.
+        val sortedJobs = jobs.sortedBy { job ->
+            if (job.isVertical) job.bbox.height() else job.bbox.width()
+        }
 
-        for (workerId in 0 until poolSize) {
-            val sess = recSessions[workerId]
-            val thread = Thread {
-                while (true) {
-                    val job = jobQueue.poll() ?: break
-                    try {
-                        val ppocrResults = recognizePpocrBatch(sess, listOf(job.crop))
-                        if (ppocrResults.isEmpty()) continue
-                        val result = ppocrResults[0]
-                        if (result.text.isEmpty()) continue
+        val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+        val sess = recSession ?: return@coroutineScope
 
-                        val charBoxes = computeCharBoxes(
-                            result.text, result.charCols, result.seqLenTotal,
-                            job.bbox.left, job.bbox.top,
-                            job.bbox.width(), job.bbox.height(),
-                            job.isVertical,
-                        )
+        // Process in batches of BATCH_SIZE, delivering each result as it completes.
+        for ((batchIdx, batch) in sortedJobs.chunked(BATCH_SIZE).withIndex()) {
+            val tBatch = System.nanoTime()
+            try {
+                val crops = batch.map { it.crop }
+                val ppocrResults = recognizePpocrBatch(sess, crops)
 
-                        // Glyph conversion for vertical text
-                        val finalText = if (job.isVertical) {
-                            result.text.map { ch -> toVerticalGlyph(ch) }.joinToString("")
-                        } else result.text
-                        val finalAlts = if (job.isVertical) {
-                            result.alternatives.map { alts ->
-                                alts.map { (ch, s) -> toVerticalGlyph(ch) to s }.toMutableList()
-                            }
-                        } else result.alternatives.map { it.toMutableList() }
+                for ((index, job) in batch.withIndex()) {
+                    val result = ppocrResults.getOrNull(index) ?: continue
+                    if (result.text.isEmpty()) continue
 
-                        resultMap[job.idx] = LineResult(
-                            text = finalText,
-                            charBoxes = charBoxes,
-                            alternatives = finalAlts,
-                            isVertical = job.isVertical,
-                        )
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Worker $workerId failed on job ${job.idx}", e)
-                    }
+                    val charBoxes = computeCharBoxes(
+                        result.text, result.charCols, result.seqLenTotal,
+                        job.bbox.left, job.bbox.top,
+                        job.bbox.width(), job.bbox.height(),
+                        job.isVertical,
+                    )
+
+                    val finalText = if (job.isVertical) {
+                        result.text.map { ch -> toVerticalGlyph(ch) }.joinToString("")
+                    } else result.text
+                    val finalAlts = if (job.isVertical) {
+                        result.alternatives.map { alts ->
+                            alts.map { (ch, s) -> toVerticalGlyph(ch) to s }.toMutableList()
+                        }
+                    } else result.alternatives.map { it.toMutableList() }
+
+                    val lineResult = LineResult(
+                        text = finalText,
+                        charBoxes = charBoxes,
+                        alternatives = finalAlts,
+                        isVertical = job.isVertical,
+                        rawAlternatives = result.rawAlternatives.map { row ->
+                            if (job.isVertical) row.map { (ch, s) -> toVerticalGlyph(ch) to s }
+                            else row
+                        },
+                        seqLenTotal = result.seqLenTotal,
+                        cropW = job.bbox.width(),
+                        cropH = job.bbox.height(),
+                        cropX = job.bbox.left,
+                        cropY = job.bbox.top,
+                    )
+
+                    val elapsed = (System.nanoTime() - tBatch) / 1_000_000
+                    Log.d(TAG, "Batch $batchIdx job ${job.idx} (${job.bbox.width()}x${job.bbox.height()}${if (job.isVertical) "V" else "H"}) "
+                            + "→ '${finalText}' ${charBoxes.size} chars in ${elapsed}ms")
+
+                    // Stream result to UI immediately
+                    mainHandler.post { onLinesRecognized(listOf(job.idx to lineResult)) }
                 }
+            } catch (e: Exception) {
+                Log.e(TAG, "Batch $batchIdx failed", e)
             }
-            thread.name = "ppocr-worker-$workerId"
-            thread.start()
-            workerThreads.add(thread)
         }
 
-        // Wait for all workers to finish
-        for (t in workerThreads) t.join()
-
-        // Sort results by index and deliver
-        val sortedResults = resultMap.entries
-            .sortedBy { it.key }
-            .map { (idx, lineResult) -> idx to lineResult }
-
-        withContext(Dispatchers.Main) {
-            onLinesRecognized(sortedResults)
-        }
+        Log.d(TAG, "All batches finished")
 
         // Recycle all crop bitmaps
         jobs.forEach { it.crop.recycle() }
@@ -867,7 +916,7 @@ class OcrEngine(private val context: Context) {
         oldLine: LineResult,
         crop: Bitmap,
     ): LineResult {
-        val sess = recSessions.firstOrNull() ?: return oldLine
+        val sess = recSession ?: return oldLine
         try {
             val ppocrResults = recognizePpocrBatch(sess, listOf(crop))
             if (ppocrResults.isEmpty()) return oldLine
@@ -945,9 +994,90 @@ class OcrEngine(private val context: Context) {
     //  Japanese text utilities
     // ═════════════════════════════════════════════════════════════════════════
 
+    /**
+     * Re-decode a [LineResult] from its cached [rawAlternatives] without
+     * re-running recognition.  [blankThreshold] 0 = default (nothing shown
+     * for blanks); values > 0 insert [GAP_CHAR] placeholders for blank
+     * timesteps with a non-blank alternative exceeding `blank × blankThreshold`.
+     */
+    fun reDecodeLineResult(oldLine: LineResult, blankThreshold: Float): LineResult {
+        val raw = oldLine.rawAlternatives
+        if (raw.isEmpty()) return oldLine
+
+        val text = StringBuilder()
+        val newAlts = mutableListOf<MutableList<Pair<Char, Float>>>()
+        val charCols = mutableListOf<Float>()
+        var prevChar: Char? = null
+
+        for ((t, alts) in raw.withIndex()) {
+            val top = alts.firstOrNull() ?: continue
+            val blankScore = alts.firstOrNull { (ch, _) -> ch == '\u3000' }?.second ?: top.second
+            val topChar = top.first
+
+            when {
+                topChar == '\u3000' -> { // blank
+                    if (blankThreshold > 0f) {
+                        val topNonBlank = alts.firstOrNull { (ch, sc) ->
+                            ch != GAP_CHAR && ch != '\u3000' && (1f / (1f + abs(blankScore - sc)) > blankThreshold)
+                        }
+                        if (topNonBlank != null) {
+                            // Show the best non-blank character; put GAP_CHAR as an alternative
+                            text.append(topNonBlank.first)
+                            charCols.add(t.toFloat())
+                            val reordered = mutableListOf(topNonBlank)
+                            reordered.add(GAP_CHAR to 0f) // blank as selectable option
+                            for (alt in alts) {
+                                if (alt != topNonBlank && alt.first != '\u3000' && alt !in reordered) {
+                                    reordered.add(alt)
+                                }
+                            }
+                            newAlts.add(reordered)
+                        }
+                    }
+                    prevChar = null
+                }
+                topChar == ' ' -> {
+                    text.append(' ')
+                    prevChar = ' '
+                    charCols.add(t.toFloat())
+                    newAlts.add(alts.toMutableList())
+                }
+                topChar == prevChar -> { /* collapse */ }
+                else -> {
+                    text.append(topChar)
+                    charCols.add(t.toFloat())
+                    newAlts.add(alts.toMutableList())
+                    prevChar = topChar
+                }
+            }
+        }
+
+        val newCharBoxes = if (oldLine.cropW > 0 && oldLine.cropH > 0) {
+            computeCharBoxes(
+                text.toString(), charCols.toFloatArray(), oldLine.seqLenTotal,
+                oldLine.cropX, oldLine.cropY, oldLine.cropW, oldLine.cropH,
+                oldLine.isVertical,
+            )
+        } else oldLine.charBoxes
+
+        return LineResult(
+            text = text.toString(),
+            charBoxes = newCharBoxes,
+            alternatives = newAlts,
+            isVertical = oldLine.isVertical,
+            overrides = oldLine.overrides,
+            rawAlternatives = oldLine.rawAlternatives,
+            seqLenTotal = oldLine.seqLenTotal,
+            cropW = oldLine.cropW,
+            cropH = oldLine.cropH,
+            cropX = oldLine.cropX,
+            cropY = oldLine.cropY,
+        )
+    }
+
     fun close() {
         try { detectSession?.close() } catch (_: Exception) {}
-        recSessions.forEach { try { it.close() } catch (_: Exception) {} }
+        try { recSession?.close() } catch (_: Exception) {}
     }
 }
 
