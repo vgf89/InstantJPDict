@@ -58,26 +58,29 @@ class OcrEngine(private val context: Context) {
 
     init {
         try {
+            // ── Log available execution providers ──
+            try {
+                val availableProviders = OrtEnvironment.getAvailableProviders()
+                Log.d(TAG, "Available providers: ${availableProviders.joinToString(", ")}")
+            } catch (_: Exception) {}
+
             // ── Load PP-OCRv6 detection model ──
             val detOptions = SessionOptions()
             detOptions.addNnapi()
-            detOptions.addXnnpack(mapOf("intra_op_num_threads" to "4"))
             detOptions.setOptimizationLevel(SessionOptions.OptLevel.ALL_OPT)
             detectSession = env.createSession(
                 loadModel("PP-OCRv6_small_det_onnx/inference.onnx"), detOptions
             )
-            Log.d(TAG, "Detection model loaded (NNAPI+XNNPACK)")
+            Log.d(TAG, "Detection model loaded")
 
             // ── Load PP-OCRv6 recognition session ──
             val recOptions = SessionOptions()
             recOptions.addNnapi()
-            // XNNPACK on ARM64 is typically faster than NNAPI fallback for CNN+BiLSTM
-            recOptions.addXnnpack(mapOf("intra_op_num_threads" to "4"))
             recOptions.setOptimizationLevel(SessionOptions.OptLevel.ALL_OPT)
             recSession = env.createSession(
                 loadModel("PP-OCRv6_small_rec_onnx/inference.onnx"), recOptions
             )
-            Log.d(TAG, "Recognition session loaded (NNAPI+XNNPACK)")
+            Log.d(TAG, "Recognition session loaded")
 
             // ── Load vocabulary ──
             val vocabJson = context.assets.open("PP-OCRv6_small_rec_onnx/vocab.json")
