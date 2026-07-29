@@ -2,20 +2,14 @@ package com.holopengin.instantjpdict
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.Paint
 import android.util.Log
-import ai.onnxruntime.OnnxTensor
-import ai.onnxruntime.OrtEnvironment
-import ai.onnxruntime.OrtSession
-import ai.onnxruntime.OrtSession.SessionOptions
+import com.google.ai.edge.litert.Accelerator
+import com.google.ai.edge.litert.CompiledModel
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
-import java.nio.FloatBuffer
-import kotlinx.coroutines.Dispatchers
+import java.io.File
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.withContext
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.max
@@ -30,13 +24,11 @@ import kotlin.math.sqrt
 // ─────────────────────────────────────────────────────────────────────────────
 
 class OcrEngine(private val context: Context) {
-    private val env: OrtEnvironment = OrtEnvironment.getEnvironment()
+    // PP-OCRv6 detection model (LiteRT CompiledModel)
+    private var detectModel: CompiledModel? = null
 
-    // PP-OCRv6 detection session
-    private var detectSession: OrtSession? = null
-
-    // PP-OCRv6 recognition session
-    private var recSession: OrtSession? = null
+    // PP-OCRv6 recognition model (LiteRT CompiledModel)
+    private var recModel: CompiledModel? = null
     private var ppocrVocab: List<String> = emptyList()
 
     companion object {
@@ -58,29 +50,35 @@ class OcrEngine(private val context: Context) {
 
     init {
         try {
-            // ── Log available execution providers ──
-            try {
-                val availableProviders = OrtEnvironment.getAvailableProviders()
-                Log.d(TAG, "Available providers: ${availableProviders.joinToString(", ")}")
-            } catch (_: Exception) {}
+            val cacheDir = File(context.cacheDir, "litert_models")
+            cacheDir.mkdirs()
+            // Clear stale cached models so asset updates take effect
+            cacheDir.listFiles()?.forEach { it.delete() }
 
-            // ── Load PP-OCRv6 detection model ──
-            val detOptions = SessionOptions()
-            detOptions.addNnapi()
-            detOptions.setOptimizationLevel(SessionOptions.OptLevel.ALL_OPT)
-            detectSession = env.createSession(
-                loadModel("PP-OCRv6_small_det_onnx/inference.onnx"), detOptions
+            // Helper: copy asset to cache file
+            fun copyAsset(assetPath: String): String {
+                val out = File(cacheDir, assetPath.replace('/', '_'))
+                context.assets.open(assetPath).use { src ->
+                    out.outputStream().use { dst -> src.copyTo(dst) }
+                }
+                return out.absolutePath
+            }
+
+            // ── Load PP-OCRv6 detection model (LiteRT) ──
+            val detPath = copyAsset("PP-OCRv6_small_det_onnx/det_float32.tflite")
+            detectModel = CompiledModel.create(
+                detPath,
+                CompiledModel.Options(Accelerator.CPU)
             )
             Log.d(TAG, "Detection model loaded")
 
-            // ── Load PP-OCRv6 recognition session ──
-            val recOptions = SessionOptions()
-            recOptions.addNnapi()
-            recOptions.setOptimizationLevel(SessionOptions.OptLevel.ALL_OPT)
-            recSession = env.createSession(
-                loadModel("PP-OCRv6_small_rec_onnx/inference.onnx"), recOptions
+            // ── Load PP-OCRv6 recognition model (LiteRT CompiledModel) ──
+            val recPath = copyAsset("PP-OCRv6_small_rec_onnx/rec_float32.tflite")
+            recModel = CompiledModel.create(
+                recPath,
+                CompiledModel.Options(Accelerator.CPU)
             )
-            Log.d(TAG, "Recognition session loaded")
+            Log.d(TAG, "Recognition model loaded")
 
             // ── Load vocabulary ──
             val vocabJson = context.assets.open("PP-OCRv6_small_rec_onnx/vocab.json")
@@ -94,113 +92,74 @@ class OcrEngine(private val context: Context) {
         }
     }
 
-    private fun loadModel(path: String): ByteArray {
+    private fun loadModelBytes(path: String): ByteArray {
         return context.assets.open(path).readBytes()
     }
 
     fun isReady(): Boolean =
-        detectSession != null && recSession != null && ppocrVocab.isNotEmpty()
+        detectModel != null && recModel != null && ppocrVocab.isNotEmpty()
 
     // ═════════════════════════════════════════════════════════════════════════
     //  PP-OCRv6 DETECTION (DB segmentation → contours → bounding boxes)
     // ═════════════════════════════════════════════════════════════════════════
 
     fun detect(bitmap: Bitmap): List<JpDictRect> {
-        val session = detectSession ?: return emptyList()
+        val model = detectModel ?: return emptyList()
         val origW = bitmap.width.toFloat()
         val origH = bitmap.height.toFloat()
 
-        // 1. Resize keeping aspect ratio, longest side = 960
-        val scale = PPOCR_DET_LONG_SIDE.toFloat() / maxOf(origW, origH)
+        // 1. Resize keeping longest side = 960, pad to 960×960 square
+        val detSize = 960
+        val scale = detSize.toFloat() / maxOf(origW, origH)
         val resizeW = maxOf((origW * scale).roundToInt(), 32)
         val resizeH = maxOf((origH * scale).roundToInt(), 32)
 
-        // Pad to multiples of 32
-        val padW = ((resizeW + 31) / 32) * 32
-        val padH = ((resizeH + 31) / 32) * 32
-
         val resized = Bitmap.createScaledBitmap(bitmap, resizeW, resizeH, true)
 
-        // 2. Build NCHW input with ImageNet normalisation (pad with gray 128)
-        val mean = floatArrayOf(0.485f, 0.456f, 0.406f)
-        val std = floatArrayOf(0.229f, 0.224f, 0.225f)
-        val w = padW
-        val h = padH
-        val n = 3 * h * w
-        val imgData = FloatArray(n)
-
-        for (y in 0 until h) {
-            for (x in 0 until w) {
-                val px: Int
-                val xClip = x.coerceAtMost(resizeW - 1)
-                val yClip = y.coerceAtMost(resizeH - 1)
-                px = resized.getPixel(xClip, yClip)
-
-                val b = ((px shr 16 and 0xFF) / 255f - mean[0]) / std[0]
-                val g = ((px shr 8 and 0xFF) / 255f - mean[1]) / std[1]
-                val r = ((px and 0xFF) / 255f - mean[2]) / std[2]
-
-                val idx = y * w + x
-                imgData[idx] = b
-                imgData[h * w + idx] = g
-                imgData[2 * h * w + idx] = r
-            }
-        }
+        // Letterbox to detSize × detSize (gray padding)
+        val letterbox = Bitmap.createBitmap(detSize, detSize, Bitmap.Config.ARGB_8888)
+        val canvas = android.graphics.Canvas(letterbox)
+        canvas.drawColor(Color.rgb(128, 128, 128))
+        canvas.drawBitmap(resized, (detSize - resizeW) / 2f, (detSize - resizeH) / 2f, null)
+        canvas.setBitmap(null)
         resized.recycle()
 
-        val inputTensor = OnnxTensor.createTensor(
-            env, FloatBuffer.wrap(imgData), longArrayOf(1, 3, h.toLong(), w.toLong())
-        )
+        // 2. Build NHWC input with ImageNet normalisation
+        val mean = floatArrayOf(0.485f, 0.456f, 0.406f)
+        val std = floatArrayOf(0.229f, 0.224f, 0.225f)
+        val imgData = FloatArray(detSize * detSize * 3)
 
-        // 3. Run detection
-        val inputs = mutableMapOf<String, OnnxTensor>()
-        val inputName = session.inputNames.iterator().next()
-        Log.d(TAG, "detect: input name='$inputName' shape=[1,3,$h,$w] total=${imgData.size} resize=${resizeW}x${resizeH}")
-        inputs[inputName] = inputTensor
+        for (y in 0 until detSize) {
+            for (x in 0 until detSize) {
+                val px = letterbox.getPixel(x, y)
 
-        val results = session.run(inputs)
-        Log.d(TAG, "detect: output names=${session.outputNames.toList()}")
-        inputs.values.forEach { it.close() }
+                val r = ((px shr 16 and 0xFF) / 255f - mean[0]) / std[0]
+                val g = ((px shr 8 and 0xFF) / 255f - mean[1]) / std[1]
+                val b = ((px and 0xFF) / 255f - mean[2]) / std[2]
 
-        // 4. Extract probability map [1,1,outH,outW]
-        val outputName = session.outputNames.iterator().next()
-        val outputVal = results.get(outputName).get()
-        val outputTensor = outputVal as? ai.onnxruntime.OnnxTensor
-        val probShape = outputTensor?.info?.shape
-        val outH = if (probShape != null && probShape.size == 4) probShape[2].toInt() else h
-        val outW = if (probShape != null && probShape.size == 4) probShape[3].toInt() else w
-        Log.d(TAG, "output name=$outputName shape=${probShape?.contentToString()} outH=$outH outW=$outW")
-
-        // Read output directly from OnnxTensor
-        val probArr: FloatArray
-        if (outputTensor != null && outH > 0 && outW > 0) {
-            val value = outputTensor.value
-            when (value) {
-                is java.nio.FloatBuffer -> {
-                    val remaining = value.remaining()
-                    Log.d(TAG, "output FloatBuffer remaining=$remaining expected=${outH * outW}")
-                    probArr = FloatArray(remaining)
-                    value.duplicate().get(probArr)
-                }
-                is Array<*> -> {
-                    // ONNX Runtime returns 4D Java arrays on Android ([[[[F)
-                    // Flatten to 1D: shape [1,1,outH,outW]
-                    Log.d(TAG, "output is Array<*> (${value.javaClass.name}) dims=${value.size}")
-                    val expected = 1 * 1 * outH * outW
-                    val flat = mutableListOf<Float>()
-                    flattenFloats(value, flat)
-                    Log.d(TAG, "flattened ${flat.size} values, expected $expected")
-                    probArr = flat.toFloatArray()
-                }
-                else -> {
-                    Log.w(TAG, "unexpected output value type: ${value?.javaClass?.name}")
-                    probArr = extractFloatArray(value) ?: floatArrayOf()
-                }
+                val idx = (y * detSize + x) * 3
+                // NHWC channel order: 0=R, 1=G, 2=B (ImageNet convention)
+                imgData[idx] = r
+                imgData[idx + 1] = g
+                imgData[idx + 2] = b
             }
-        } else {
-            probArr = extractFloatArray(outputVal.value) ?: floatArrayOf()
         }
-        Log.d(TAG, "probArr size=${probArr.size}")
+        letterbox.recycle()
+
+        // 3. Run detection via LiteRT
+        val inputBuffers = model.createInputBuffers()
+        val outputBuffers = model.createOutputBuffers()
+        inputBuffers.get(0).writeFloat(imgData)
+
+        model.run(inputBuffers, outputBuffers)
+
+        // 4. Extract probability map [1,detSize,detSize,1]
+        val outH = detSize
+        val outW = detSize
+        val outputArray = outputBuffers.get(0).readFloat()
+        Log.d(TAG, "detect: output size=${outputArray.size} expected=${outH * outW}")
+
+        val probArr = outputArray
 
         // 5. Threshold → binary image
         val probMap = Array(outH) { y ->
@@ -225,13 +184,9 @@ class OcrEngine(private val context: Context) {
         }
         Log.d(TAG, "prob_map: min=$pMin max=$pMax mean=${if (pCount > 0) pSum / pCount else 0f}")
 
-        // Scale factors from padded model output to original image
-        // The model output covers the entire padded area. Image content
-        // occupies only resizeW × resizeH within the padded space.
-        val scaleWOut = origW / resizeW.toFloat()
-        val scaleHOut = origH / resizeH.toFloat()
-        val outScaleW = w.toFloat() / outW.toFloat()
-        val outScaleH = h.toFloat() / outH.toFloat()
+        // Scale factors from model output to original image (accounting for letterbox)
+        val scaleWOut = origW / (detSize.toFloat())
+        val scaleHOut = origH / (detSize.toFloat())
 
         // 6. Find connected components (contours) via simple flood-fill
         val visited = Array(outH) { BooleanArray(outW) }
@@ -273,10 +228,17 @@ class OcrEngine(private val context: Context) {
                 if (pixelCount < 3) continue // noise filter
 
                 // Convert from output coords to original image coords
-                val bx = (minX.toFloat() * outScaleW * scaleWOut).roundToInt()
-                val by = (minY.toFloat() * outScaleH * scaleHOut).roundToInt()
-                val bx2 = ((maxX + 1).toFloat() * outScaleW * scaleWOut).roundToInt()
-                val by2 = ((maxY + 1).toFloat() * outScaleH * scaleHOut).roundToInt()
+                // (output space is letterbox image centered in detSize×detSize)
+                val imgLeft = (detSize - resizeW) / 2f
+                val imgTop = (detSize - resizeH) / 2f
+                val resScaleW = origW / resizeW.toFloat()
+                val resScaleH = origH / resizeH.toFloat()
+                val bx = ((minX - imgLeft) * resScaleW).roundToInt().coerceAtLeast(0)
+                val by = ((minY - imgTop) * resScaleH).roundToInt().coerceAtLeast(0)
+                val bx2 = ((maxX + 1 - imgLeft) * resScaleW).roundToInt()
+                    .coerceAtMost(origW.roundToInt())
+                val by2 = ((maxY + 1 - imgTop) * resScaleH).roundToInt()
+                    .coerceAtMost(origH.roundToInt())
 
                 // Unclip: expand box using proper PP-OCR formula
                 val bw = (bx2 - bx).toFloat()
@@ -425,152 +387,183 @@ class OcrEngine(private val context: Context) {
     )
 
     /**
-     * Run PP-OCRv6 CTC recognition on multiple image crops in one batch.
-     * Input: crops preprocessed to height 48, variable width (padded).
-     * Output: CTC-decoded text + char boxes + alternatives.
+     * Run PP-OCRv6 CTC recognition on a single image crop using LiteRT Interpreter.
+     * The interpreter input tensor is resized to the crop's actual width for efficiency.
      */
     private fun recognizePpocrBatch(
-        sess: OrtSession,
+        model: CompiledModel,
         crops: List<Bitmap>,
     ): List<PPOcrResult> {
         val numCrops = crops.size
         if (numCrops == 0 || ppocrVocab.isEmpty()) return emptyList()
 
-        // ── Preprocess each crop ──
-        data class PrepRes(val width: Int, val seqLen: Int, val data: FloatArray)
         val targetH = REC_TARGET_H
-        val prepped = mutableListOf<PrepRes>()
-        var maxW = 0
+        val fixedW = 960
+        val overlap = 96  // 10% overlap between chunks
 
-        for (crop in crops) {
-            val cw = crop.width; val ch = crop.height
-            if (cw < 4 || ch < 4) {
-                prepped.add(PrepRes(0, 0, FloatArray(0)))
-                continue
-            }
+        // Collect all individual recognition jobs (one per crop, or per chunk for wide crops)
+        data class RecJob(val cropIdx: Int, val chunkBitmap: Bitmap, val actualW: Int)
 
-            // For portrait crops (height >= 1.5× width), rotate 270° CCW
-            // to make them horizontal for the horizontal-only recognition model.
+        val jobs = mutableListOf<RecJob>()
+
+        for (i in 0 until numCrops) {
+            val crop = crops[i]; val cw = crop.width; val ch = crop.height
+            if (cw < 4 || ch < 4) continue
+
             val rotated: Bitmap = if (ch >= cw * 3 / 2) {
                 val mat = android.graphics.Matrix().apply { postRotate(270f) }
                 Bitmap.createBitmap(crop, 0, 0, cw, ch, mat, true)
-            } else {
-                crop
-            }
+            } else crop
 
             val rw = rotated.width; val rh = rotated.height
-            val targetW = maxOf(4, minOf(3200,
+            val targetW = maxOf(4,
                 (rw.toFloat() * targetH / rh.toFloat()).roundToInt()
-            ))
+            )
 
             val resized = Bitmap.createScaledBitmap(rotated, targetW, targetH, true)
             if (rotated !== crop) rotated.recycle()
 
-            // Grayscale → pixel/128 - 1 → 3 channels
-            val n = targetH * targetW
-            val data = FloatArray(3 * n)
-            val pixels = IntArray(targetW * targetH)
-            resized.getPixels(pixels, 0, targetW, 0, 0, targetW, targetH)
+            if (targetW <= fixedW) {
+                jobs.add(RecJob(i, resized, targetW))
+            } else {
+                // Split wide line into overlapping chunks
+                var xOff = 0
+                while (xOff < targetW) {
+                    val chunkW = minOf(fixedW, targetW - xOff)
+                    val chunk = Bitmap.createBitmap(resized, xOff, 0, chunkW, targetH)
+                    jobs.add(RecJob(i, chunk, chunkW))
+                    xOff += fixedW - overlap  // slide by non-overlap portion
+                }
+                resized.recycle()
+            }
+        }
+
+        if (jobs.isEmpty()) return emptyList()
+
+        val numClasses = REC_NUM_CLASSES
+
+        // Process each chunk individually through the model (buffer sized for single input)
+        // Fuse chunks back into original crops
+        data class ChunkResult(val text: String, val alternatives: List<List<Pair<Char, Float>>>,
+                               val charCols: FloatArray, val effSeqLen: Int,
+                               val rawAlts: List<List<Pair<Char, Float>>>)
+
+        val inputBuffers = model.createInputBuffers()
+        val outputBuffers = model.createOutputBuffers()
+        val perChunkData = FloatArray(48 * 960 * 3)  // single NHWC crop padded to 960
+        val cropChunks = mutableMapOf<Int, MutableList<ChunkResult>>()
+
+        for (jIdx in jobs.indices) {
+            val job = jobs[jIdx]
+            val resized = job.chunkBitmap
+            val aw = job.actualW
+
+            val pixels = IntArray(aw * 48)
+            resized.getPixels(pixels, 0, aw, 0, 0, aw, 48)
             resized.recycle()
 
-            for (yi in 0 until targetH) {
-                for (xi in 0 until targetW) {
-                    val px = pixels[yi * targetW + xi]
+            perChunkData.fill(0f)  // zero-pad
+            for (y in 0 until 48) {
+                for (x in 0 until aw) {
+                    val px = pixels[y * aw + x]
                     val gray = ((px shr 16 and 0xFF) * 0.299f +
                                 (px shr 8 and 0xFF) * 0.587f +
                                 (px and 0xFF) * 0.114f)
-                    val val_ = gray / 128f - 1f
-                    val idx = yi * targetW + xi
-                    data[idx] = val_
-                    data[n + idx] = val_
-                    data[2 * n + idx] = val_
+                    val v = gray / 128f - 1f
+                    val idx = y * 960 * 3 + x * 3
+                    perChunkData[idx] = v; perChunkData[idx + 1] = v; perChunkData[idx + 2] = v
                 }
             }
 
-            val seqLen = maxOf(1, ceil(targetW / 4f).toInt())
-            maxW = maxOf(maxW, targetW)
-            prepped.add(PrepRes(targetW, seqLen, data))
-        }
+            inputBuffers.get(0).writeFloat(perChunkData)
+            model.run(inputBuffers, outputBuffers)
+            val flatOutput = outputBuffers.get(0).readFloat()
+            val seqLenTotal = flatOutput.size / numClasses
 
-        // ── Build batched input tensor (pad to maxW with zeros) ──
-        val nChan = 3
-        val total = nChan * targetH * maxW
-        val batchData = FloatArray(numCrops * total)
+            val actualSeqLen = maxOf(1, ceil(aw / 8f).toInt())
+            val effSeqLen = minOf(actualSeqLen, seqLenTotal)
 
-        for (i in prepped.indices) {
-            val p = prepped[i]
-            if (p.width == 0) continue
-            val sw = p.width
-            val n = targetH * sw
-            for (c in 0 until nChan) {
-                for (y in 0 until targetH) {
-                    val srcOff = c * n + y * sw
-                    val dstOff = i * total + c * targetH * maxW + y * maxW
-                    System.arraycopy(p.data, srcOff, batchData, dstOff, sw)
-                }
-            }
-        }
+            val cropLogits: Array<*>? = Array<Any>(effSeqLen) { t ->
+                FloatArray(numClasses) { c -> flatOutput[t * numClasses + c] }
+            } as Array<*>
 
-        // ── Run inference ──
-        val inputShape = longArrayOf(numCrops.toLong(), 3, targetH.toLong(), maxW.toLong())
-        val inputTensor = OnnxTensor.createTensor(
-            env, FloatBuffer.wrap(batchData), inputShape
-        )
-        val inputs = mutableMapOf<String, OnnxTensor>()
-        val inputName = sess.inputNames.iterator().next()
-        inputs[inputName] = inputTensor
-
-        val outputs = sess.run(inputs)
-        inputs.values.forEach { it.close() }
-
-        // Extract logits — expected shape [N, seqLenTotal, REC_NUM_CLASSES]
-        val outputName = sess.outputNames.iterator().next()
-        val outputVal = outputs.get(outputName).get()
-        val outputTensor = outputVal as? ai.onnxruntime.OnnxTensor
-        val logitShape = outputTensor?.info?.shape
-        Log.d(TAG, "rec output name=$outputName shape=${logitShape?.contentToString()}")
-
-        // Decode directly from the nested Java array to avoid massive flatten copies.
-        // ONNX Runtime on Android returns [[[F (Array<Array<FloatArray>>) for 3D output.
-        // Shape is [batch=1, seqLen, 18710].
-        val numClasses = REC_NUM_CLASSES
-        val seqLenTotal = if (logitShape != null && logitShape.size == 3) logitShape[1].toInt() else 0
-
-        val outputArray = outputTensor?.value as? Array<*>
-        outputs.close()
-
-        // ── CTC decode ──
-        val results = mutableListOf<PPOcrResult>()
-
-        for (i in 0 until numCrops) {
-            val seqLen = minOf(prepped[i].seqLen, seqLenTotal)
-
-            // Get logits for this crop as Array<FloatArray> (2D: [seqLen, 18710])
-            val cropLogits = outputArray?.getOrNull(i) as? Array<*>
-
-            // Collect top-15 alternatives for EVERY timestep (including blanks).
             val rawAlts = mutableListOf<List<Pair<Char, Float>>>()
-            for (t in 0 until seqLen) {
+            for (t in 0 until effSeqLen) {
                 val slice = cropLogits?.getOrNull(t) as? FloatArray
-                if (slice == null || slice.size < numClasses) {
-                    rawAlts.add(emptyList())
-                    continue
-                }
-                // Priority queue keeps top 15 in O(N log 15) instead of O(N log N) full sort
+                if (slice == null || slice.size < numClasses) { rawAlts.add(emptyList()); continue }
                 val pq = java.util.PriorityQueue<Int>(16, compareBy { slice[it] })
-                for (k in slice.indices) {
-                    pq.add(k)
-                    if (pq.size > 15) pq.poll()
-                }
-                val top15 = pq.toList().sortedByDescending { slice[it] }
-                rawAlts.add(top15.map { decodeChar(it) to slice[it] })
+                for (k in slice.indices) { pq.add(k); if (pq.size > 15) pq.poll() }
+                rawAlts.add(pq.toList().sortedByDescending { slice[it] }
+                    .map { decodeChar(it) to slice[it] })
             }
 
-            // Decode with blank threshold = 0.0 (default: no placeholders)
-            val result = ctcDecode(cropLogits, seqLen, numClasses, 0f, seqLenTotal)
-            results.add(result.copy(rawAlternatives = rawAlts))
+            val result = ctcDecode(cropLogits, effSeqLen, numClasses, 0f, effSeqLen)
+            val cr = ChunkResult(result.text, result.alternatives, result.charCols, effSeqLen, rawAlts)
+            cropChunks.getOrPut(job.cropIdx) { mutableListOf() }.add(cr)
         }
 
+        // Fuse chunks per crop
+        val results = mutableListOf<PPOcrResult>()
+        for (i in 0 until numCrops) {
+            val chunks = cropChunks[i] ?: run {
+                results.add(PPOcrResult("", emptyList(), floatArrayOf(), 0)); continue
+            }
+            if (chunks.isEmpty()) {
+                results.add(PPOcrResult("", emptyList(), floatArrayOf(), 0)); continue
+            }
+
+            if (chunks.size == 1) {
+                val c = chunks[0]
+                results.add(PPOcrResult(c.text, c.alternatives, c.charCols, c.effSeqLen, c.rawAlts))
+            } else {
+                // Fuse: concatenate with overlap dedup
+                val fullText = StringBuilder()
+                val fullAlts = mutableListOf<List<Pair<Char, Float>>>()
+                val fullCols = mutableListOf<Float>()
+                val fullRaw = mutableListOf<List<Pair<Char, Float>>>()
+                var fullSeqLen = 0
+                var pixelXOff = 0  // x-offset in the original crop pixel space
+
+                for (ci in chunks.indices) {
+                    val c = chunks[ci]
+                    val tOff = pixelXOff / 8f  // timestep offset for this chunk
+                    if (ci == 0) {
+                        fullText.append(c.text)
+                        fullAlts.addAll(c.alternatives)
+                        c.charCols.forEach { fullCols.add(it + tOff) }
+                        fullRaw.addAll(c.rawAlts)
+                        fullSeqLen += c.effSeqLen
+                    } else {
+                        fullSeqLen += c.effSeqLen - (overlap / 8)
+                        // Find overlap: suffix of prev text starting from 50% of chunk
+                        val prev = chunks[ci - 1].text
+                        val overlapStart = prev.length / 2
+                        var bestMatch = 0
+                        for (matchLen in overlapStart..prev.length) {
+                            val suffix = prev.substring(prev.length - matchLen)
+                            if (c.text.startsWith(suffix) && matchLen > bestMatch) {
+                                bestMatch = matchLen
+                            }
+                        }
+                        val newPart = c.text.substring(bestMatch)
+                        fullText.append(newPart)
+                        if (newPart.isNotEmpty()) {
+                            val altStart = c.alternatives.size - newPart.length
+                            for (ai in altStart until c.alternatives.size) {
+                                fullAlts.add(c.alternatives[ai])
+                            }
+                            for (ci2 in altStart until c.charCols.size) {
+                                fullCols.add(c.charCols[ci2] + tOff)
+                            }
+                            fullRaw.addAll(c.rawAlts.drop(altStart))
+                        }
+                    }
+                    pixelXOff += fixedW - overlap
+                }
+                results.add(PPOcrResult(fullText.toString(), fullAlts,
+                    fullCols.toFloatArray(), fullSeqLen, fullRaw))
+            }
+        }
         return results
     }
 
@@ -728,7 +721,10 @@ fun computeCharBoxes(
             val avgColW = cropH.toFloat() / seqLenTotal.toFloat()
             val avgChH = if (n > 1) {
                 val span = charCols.last() - charCols.first()
-                maxOf((span / (n - 1).toFloat()) * avgColW, 3f)
+                val rawH = (span / (n - 1).toFloat()) * avgColW
+                Log.d(TAG, "vert char spacing: n=$n span=$span seqLenTotal=$seqLenTotal " +
+                    "cropH=$cropH avgColW=$avgColW rawH=$rawH")
+                maxOf(rawH, 3f)
             } else {
                 maxOf(avgColW, 3f)
             }
@@ -809,7 +805,7 @@ fun computeCharBoxes(
         onLinesRecognized: (List<Pair<Int, LineResult>>) -> Unit
     ) = coroutineScope {
         val startTime = System.currentTimeMillis()
-        if (recSession == null || ppocrVocab.isEmpty()) return@coroutineScope
+        if (recModel == null || ppocrVocab.isEmpty()) return@coroutineScope
 
         // Build job queue: crop each box, determine orientation
         data class Job(val idx: Int, val bbox: JpDictRect, val crop: Bitmap, val isVertical: Boolean)
@@ -836,7 +832,7 @@ fun computeCharBoxes(
         }
 
         val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
-        val sess = recSession ?: return@coroutineScope
+        val sess = recModel ?: return@coroutineScope
 
         // Process in batches of BATCH_SIZE, delivering each result as it completes.
         for ((batchIdx, batch) in sortedJobs.chunked(BATCH_SIZE).withIndex()) {
@@ -919,7 +915,7 @@ fun computeCharBoxes(
         oldLine: LineResult,
         crop: Bitmap,
     ): LineResult {
-        val sess = recSession ?: return oldLine
+        val sess = recModel ?: return oldLine
         try {
             val ppocrResults = recognizePpocrBatch(sess, listOf(crop))
             if (ppocrResults.isEmpty()) return oldLine
@@ -969,34 +965,7 @@ fun computeCharBoxes(
     }
 
     // ═════════════════════════════════════════════════════════════════════════
-    //  ONNX Runtime helpers
-    // ═════════════════════════════════════════════════════════════════════════
-
-    private fun extractFloatArray(value: Any): FloatArray? {
-        return when (value) {
-            is FloatArray -> value
-            is Array<*> -> {
-                val list = value.mapNotNull { it as? Float }
-                if (list.isNotEmpty()) list.toFloatArray() else null
-            }
-            else -> {
-                try {
-                    (value as? java.nio.Buffer)?.let { buf ->
-                        if (buf is java.nio.FloatBuffer) {
-                            val arr = FloatArray(buf.remaining())
-                            buf.duplicate().get(arr)
-                            arr
-                        } else null
-                    }
-                } catch (e: Exception) { null }
-            }
-        }
-    }
-
-    // ═════════════════════════════════════════════════════════════════════════
     //  Japanese text utilities
-    // ═════════════════════════════════════════════════════════════════════════
-
     /**
      * Re-decode a [LineResult] from its cached [rawAlternatives] without
      * re-running recognition.  [blankThreshold] 0 = default (nothing shown
@@ -1079,8 +1048,8 @@ fun computeCharBoxes(
     }
 
     fun close() {
-        try { detectSession?.close() } catch (_: Exception) {}
-        try { recSession?.close() } catch (_: Exception) {}
+        try { detectModel?.close() } catch (_: Exception) {}
+        try { recModel?.close() } catch (_: Exception) {}
     }
 }
 
@@ -1105,14 +1074,4 @@ private fun toVerticalGlyph(ch: Char): Char {
         else ch
 }
 
-/** Recursively flatten nested Java arrays of Float into a MutableList. */
-private fun flattenFloats(value: Any?, out: MutableList<Float>) {
-    when (value) {
-        is FloatArray -> { for (v in value) out.add(v) }
-        is DoubleArray -> { for (v in value) out.add(v.toFloat()) }
-        is IntArray -> { for (v in value) out.add(v.toFloat()) }
-        is LongArray -> { for (v in value) out.add(v.toFloat()) }
-        is Array<*> -> { for (e in value) flattenFloats(e, out) }
-        is Number -> out.add(value.toFloat())
-    }
-}
+
