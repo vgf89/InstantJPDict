@@ -30,11 +30,9 @@ class OcrEngine(private val context: Context) {
     // PP-OCRv6 detection model (LiteRT CompiledModel)
     private var detectModel: CompiledModel? = null
 
-    // Static ORT environment (shared across sessions)
+    // PP-OCRv6 recognition models — static ONNX at graduated widths
     private var ortEnv: OrtEnvironment? = null
-
-    // PP-OCRv6 recognition model (ONNX Runtime — dynamic shapes, no padding needed)
-    private var recSession: OrtSession? = null
+    private val recSessions = mutableMapOf<Int, OrtSession>()
     private var ppocrVocab: List<String> = emptyList()
 
     companion object {
@@ -52,7 +50,7 @@ class OcrEngine(private val context: Context) {
         private const val REC_CONFIDENCE_THRESHOLD = 0.1f
         private const val BATCH_SIZE = 1
         private const val REC_STRIDE = 8
-        const val GAP_CHAR = '\u25CC'
+	const val GAP_CHAR = '\u25CC'
     }
 
     init {
@@ -79,11 +77,17 @@ class OcrEngine(private val context: Context) {
             )
             Log.d(TAG, "Detection model loaded")
 
-            // ── Load PP-OCRv6 recognition model (ONNX Runtime, dynamic shapes) ──
-            val recPath = copyAsset("PP-OCRv6_small_rec_onnx/inference.onnx")
+            // ── Load PP-OCRv6 recognition models (static ONNX at graduated widths) ──
             ortEnv = OrtEnvironment.getEnvironment()
-            recSession = ortEnv!!.createSession(recPath)
-            Log.d(TAG, "Recognition model loaded (ORT)")
+            val sessOpts = OrtSession.SessionOptions()
+            sessOpts.setIntraOpNumThreads(4)
+            sessOpts.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+            try { sessOpts.addNnapi() } catch (_: Exception) {}
+            for (w in listOf(64, 128, 256, 480)) {
+                val path = copyAsset("PP-OCRv6_small_rec_onnx/rec_w${w}.onnx")
+                recSessions[w] = ortEnv!!.createSession(path, sessOpts)
+            }
+            Log.d(TAG, "Recognition models loaded: ${recSessions.keys}")
 
             // ── Load vocabulary ──
             val vocabJson = context.assets.open("PP-OCRv6_small_rec_onnx/vocab.json")
@@ -102,7 +106,7 @@ class OcrEngine(private val context: Context) {
     }
 
     fun isReady(): Boolean =
-        detectModel != null && recSession != null && ppocrVocab.isNotEmpty()
+        detectModel != null && recSessions.isNotEmpty() && ppocrVocab.isNotEmpty()
 
     // ═════════════════════════════════════════════════════════════════════════
     //  PP-OCRv6 DETECTION (DB segmentation → contours → bounding boxes)
@@ -396,7 +400,7 @@ class OcrEngine(private val context: Context) {
      * The interpreter input tensor is resized to the crop's actual width for efficiency.
      */
     private fun recognizePpocrBatch(
-        session: OrtSession,
+        sessions: Map<Int, OrtSession>,
         env: OrtEnvironment,
         crops: List<Bitmap>,
     ): List<PPOcrResult> {
@@ -404,63 +408,64 @@ class OcrEngine(private val context: Context) {
         if (numCrops == 0 || ppocrVocab.isEmpty()) return emptyList()
 
         val targetH = REC_TARGET_H
-        val results = mutableListOf<PPOcrResult>()
+        val results = arrayOfNulls<PPOcrResult?>(numCrops)
+        val modelWidths = sessions.keys.sorted()
 
         for (ci in 0 until numCrops) {
             val crop = crops[ci]
             val cw = crop.width; val ch = crop.height
-            if (cw < 4 || ch < 4) {
-                results.add(PPOcrResult("", emptyList(), floatArrayOf(), 0))
-                continue
-            }
+            if (cw < 4 || ch < 4) continue
 
-            // Rotate vertical text (tall thin -> 270° CCW)
             val rotated: Bitmap = if (ch >= cw * 3 / 2) {
                 val mat = android.graphics.Matrix().apply { postRotate(270f) }
                 Bitmap.createBitmap(crop, 0, 0, cw, ch, mat, true)
             } else crop
 
             val rw = rotated.width; val rh = rotated.height
-            val targetW = maxOf(4, (rw.toFloat() * targetH / rh.toFloat()).roundToInt())
+            val targetW = maxOf(4, minOf(modelWidths.last(),
+                (rw.toFloat() * targetH / rh.toFloat()).roundToInt()
+            ))
             val resized = Bitmap.createScaledBitmap(rotated, targetW, targetH, true)
             if (rotated !== crop) rotated.recycle()
+
+            val modelW = modelWidths.first { it >= targetW }
+            val session = sessions[modelW]!!
 
             val pixels = IntArray(targetW * targetH)
             resized.getPixels(pixels, 0, targetW, 0, 0, targetW, targetH)
             resized.recycle()
 
-            // Build NCHW float32 input at exact crop width (ORT expects NCHW)
-            val inputFloats = FloatArray(1 * 3 * targetH * targetW)
-            var idx = 0
+            val inputFloats = FloatArray(1 * 3 * targetH * modelW)
             for (c in 0 until 3) {
+                val cOff = c * targetH * modelW
                 for (y in 0 until targetH) {
                     for (x in 0 until targetW) {
                         val px = pixels[y * targetW + x]
                         val gray = ((px shr 16 and 0xFF) * 0.299f +
                                     (px shr 8 and 0xFF) * 0.587f +
                                     (px and 0xFF) * 0.114f)
-                        inputFloats[idx++] = gray / 128f - 1f
+                        inputFloats[cOff + y * modelW + x] = gray / 128f - 1f
                     }
                 }
             }
 
-            val seqLen = maxOf(1, ceil(targetW / REC_STRIDE.toFloat()).toInt())
-
-            val inputTensor = OnnxTensor.createTensor(env, java.nio.FloatBuffer.wrap(inputFloats),
-                longArrayOf(1, 3, targetH.toLong(), targetW.toLong()))
-            val ortResult = session.run(mapOf("x" to inputTensor))
-            inputTensor.close()
+            val seqLen = modelW / 8
+            val tensor = OnnxTensor.createTensor(env,
+                java.nio.FloatBuffer.wrap(inputFloats),
+                longArrayOf(1, 3, targetH.toLong(), modelW.toLong()))
+            val ortResult = session.run(mapOf("x" to tensor))
+            tensor.close()
 
             val outputTensor = ortResult.get(0) as OnnxTensor
-            val outputShape = outputTensor.info.shape
-            val actualSeqLen = outputShape[1].toInt()  // shape: [1, seqLen, 18710]
-            val flatOutput = FloatArray(actualSeqLen * REC_NUM_CLASSES)
+            val flatOutput = FloatArray(seqLen * REC_NUM_CLASSES)
             outputTensor.floatBuffer.get(flatOutput)
+            outputTensor.close()
+            ortResult.close()
+
+            val actualSeqLen = maxOf(1, ceil(targetW / REC_STRIDE.toFloat()).toInt())
             val cropLogits: Array<*>? = Array<Any>(actualSeqLen) { t ->
                 FloatArray(REC_NUM_CLASSES) { c -> flatOutput[t * REC_NUM_CLASSES + c] }
             } as Array<*>
-            outputTensor.close()
-            ortResult.close()
 
             val rawAlts = mutableListOf<List<Pair<Char, Float>>>()
             for (t in 0 until actualSeqLen) {
@@ -476,10 +481,10 @@ class OcrEngine(private val context: Context) {
             }
 
             val result = ctcDecode(cropLogits, actualSeqLen, REC_NUM_CLASSES, 0f, actualSeqLen)
-            results.add(result.copy(rawAlternatives = rawAlts))
+            results[ci] = result.copy(rawAlternatives = rawAlts)
         }
 
-        return results
+        return results.map { it ?: PPOcrResult("", emptyList(), floatArrayOf(), 0) }
     }
 
     /**
@@ -720,7 +725,7 @@ fun computeCharBoxes(
         onLinesRecognized: (List<Pair<Int, LineResult>>) -> Unit
     ) = coroutineScope {
         val startTime = System.currentTimeMillis()
-        if (recSession == null || ppocrVocab.isEmpty()) return@coroutineScope
+        if (recSessions.isEmpty() || ppocrVocab.isEmpty()) return@coroutineScope
 
         // Build job queue: crop each box, determine orientation
         data class Job(val idx: Int, val bbox: JpDictRect, val crop: Bitmap, val isVertical: Boolean)
@@ -747,7 +752,7 @@ fun computeCharBoxes(
         }
 
         val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
-        val sess = recSession ?: return@coroutineScope
+        val models = recSessions
         val env = ortEnv ?: return@coroutineScope
 
         // Process in batches of BATCH_SIZE, delivering each result as it completes.
@@ -755,7 +760,7 @@ fun computeCharBoxes(
             val tBatch = System.nanoTime()
             try {
                 val crops = batch.map { it.crop }
-                val ppocrResults = recognizePpocrBatch(sess, env, crops)
+                val ppocrResults = recognizePpocrBatch(models, env, crops)
 
                 for ((index, job) in batch.withIndex()) {
                     val result = ppocrResults.getOrNull(index) ?: continue
@@ -831,10 +836,11 @@ fun computeCharBoxes(
         oldLine: LineResult,
         crop: Bitmap,
     ): LineResult {
-        val sess = recSession ?: return oldLine
+        val models = recSessions
+        if (models.isEmpty()) return oldLine
         val env = ortEnv ?: return oldLine
         try {
-            val ppocrResults = recognizePpocrBatch(sess, env, listOf(crop))
+            val ppocrResults = recognizePpocrBatch(models, env, listOf(crop))
             if (ppocrResults.isEmpty()) return oldLine
             val result = ppocrResults[0]
             if (result.text.isEmpty()) return oldLine
@@ -966,7 +972,7 @@ fun computeCharBoxes(
 
     fun close() {
         try { detectModel?.close() } catch (_: Exception) {}
-        try { recSession?.close() } catch (_: Exception) {}
+        recSessions.values.forEach { try { it.close() } catch (_: Exception) {} }
         try { ortEnv?.close() } catch (_: Exception) {}
     }
 }
