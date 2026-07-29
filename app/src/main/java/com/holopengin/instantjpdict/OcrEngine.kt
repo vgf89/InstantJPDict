@@ -4,6 +4,9 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.util.Log
+import ai.onnxruntime.OnnxTensor
+import ai.onnxruntime.OrtEnvironment
+import ai.onnxruntime.OrtSession
 import com.google.ai.edge.litert.Accelerator
 import com.google.ai.edge.litert.CompiledModel
 import com.google.gson.Gson
@@ -27,8 +30,11 @@ class OcrEngine(private val context: Context) {
     // PP-OCRv6 detection model (LiteRT CompiledModel)
     private var detectModel: CompiledModel? = null
 
-    // PP-OCRv6 recognition model (LiteRT CompiledModel)
-    private var recModel: CompiledModel? = null
+    // Static ORT environment (shared across sessions)
+    private var ortEnv: OrtEnvironment? = null
+
+    // PP-OCRv6 recognition model (ONNX Runtime — dynamic shapes, no padding needed)
+    private var recSession: OrtSession? = null
     private var ppocrVocab: List<String> = emptyList()
 
     companion object {
@@ -45,6 +51,7 @@ class OcrEngine(private val context: Context) {
         private const val REC_NUM_CLASSES = 18710  // 0=blank, 1..18708=chars, 18709=space
         private const val REC_CONFIDENCE_THRESHOLD = 0.1f
         private const val BATCH_SIZE = 1
+        private const val REC_STRIDE = 8
         const val GAP_CHAR = '\u25CC'
     }
 
@@ -72,13 +79,11 @@ class OcrEngine(private val context: Context) {
             )
             Log.d(TAG, "Detection model loaded")
 
-            // ── Load PP-OCRv6 recognition model (LiteRT CompiledModel) ──
-            val recPath = copyAsset("PP-OCRv6_small_rec_onnx/rec_float32.tflite")
-            recModel = CompiledModel.create(
-                recPath,
-                CompiledModel.Options(Accelerator.CPU)
-            )
-            Log.d(TAG, "Recognition model loaded")
+            // ── Load PP-OCRv6 recognition model (ONNX Runtime, dynamic shapes) ──
+            val recPath = copyAsset("PP-OCRv6_small_rec_onnx/inference.onnx")
+            ortEnv = OrtEnvironment.getEnvironment()
+            recSession = ortEnv!!.createSession(recPath)
+            Log.d(TAG, "Recognition model loaded (ORT)")
 
             // ── Load vocabulary ──
             val vocabJson = context.assets.open("PP-OCRv6_small_rec_onnx/vocab.json")
@@ -97,7 +102,7 @@ class OcrEngine(private val context: Context) {
     }
 
     fun isReady(): Boolean =
-        detectModel != null && recModel != null && ppocrVocab.isNotEmpty()
+        detectModel != null && recSession != null && ppocrVocab.isNotEmpty()
 
     // ═════════════════════════════════════════════════════════════════════════
     //  PP-OCRv6 DETECTION (DB segmentation → contours → bounding boxes)
@@ -391,179 +396,89 @@ class OcrEngine(private val context: Context) {
      * The interpreter input tensor is resized to the crop's actual width for efficiency.
      */
     private fun recognizePpocrBatch(
-        model: CompiledModel,
+        session: OrtSession,
+        env: OrtEnvironment,
         crops: List<Bitmap>,
     ): List<PPOcrResult> {
         val numCrops = crops.size
         if (numCrops == 0 || ppocrVocab.isEmpty()) return emptyList()
 
         val targetH = REC_TARGET_H
-        val fixedW = 960
-        val overlap = 96  // 10% overlap between chunks
+        val results = mutableListOf<PPOcrResult>()
 
-        // Collect all individual recognition jobs (one per crop, or per chunk for wide crops)
-        data class RecJob(val cropIdx: Int, val chunkBitmap: Bitmap, val actualW: Int)
+        for (ci in 0 until numCrops) {
+            val crop = crops[ci]
+            val cw = crop.width; val ch = crop.height
+            if (cw < 4 || ch < 4) {
+                results.add(PPOcrResult("", emptyList(), floatArrayOf(), 0))
+                continue
+            }
 
-        val jobs = mutableListOf<RecJob>()
-
-        for (i in 0 until numCrops) {
-            val crop = crops[i]; val cw = crop.width; val ch = crop.height
-            if (cw < 4 || ch < 4) continue
-
+            // Rotate vertical text (tall thin -> 270° CCW)
             val rotated: Bitmap = if (ch >= cw * 3 / 2) {
                 val mat = android.graphics.Matrix().apply { postRotate(270f) }
                 Bitmap.createBitmap(crop, 0, 0, cw, ch, mat, true)
             } else crop
 
             val rw = rotated.width; val rh = rotated.height
-            val targetW = maxOf(4,
-                (rw.toFloat() * targetH / rh.toFloat()).roundToInt()
-            )
-
+            val targetW = maxOf(4, (rw.toFloat() * targetH / rh.toFloat()).roundToInt())
             val resized = Bitmap.createScaledBitmap(rotated, targetW, targetH, true)
             if (rotated !== crop) rotated.recycle()
 
-            if (targetW <= fixedW) {
-                jobs.add(RecJob(i, resized, targetW))
-            } else {
-                // Split wide line into overlapping chunks
-                var xOff = 0
-                while (xOff < targetW) {
-                    val chunkW = minOf(fixedW, targetW - xOff)
-                    val chunk = Bitmap.createBitmap(resized, xOff, 0, chunkW, targetH)
-                    jobs.add(RecJob(i, chunk, chunkW))
-                    xOff += fixedW - overlap  // slide by non-overlap portion
-                }
-                resized.recycle()
-            }
-        }
-
-        if (jobs.isEmpty()) return emptyList()
-
-        val numClasses = REC_NUM_CLASSES
-
-        // Process each chunk individually through the model (buffer sized for single input)
-        // Fuse chunks back into original crops
-        data class ChunkResult(val text: String, val alternatives: List<List<Pair<Char, Float>>>,
-                               val charCols: FloatArray, val effSeqLen: Int,
-                               val rawAlts: List<List<Pair<Char, Float>>>)
-
-        val inputBuffers = model.createInputBuffers()
-        val outputBuffers = model.createOutputBuffers()
-        val perChunkData = FloatArray(48 * 960 * 3)  // single NHWC crop padded to 960
-        val cropChunks = mutableMapOf<Int, MutableList<ChunkResult>>()
-
-        for (jIdx in jobs.indices) {
-            val job = jobs[jIdx]
-            val resized = job.chunkBitmap
-            val aw = job.actualW
-
-            val pixels = IntArray(aw * 48)
-            resized.getPixels(pixels, 0, aw, 0, 0, aw, 48)
+            val pixels = IntArray(targetW * targetH)
+            resized.getPixels(pixels, 0, targetW, 0, 0, targetW, targetH)
             resized.recycle()
 
-            perChunkData.fill(0f)  // zero-pad
-            for (y in 0 until 48) {
-                for (x in 0 until aw) {
-                    val px = pixels[y * aw + x]
-                    val gray = ((px shr 16 and 0xFF) * 0.299f +
-                                (px shr 8 and 0xFF) * 0.587f +
-                                (px and 0xFF) * 0.114f)
-                    val v = gray / 128f - 1f
-                    val idx = y * 960 * 3 + x * 3
-                    perChunkData[idx] = v; perChunkData[idx + 1] = v; perChunkData[idx + 2] = v
+            // Build NCHW float32 input at exact crop width (ORT expects NCHW)
+            val inputFloats = FloatArray(1 * 3 * targetH * targetW)
+            var idx = 0
+            for (c in 0 until 3) {
+                for (y in 0 until targetH) {
+                    for (x in 0 until targetW) {
+                        val px = pixels[y * targetW + x]
+                        val gray = ((px shr 16 and 0xFF) * 0.299f +
+                                    (px shr 8 and 0xFF) * 0.587f +
+                                    (px and 0xFF) * 0.114f)
+                        inputFloats[idx++] = gray / 128f - 1f
+                    }
                 }
             }
 
-            inputBuffers.get(0).writeFloat(perChunkData)
-            model.run(inputBuffers, outputBuffers)
-            val flatOutput = outputBuffers.get(0).readFloat()
-            val seqLenTotal = flatOutput.size / numClasses
+            val seqLen = maxOf(1, ceil(targetW / REC_STRIDE.toFloat()).toInt())
 
-            val actualSeqLen = maxOf(1, ceil(aw / 8f).toInt())
-            val effSeqLen = minOf(actualSeqLen, seqLenTotal)
+            val inputTensor = OnnxTensor.createTensor(env, java.nio.FloatBuffer.wrap(inputFloats),
+                longArrayOf(1, 3, targetH.toLong(), targetW.toLong()))
+            val ortResult = session.run(mapOf("x" to inputTensor))
+            inputTensor.close()
 
-            val cropLogits: Array<*>? = Array<Any>(effSeqLen) { t ->
-                FloatArray(numClasses) { c -> flatOutput[t * numClasses + c] }
+            val outputTensor = ortResult.get(0) as OnnxTensor
+            val outputShape = outputTensor.info.shape
+            val actualSeqLen = outputShape[1].toInt()  // shape: [1, seqLen, 18710]
+            val flatOutput = FloatArray(actualSeqLen * REC_NUM_CLASSES)
+            outputTensor.floatBuffer.get(flatOutput)
+            val cropLogits: Array<*>? = Array<Any>(actualSeqLen) { t ->
+                FloatArray(REC_NUM_CLASSES) { c -> flatOutput[t * REC_NUM_CLASSES + c] }
             } as Array<*>
+            outputTensor.close()
+            ortResult.close()
 
             val rawAlts = mutableListOf<List<Pair<Char, Float>>>()
-            for (t in 0 until effSeqLen) {
+            for (t in 0 until actualSeqLen) {
                 val slice = cropLogits?.getOrNull(t) as? FloatArray
-                if (slice == null || slice.size < numClasses) { rawAlts.add(emptyList()); continue }
+                if (slice == null || slice.size < REC_NUM_CLASSES) {
+                    rawAlts.add(emptyList())
+                    continue
+                }
                 val pq = java.util.PriorityQueue<Int>(16, compareBy { slice[it] })
                 for (k in slice.indices) { pq.add(k); if (pq.size > 15) pq.poll() }
                 rawAlts.add(pq.toList().sortedByDescending { slice[it] }
                     .map { decodeChar(it) to slice[it] })
             }
 
-            val result = ctcDecode(cropLogits, effSeqLen, numClasses, 0f, effSeqLen)
-            val cr = ChunkResult(result.text, result.alternatives, result.charCols, effSeqLen, rawAlts)
-            cropChunks.getOrPut(job.cropIdx) { mutableListOf() }.add(cr)
+            val result = ctcDecode(cropLogits, actualSeqLen, REC_NUM_CLASSES, 0f, actualSeqLen)
+            results.add(result.copy(rawAlternatives = rawAlts))
         }
 
-        // Fuse chunks per crop
-        val results = mutableListOf<PPOcrResult>()
-        for (i in 0 until numCrops) {
-            val chunks = cropChunks[i] ?: run {
-                results.add(PPOcrResult("", emptyList(), floatArrayOf(), 0)); continue
-            }
-            if (chunks.isEmpty()) {
-                results.add(PPOcrResult("", emptyList(), floatArrayOf(), 0)); continue
-            }
-
-            if (chunks.size == 1) {
-                val c = chunks[0]
-                results.add(PPOcrResult(c.text, c.alternatives, c.charCols, c.effSeqLen, c.rawAlts))
-            } else {
-                // Fuse: concatenate with overlap dedup
-                val fullText = StringBuilder()
-                val fullAlts = mutableListOf<List<Pair<Char, Float>>>()
-                val fullCols = mutableListOf<Float>()
-                val fullRaw = mutableListOf<List<Pair<Char, Float>>>()
-                var fullSeqLen = 0
-                var pixelXOff = 0  // x-offset in the original crop pixel space
-
-                for (ci in chunks.indices) {
-                    val c = chunks[ci]
-                    val tOff = pixelXOff / 8f  // timestep offset for this chunk
-                    if (ci == 0) {
-                        fullText.append(c.text)
-                        fullAlts.addAll(c.alternatives)
-                        c.charCols.forEach { fullCols.add(it + tOff) }
-                        fullRaw.addAll(c.rawAlts)
-                        fullSeqLen += c.effSeqLen
-                    } else {
-                        fullSeqLen += c.effSeqLen - (overlap / 8)
-                        // Find overlap: suffix of prev text starting from 50% of chunk
-                        val prev = chunks[ci - 1].text
-                        val overlapStart = prev.length / 2
-                        var bestMatch = 0
-                        for (matchLen in overlapStart..prev.length) {
-                            val suffix = prev.substring(prev.length - matchLen)
-                            if (c.text.startsWith(suffix) && matchLen > bestMatch) {
-                                bestMatch = matchLen
-                            }
-                        }
-                        val newPart = c.text.substring(bestMatch)
-                        fullText.append(newPart)
-                        if (newPart.isNotEmpty()) {
-                            val altStart = c.alternatives.size - newPart.length
-                            for (ai in altStart until c.alternatives.size) {
-                                fullAlts.add(c.alternatives[ai])
-                            }
-                            for (ci2 in altStart until c.charCols.size) {
-                                fullCols.add(c.charCols[ci2] + tOff)
-                            }
-                            fullRaw.addAll(c.rawAlts.drop(altStart))
-                        }
-                    }
-                    pixelXOff += fixedW - overlap
-                }
-                results.add(PPOcrResult(fullText.toString(), fullAlts,
-                    fullCols.toFloatArray(), fullSeqLen, fullRaw))
-            }
-        }
         return results
     }
 
@@ -805,7 +720,7 @@ fun computeCharBoxes(
         onLinesRecognized: (List<Pair<Int, LineResult>>) -> Unit
     ) = coroutineScope {
         val startTime = System.currentTimeMillis()
-        if (recModel == null || ppocrVocab.isEmpty()) return@coroutineScope
+        if (recSession == null || ppocrVocab.isEmpty()) return@coroutineScope
 
         // Build job queue: crop each box, determine orientation
         data class Job(val idx: Int, val bbox: JpDictRect, val crop: Bitmap, val isVertical: Boolean)
@@ -832,14 +747,15 @@ fun computeCharBoxes(
         }
 
         val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
-        val sess = recModel ?: return@coroutineScope
+        val sess = recSession ?: return@coroutineScope
+        val env = ortEnv ?: return@coroutineScope
 
         // Process in batches of BATCH_SIZE, delivering each result as it completes.
         for ((batchIdx, batch) in sortedJobs.chunked(BATCH_SIZE).withIndex()) {
             val tBatch = System.nanoTime()
             try {
                 val crops = batch.map { it.crop }
-                val ppocrResults = recognizePpocrBatch(sess, crops)
+                val ppocrResults = recognizePpocrBatch(sess, env, crops)
 
                 for ((index, job) in batch.withIndex()) {
                     val result = ppocrResults.getOrNull(index) ?: continue
@@ -915,9 +831,10 @@ fun computeCharBoxes(
         oldLine: LineResult,
         crop: Bitmap,
     ): LineResult {
-        val sess = recModel ?: return oldLine
+        val sess = recSession ?: return oldLine
+        val env = ortEnv ?: return oldLine
         try {
-            val ppocrResults = recognizePpocrBatch(sess, listOf(crop))
+            val ppocrResults = recognizePpocrBatch(sess, env, listOf(crop))
             if (ppocrResults.isEmpty()) return oldLine
             val result = ppocrResults[0]
             if (result.text.isEmpty()) return oldLine
@@ -1049,7 +966,8 @@ fun computeCharBoxes(
 
     fun close() {
         try { detectModel?.close() } catch (_: Exception) {}
-        try { recModel?.close() } catch (_: Exception) {}
+        try { recSession?.close() } catch (_: Exception) {}
+        try { ortEnv?.close() } catch (_: Exception) {}
     }
 }
 
