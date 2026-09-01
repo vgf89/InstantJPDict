@@ -77,8 +77,7 @@ class OcrEngine(private val context: Context) {
             ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getFloat(PREF_DET_THRESH, DEF_DET_THRESH)
         fun getDetUnclip(ctx: Context): Float =
             ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getFloat(PREF_DET_UNCLIP, DEF_DET_UNCLIP)
-        fun getDetLongSide(ctx: Context): Int =
-            ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getInt(PREF_DET_LONG_SIDE, DEF_DET_LONG_SIDE)
+        fun getDetLongSide(ctx: Context): Int = DEF_DET_LONG_SIDE
         fun getXOverlap(ctx: Context): Float =
             ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getFloat(PREF_X_OVERLAP, DEF_X_OVERLAP)
         fun getRecConf(ctx: Context): Float =
@@ -96,7 +95,7 @@ class OcrEngine(private val context: Context) {
     private val prefs
         get() = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     private val detLongSide: Int
-        get() = prefs.getInt(PREF_DET_LONG_SIDE, DEF_DET_LONG_SIDE)
+        get() = DEF_DET_LONG_SIDE
     private val detThresh: Float
         get() = prefs.getFloat(PREF_DET_THRESH, DEF_DET_THRESH)
     private val detUnclip: Float
@@ -197,8 +196,8 @@ class OcrEngine(private val context: Context) {
         val origW = bitmap.width.toFloat()
         val origH = bitmap.height.toFloat()
 
-        // 1. Resize keeping longest side = detLongSide (tunable), pad to modelSize×modelSize square
-        // modelSize is fixed LiteRT input (960); detLongSide controls the effective longest side before letterbox
+        // 1. Resize keeping longest side = detLongSide (fixed 960), pad to modelSize×modelSize square
+        // modelSize is fixed LiteRT input (960); detLongSide fixed to avoid clipping/short boxes
         val targetLong = detLongSide
         val modelSize = 960
         Log.d(TAG, "detect tunables thresh=$detThresh unclip=$detUnclip longSide=$targetLong xOverlap=$xOverlapThresh modelSize=$modelSize")

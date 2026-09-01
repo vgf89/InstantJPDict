@@ -165,7 +165,7 @@ class MainActivity : AppCompatActivity() {
         }
         tuningContainer.addView(tuningHeader)
         val tuningHelp = TextView(this).apply {
-            text = "Tune for tight (but not too tight) crops and no missing っ / punctuation. Values are live from SharedPreferences (${OcrEngine.PREFS_NAME}); restart overlay or re-run OCR to apply. LONG_SIDE controls resize longest side before letterbox to 960 (model input fixed)."
+            text = "Tune for tight (but not too tight) crops and no missing っ / punctuation. Values are live from SharedPreferences (${OcrEngine.PREFS_NAME}); restart overlay or re-run OCR to apply. LONG_SIDE fixed at 960 (model input)."
             textSize = 11f
             setPadding(0, 0, 0, 12)
         }
@@ -181,7 +181,7 @@ class MainActivity : AppCompatActivity() {
         fun refreshLiveSummary() {
             val thresh = prefs.getFloat(OcrEngine.PREF_DET_THRESH, OcrEngine.DEF_DET_THRESH)
             val unclip = prefs.getFloat(OcrEngine.PREF_DET_UNCLIP, OcrEngine.DEF_DET_UNCLIP)
-            val longSide = prefs.getInt(OcrEngine.PREF_DET_LONG_SIDE, OcrEngine.DEF_DET_LONG_SIDE)
+            val longSide = OcrEngine.DEF_DET_LONG_SIDE
             val xOver = prefs.getFloat(OcrEngine.PREF_X_OVERLAP, OcrEngine.DEF_X_OVERLAP)
             val recConf = prefs.getFloat(OcrEngine.PREF_REC_CONF, OcrEngine.DEF_REC_CONF)
             val backend = prefs.getString(OcrEngine.PREF_BACKEND, "onnx") ?: "onnx"
@@ -362,7 +362,6 @@ class MainActivity : AppCompatActivity() {
 
         addTunable("PPOCR_DET_THRESH", OcrEngine.PREF_DET_THRESH, OcrEngine.DEF_DET_THRESH, 0.05f, 0.60f, 0.01f, false)
         addTunable("PPOCR_DET_UNCLIP_RATIO", OcrEngine.PREF_DET_UNCLIP, OcrEngine.DEF_DET_UNCLIP, 0.5f, 3.0f, 0.01f, false)
-        addTunable("PPOCR_DET_LONG_SIDE", OcrEngine.PREF_DET_LONG_SIDE, OcrEngine.DEF_DET_LONG_SIDE.toFloat(), 640f, 2500f, 32f, true)
         addTunable("X_OVERLAP_THRESHOLD", OcrEngine.PREF_X_OVERLAP, OcrEngine.DEF_X_OVERLAP, 0.0f, 1.0f, 0.01f, false)
         addTunable("REC_CONFIDENCE_THRESHOLD", OcrEngine.PREF_REC_CONF, OcrEngine.DEF_REC_CONF, 0.0f, 0.50f, 0.01f, false)
 
