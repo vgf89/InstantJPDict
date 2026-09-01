@@ -682,6 +682,7 @@ class OcrEngine(private val context: Context) {
         var stitchedText = chunks[0].text
         var stitchedAlts = chunks[0].rawAlternatives.toMutableList()
         var stitchedCols = chunks[0].charCols.toMutableList()
+        var stitchedSeqLen = 32 // actualSeqLen for w256 full chunk, will sum
         var prevChunkW = maxChunkW
         var prevX = chunkXs[0]
         for (i in 1 until chunks.size) {
@@ -705,25 +706,34 @@ class OcrEngine(private val context: Context) {
             }
             if (bestOverlap > 0) {
                 // merge: keep stitched up to overlap, then append curr after overlap
+                // Fix double spaces at boundary: if stitched ends with space and curr after overlap starts with space, collapse
+                var tail = stitchedText.takeLast(bestOverlap); var head = currText.take(bestOverlap)
+                // If overlap is spaces, handle
                 stitchedText = stitchedText + currText.substring(bestOverlap)
                 // Merge alts/cols: keep stitched alts, then append curr alts after overlap
-                // charCols are t in [0, seqLen) per chunk (seqLen=32 for w256); offset curr's t by 32*i
-                val chunkIdx = chunks.indexOf(curr)
-                val currColsOffset = 32f * chunkIdx
+                // charCols are t in [0, seqLen) per chunk (seqLen=32 for w256 full); offset curr's t by stitchedSeqLen
+                val currActualSeqLen = 32 // for w256 full chunk, last chunk may be smaller but use 32 for now
+                val currColsOffset = stitchedSeqLen.toFloat()
                 val currColsShifted = curr.charCols.map { it + currColsOffset }
                 stitchedAlts.addAll(curr.rawAlternatives.drop(bestOverlap))
                 stitchedCols.addAll(currColsShifted.drop(bestOverlap))
+                stitchedSeqLen += 32
             } else {
-                stitchedText += currText
+                // No overlap found — avoid double spaces at boundary
+                var toAppend = curr.text
+                if (stitchedText.endsWith(" ") && toAppend.startsWith(" ")) toAppend = toAppend.trimStart()
+                else if (stitchedText.endsWith("  ")) stitchedText = stitchedText.trimEnd() + " "
+                stitchedText += toAppend
                 stitchedAlts.addAll(curr.rawAlternatives)
-                val chunkIdx = chunks.indexOf(curr)
-                stitchedCols.addAll(curr.charCols.map { it + 32f * chunkIdx })
+                val currColsOffset = stitchedSeqLen.toFloat()
+                stitchedCols.addAll(curr.charCols.map { it + currColsOffset })
+                stitchedSeqLen += 32
             }
             prevX = currX; prevChunkW = minOf(maxChunkW, rw - currX)
         }
         Log.d(TAG, "long-line stitch horiz rw=$rw rh=$rh chunks=${chunks.size} stitchedLen=${stitchedText.length} text=${stitchedText.take(40)}")
-        // seqLenTotal is total timesteps, not char count: 32 per w256 chunk (or less for last)
-        val totalSeqLen = chunks.size * 32
+        // seqLenTotal is total timesteps: sum of actualSeqLen for stitched chunks
+        val totalSeqLen = stitchedSeqLen
         // Fix double spaces at chunk boundaries: if stitched ends with space and next starts with space, collapse
         var finalText = stitchedText
         while (finalText.contains("  ")) finalText = finalText.replace("  ", " ")
@@ -782,18 +792,32 @@ class OcrEngine(private val context: Context) {
         if (chunks.isEmpty()) return null
         if (chunks.size==1) return chunks[0]
         var stitchedText = chunks[0].text; var stitchedAlts = chunks[0].rawAlternatives.toMutableList()
+        var stitchedCols = chunks[0].charCols.toMutableList()
+        var stitchedSeqLen = 32
         for (i in 1 until chunks.size) {
             val curr = chunks[i]
             var bestOverlap=0
             for (len in minOf(5, stitchedText.length, curr.text.length) downTo 2) if (stitchedText.takeLast(len)==curr.text.take(len)) { bestOverlap=len; break }
-            if (bestOverlap>0) { stitchedText+=curr.text.substring(bestOverlap); stitchedAlts.addAll(curr.rawAlternatives.drop(bestOverlap)) }
-            else { stitchedText+=curr.text; stitchedAlts.addAll(curr.rawAlternatives) }
+            if (bestOverlap>0) {
+                stitchedText+=curr.text.substring(bestOverlap)
+                stitchedAlts.addAll(curr.rawAlternatives.drop(bestOverlap))
+                val currColsOffset = stitchedSeqLen.toFloat()
+                stitchedCols.addAll(curr.charCols.map { it + currColsOffset }.drop(bestOverlap))
+                stitchedSeqLen += 32
+            } else {
+                var toAppend = curr.text
+                if (stitchedText.endsWith(" ") && toAppend.startsWith(" ")) toAppend = toAppend.trimStart()
+                stitchedText+=toAppend
+                stitchedAlts.addAll(curr.rawAlternatives)
+                stitchedCols.addAll(curr.charCols.map { it + stitchedSeqLen.toFloat() })
+                stitchedSeqLen += 32
+            }
         }
         Log.d(TAG, "long-line stitch vert rh=$rh rw=$rw chunks=${chunks.size} stitchedLen=${stitchedText.length}")
-        val totalSeqLen = chunks.size * 32
+        val totalSeqLen = stitchedSeqLen
         var finalText = stitchedText
         while (finalText.contains("  ")) finalText = finalText.replace("  ", " ")
-        return PPOcrResult(finalText, stitchedAlts, chunks.flatMap { it.charCols.toList() }.toFloatArray(), totalSeqLen, stitchedAlts)
+        return PPOcrResult(finalText, stitchedAlts, stitchedCols.toFloatArray(), totalSeqLen, stitchedAlts)
     }
 
     // helpers for stitch — ported from meiki
