@@ -469,66 +469,6 @@ class OcrAccessibilityService : AccessibilityService() {
         }
         rootLayout.addView(controlsRoot, controlsParams)
 
-        val thresholdSlider = SeekBar(this).apply {
-            max = 195
-            // -90° so visually bottom = 0 (off) and top = 195 (max placeholders)
-            progress = 0
-            rotation = 90f // 0 is bottom, max is top. Fill bottom -> top.
-            val sliderWidth = (300 * resources.displayMetrics.density).toInt()
-            val sliderHeight = (40 * resources.displayMetrics.density).toInt()
-            layoutParams = LinearLayout.LayoutParams(sliderWidth, sliderHeight).apply {
-                val margin = (sliderWidth - sliderHeight) / 2
-                topMargin = margin
-                bottomMargin = margin
-            }
-        }
-        controlsRoot.addView(thresholdSlider)
-
-        thresholdSlider.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                if (fromUser) {
-                    // Bottom (0) = off. First tick above = 0.5 (strictest).
-                    // Higher = decreasing threshold = more placeholders.
-                    val blankThreshold = if (progress == 0) 0f else
-                        (0.5f - (progress - 1) * 0.01f).coerceAtLeast(0f)
-                    controller.recConfidenceThreshold = blankThreshold
-                    // Update visibility immediately while dragging
-                    refreshOcrResults()
-                }
-            }
-            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
-            override fun onStopTrackingTouch(seekBar: SeekBar?) {
-                // Re-decode from cache with the new threshold — no model re-run
-                val p = thresholdSlider.progress
-                val blankThreshold = if (p == 0) 0f else
-                    (0.5f - (p - 1) * 0.01f).coerceAtLeast(0f)
-                controller.refreshLinesWithThreshold(ocrEngine, screenshotBitmap, blankThreshold)
-                refreshOcrResults()
-            }
-        })
-
-        val resetButton = TextView(this).apply {
-            text = "↺"
-            setTextColor(android.graphics.Color.WHITE)
-            textSize = 28f
-            setShadowLayer(4f, 2f, 2f, android.graphics.Color.BLACK)
-            gravity = Gravity.CENTER
-            isClickable = true
-            isFocusable = true
-            setOnClickListener {
-                controller.recConfidenceThreshold = 0.1f
-                thresholdSlider.progress = 0  // off (no placeholders)
-                controller.refreshLinesWithThreshold(ocrEngine, screenshotBitmap, 0f)
-                refreshOcrResults()
-            }
-        }
-        controlsRoot.addView(resetButton, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.WRAP_CONTENT,
-            LinearLayout.LayoutParams.WRAP_CONTENT
-        ).apply {
-            gravity = Gravity.CENTER_HORIZONTAL
-        })
-
         screenshotOverlay = rootLayout
         windowManager?.addView(screenshotOverlay, params)
         

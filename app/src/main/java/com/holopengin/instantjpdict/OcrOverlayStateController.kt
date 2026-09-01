@@ -228,7 +228,7 @@ class OcrOverlayStateController {
         currentTappedIdx = -1
         currentTappedLineIdx = -1
         currentTappedCharIdxInLine = -1
-        recConfidenceThreshold = 0.1f
+        // recConfidenceThreshold preserved — MainActivity Settings is the source of truth via loadFromPrefs
         activeLineResults.clear()
         activeLineBoxes = emptyList()
         isControllerNavigation = false
