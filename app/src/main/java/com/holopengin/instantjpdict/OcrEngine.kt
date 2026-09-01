@@ -1182,11 +1182,12 @@ fun computeCharBoxes(
             }
         } else {
             // ── VERTICAL: y-axis char boxes with punctuation handling ──
-            // Each timestep identical avgColW=cropH/seqLen, char height = avgColW
-            // so empty at end = trailingNulls*avgColW and final timestep aligns
-            // with bbox bottom. No span-based avgChH.
+            // Char height = short side (cropW) like horizontal's charW=cropH.
+            // Each timestep identical avgColW=cropH/seqLen, empty at end =
+            // trailingNulls*avgColW where trailingNulls=seqLen-(lastT+1),
+            // final timestep (seqLen) aligns with bbox bottom.
             val avgColW = cropH.toFloat() / seqLenTotal.toFloat()
-            val avgChH = maxOf(avgColW, 3f)
+            val avgChH = maxOf(cropW.toFloat(), 3f)
             Log.d(TAG, "vert char spacing: n=$n seqLenTotal=$seqLenTotal cropH=$cropH cropW=$cropW avgColW=$avgColW avgChH=$avgChH trailingNulls=${seqLenTotal - (charCols.lastOrNull()?.toInt()?.plus(1) ?: seqLenTotal)}")
 
             val cells = charCols.map { t ->
