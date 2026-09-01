@@ -707,19 +707,27 @@ class OcrEngine(private val context: Context) {
                 // merge: keep stitched up to overlap, then append curr after overlap
                 stitchedText = stitchedText + currText.substring(bestOverlap)
                 // Merge alts/cols: keep stitched alts, then append curr alts after overlap
-                // Approximate cols: shift curr cols by currX
-                val currColsShifted = curr.charCols.map { it + currX * 0.1f } // rough
+                // charCols are t in [0, seqLen) per chunk (seqLen=32 for w256); offset curr's t by 32*i
+                val chunkIdx = chunks.indexOf(curr)
+                val currColsOffset = 32f * chunkIdx
+                val currColsShifted = curr.charCols.map { it + currColsOffset }
                 stitchedAlts.addAll(curr.rawAlternatives.drop(bestOverlap))
                 stitchedCols.addAll(currColsShifted.drop(bestOverlap))
             } else {
                 stitchedText += currText
                 stitchedAlts.addAll(curr.rawAlternatives)
-                stitchedCols.addAll(curr.charCols.map { it + currX * 0.1f })
+                val chunkIdx = chunks.indexOf(curr)
+                stitchedCols.addAll(curr.charCols.map { it + 32f * chunkIdx })
             }
             prevX = currX; prevChunkW = minOf(maxChunkW, rw - currX)
         }
         Log.d(TAG, "long-line stitch horiz rw=$rw rh=$rh chunks=${chunks.size} stitchedLen=${stitchedText.length} text=${stitchedText.take(40)}")
-        return PPOcrResult(stitchedText, stitchedAlts, stitchedCols.toFloatArray(), stitchedCols.size, stitchedAlts)
+        // seqLenTotal is total timesteps, not char count: 32 per w256 chunk (or less for last)
+        val totalSeqLen = chunks.size * 32
+        // Fix double spaces at chunk boundaries: if stitched ends with space and next starts with space, collapse
+        var finalText = stitchedText
+        while (finalText.contains("  ")) finalText = finalText.replace("  ", " ")
+        return PPOcrResult(finalText, stitchedAlts, stitchedCols.toFloatArray(), totalSeqLen, stitchedAlts)
     }
 
     private fun recognizeAndStitchLongVert(
@@ -782,7 +790,10 @@ class OcrEngine(private val context: Context) {
             else { stitchedText+=curr.text; stitchedAlts.addAll(curr.rawAlternatives) }
         }
         Log.d(TAG, "long-line stitch vert rh=$rh rw=$rw chunks=${chunks.size} stitchedLen=${stitchedText.length}")
-        return PPOcrResult(stitchedText, stitchedAlts, chunks.flatMap { it.charCols.toList() }.toFloatArray(), stitchedAlts.size, stitchedAlts)
+        val totalSeqLen = chunks.size * 32
+        var finalText = stitchedText
+        while (finalText.contains("  ")) finalText = finalText.replace("  ", " ")
+        return PPOcrResult(finalText, stitchedAlts, chunks.flatMap { it.charCols.toList() }.toFloatArray(), totalSeqLen, stitchedAlts)
     }
 
     // helpers for stitch — ported from meiki
