@@ -507,8 +507,8 @@ class OcrEngine(private val context: Context) {
             val rw = rotated.width; val rh = rotated.height
             // ——— Long-line split for >640px (rw*48/rh>640, also >960) — PP-OCR 48×480 crush fix ———
             // Very long lines (e.g. 976×39 → 1201→480, 1003×45→1070) crush timesteps and skip っ/punct.
-            // Split into overlapping w256 chunks (20% overlap) via smaller static model, then stitch.
-            // Threshold 640 (not 480, 960 also valid) to avoid over-splitting 675×58→558→480 while fixing 726×50→696, preserve aspect w256→48.
+            // Split into overlapping w480 chunks (20% overlap) via largest fitting bucket, then stitch.
+            // Threshold 640 (not 480, 960 also valid; aspect >15:1 also) to avoid over-splitting 675×58→558→480 while fixing 726×50→696, preserve aspect cw*48/rh.
             val isLongHoriz = rw >= rh * 3 / 2 && (rw.toFloat() * targetH / rh.toFloat() > 640)
             val isLongVert = rh >= rw * 3 / 2 && (rh.toFloat() * targetH / rw.toFloat() > 640)
             if (isLongHoriz || isLongVert) {
@@ -614,10 +614,10 @@ class OcrEngine(private val context: Context) {
 
     // ——— Long-line split helpers — PP-OCR 48×960 crush fix ———
     // Very long horizontal >960px (976×39 → 1201) and vertical >960px crush timesteps.
-    // Split into overlapping w256 chunks (20% overlap) via smaller static model, then stitch.
+    // Split into overlapping w480 chunks (20% overlap) via largest fitting bucket, then stitch.
     // Port of meiki b3babc7^ OcrEngine.kt 709: REC_WIDTH 960/32, maxChunkWidth 960/scale,
     // anchor second-to-last char localXLeft/nextX 0.8 + stitchHorizontalChunks centerX distance 30
-    // + predictionScore 0.4 + interleaveAlternatives, scaled to PP-OCR 48×256 correctly.
+    // + predictionScore 0.4 + interleaveAlternatives, scaled to PP-OCR 48×480 correctly.
     private data class ChunkInfo(
         val text: String,
         val charCols: FloatArray,
@@ -636,7 +636,7 @@ class OcrEngine(private val context: Context) {
     ): PPOcrResult? {
         val rw = rotated.width; val rh = rotated.height
         val scale = targetH.toFloat() / rh.toFloat()
-        val maxChunkW = (256 / scale).toInt().coerceAtLeast(64)
+        val maxChunkW = (480 / scale).toInt().coerceAtLeast(64)
         if (maxChunkW <= 0) return null
         val chunkMargin = (rh * 0.1f).toInt().coerceAtLeast(2)
 
@@ -648,8 +648,8 @@ class OcrEngine(private val context: Context) {
             if (w < 16) break
             val chunkBmp = Bitmap.createBitmap(rotated, x, 0, w, rh)
             val cw = chunkBmp.width; val ch = chunkBmp.height
-            // preserve aspect w → targetW via cw*48/rh, not stretch
-            val targetW = (cw.toFloat() * targetH / ch.toFloat()).roundToInt().coerceAtLeast(4)
+            // preserve aspect w → targetW via cw*48/rh, not stretch; cap at 480
+            val targetW = minOf(480, (cw.toFloat() * targetH / ch.toFloat()).roundToInt().coerceAtLeast(4))
             val modelW = modelWidths.firstOrNull { it >= targetW } ?: modelWidths.last()
             val session = sessions[modelW] ?: run { chunkBmp.recycle(); return null }
             val resized = Bitmap.createScaledBitmap(chunkBmp, targetW, targetH, true)
@@ -847,7 +847,7 @@ class OcrEngine(private val context: Context) {
     ): PPOcrResult? {
         val rw = rotated.width; val rh = rotated.height
         val scale = targetH.toFloat() / rw.toFloat()
-        val maxChunkH = (256 / scale).toInt().coerceAtLeast(64)
+        val maxChunkH = (480 / scale).toInt().coerceAtLeast(64)
         if (maxChunkH <= 0) return null
         val chunkMargin = (rw * 0.1f).toInt().coerceAtLeast(2)
         val chunks = mutableListOf<ChunkInfo>()
@@ -857,7 +857,7 @@ class OcrEngine(private val context: Context) {
             if (h < 16) break
             val chunkBmp = Bitmap.createBitmap(rotated, 0, y, rw, h)
             val cw = chunkBmp.width; val ch = chunkBmp.height
-            val targetW = (cw.toFloat() * targetH / ch.toFloat()).roundToInt().coerceAtLeast(4)
+            val targetW = minOf(480, (cw.toFloat() * targetH / ch.toFloat()).roundToInt().coerceAtLeast(4))
             val modelW = modelWidths.firstOrNull { it >= targetW } ?: modelWidths.last()
             val session = sessions[modelW] ?: run { chunkBmp.recycle(); return null }
             val resized = Bitmap.createScaledBitmap(chunkBmp, targetW, targetH, true)
