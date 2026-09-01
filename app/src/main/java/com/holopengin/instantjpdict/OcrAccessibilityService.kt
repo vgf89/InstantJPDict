@@ -635,22 +635,21 @@ class OcrAccessibilityService : AccessibilityService() {
         val displayBoxes = controller.calculateDisplayBoxes(line, advances)
 
         for (i in line.charBoxes.indices) {
-            val box = displayBoxes[i]
             val origBox = line.charBoxes[i]
             val char = line.text.getOrNull(i)?.toString() ?: ""
             
             val charContainer = FrameLayout(this)
-            val charParams = FrameLayout.LayoutParams(fixedSize, fixedSize).apply {
-                leftMargin = box.left
-                topMargin = box.top
+            val charParams = FrameLayout.LayoutParams(origBox.width().coerceAtLeast(1), origBox.height().coerceAtLeast(1)).apply {
+                leftMargin = origBox.left
+                topMargin = origBox.top
             }
             if (charContainer.parent != null) {
                 (charContainer.parent as ViewGroup).removeView(charContainer)
             }
             lineContainer.addView(charContainer, charParams)
 
-            // True bbox center: use origBox (may be thin after overlap), not displayBox.
-            // Center first (true ink center over bbox center), then scale about center if needed.
+            // True bbox: origBox (may be thin) — no displayBox post-processing
+            // True glyph ink center over true bbox center, then scale about center if needed
             val boxW = origBox.width().coerceAtLeast(1)
             val boxH = origBox.height().coerceAtLeast(1)
             val textView = CenteredTextView(this).apply {
@@ -669,14 +668,13 @@ class OcrAccessibilityService : AccessibilityService() {
                 }
             }
             textViews[Pair(lineIdx, i)] = textView
-            // TextView exactly covers true bbox (origBox) centered within fixedSize container
-            charContainer.addView(textView, FrameLayout.LayoutParams(boxW, boxH, Gravity.CENTER))
+            charContainer.addView(textView, FrameLayout.LayoutParams(boxW, boxH))
 
             val boxView = View(this).apply {
                 background = null
                 isClickable = true
             }
-            charContainer.addView(boxView, FrameLayout.LayoutParams(boxW, boxH, Gravity.CENTER))
+            charContainer.addView(boxView, FrameLayout.LayoutParams(boxW, boxH))
 
             boxView.setOnClickListener {
                 performLookup(lineIdx, i, rootLayout)
