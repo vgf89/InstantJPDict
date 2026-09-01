@@ -334,11 +334,11 @@ class MainActivity : AppCompatActivity() {
             layout.addView(container)
         }
 
-        addTunable("PPOCR_DET_THRESH", OcrEngine.PREF_DET_THRESH, OcrEngine.DEF_DET_THRESH, 0.05f, 0.60f, 0.05f, false)
-        addTunable("PPOCR_DET_UNCLIP_RATIO", OcrEngine.PREF_DET_UNCLIP, OcrEngine.DEF_DET_UNCLIP, 0.5f, 3.0f, 0.10f, false)
+        addTunable("PPOCR_DET_THRESH", OcrEngine.PREF_DET_THRESH, OcrEngine.DEF_DET_THRESH, 0.05f, 0.60f, 0.01f, false)
+        addTunable("PPOCR_DET_UNCLIP_RATIO", OcrEngine.PREF_DET_UNCLIP, OcrEngine.DEF_DET_UNCLIP, 0.5f, 3.0f, 0.01f, false)
         addTunable("PPOCR_DET_LONG_SIDE", OcrEngine.PREF_DET_LONG_SIDE, OcrEngine.DEF_DET_LONG_SIDE.toFloat(), 640f, 1280f, 32f, true)
-        addTunable("X_OVERLAP_THRESHOLD", OcrEngine.PREF_X_OVERLAP, OcrEngine.DEF_X_OVERLAP, 0.0f, 1.0f, 0.05f, false)
-        addTunable("REC_CONFIDENCE_THRESHOLD", OcrEngine.PREF_REC_CONF, OcrEngine.DEF_REC_CONF, 0.0f, 0.50f, 0.05f, false)
+        addTunable("X_OVERLAP_THRESHOLD", OcrEngine.PREF_X_OVERLAP, OcrEngine.DEF_X_OVERLAP, 0.0f, 1.0f, 0.01f, false)
+        addTunable("REC_CONFIDENCE_THRESHOLD", OcrEngine.PREF_REC_CONF, OcrEngine.DEF_REC_CONF, 0.0f, 0.50f, 0.01f, false)
 
         addButton(layout, "Reset all tuning to defaults") {
             prefs.edit()
