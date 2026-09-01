@@ -683,24 +683,30 @@ class OcrEngine(private val context: Context) {
         var stitchedAlts = chunks[0].rawAlternatives.toMutableList()
         var stitchedCols = chunks[0].charCols.toMutableList()
         var stitchedSeqLen = 32 // actualSeqLen for w256 full chunk, will sum
+        var stitchedActualSeqLens = mutableListOf(32)
         var prevChunkW = maxChunkW
         var prevX = chunkXs[0]
         for (i in 1 until chunks.size) {
             val curr = chunks[i]; val currX = chunkXs[i]
-            // Estimate char positions for stitch: use simple string overlap fallback (longest common substring 2-5 chars)
-            val prevText = stitchedText; val currText = curr.text
+            // Estimate char positions for stitch: use simple string overlap fallback (longest common substring 2-5 chars, ignore whitespace/punct diff)
+            val prevText = stitchedText.trim(); val currTextTrim = curr.text.trim()
             var bestOverlap = 0
-            // Try to find overlapping substring between prev tail and curr head (2-5 chars, no 1-char prediction fallback)
-            for (len in minOf(5, prevText.length, currText.length) downTo 2) {
-                val tail = prevText.takeLast(len); val head = currText.take(len)
-                if (tail == head) { bestOverlap = len; break }
+            // Try to find overlapping substring between prev tail and curr head (2-5 chars, no 1-char prediction fallback, ignore leading/trailing spaces and quotes)
+            for (len in minOf(5, prevText.length, currTextTrim.length) downTo 2) {
+                val tail = prevText.takeLast(len).trim().replace(Regex("[\"'‘’“”]"), "")
+                val head = currTextTrim.take(len).trim().replace(Regex("[\"'‘’“”]"), "")
+                if (tail.isNotEmpty() && tail == head) { bestOverlap = len; break }
+                // also handle case where tail is "an '" and head is "an " -> normalize quotes to space
+                val tailNorm = tail.replace("'", " ").replace("\"", " ").trim()
+                val headNorm = head.replace("'", " ").replace("\"", " ").trim()
+                if (tailNorm.isNotEmpty() && tailNorm == headNorm) { bestOverlap = len; break }
             }
             if (bestOverlap > 0) {
                 // merge: keep stitched up to overlap, then append curr after overlap
                 // Fix double spaces at boundary: if stitched ends with space and curr after overlap starts with space, collapse
-                var tail = stitchedText.takeLast(bestOverlap); var head = currText.take(bestOverlap)
+                var tail = stitchedText.takeLast(bestOverlap); var head = curr.text.take(bestOverlap)
                 // If overlap is spaces, handle
-                stitchedText = stitchedText + currText.substring(bestOverlap)
+                stitchedText = stitchedText + curr.text.substring(bestOverlap)
                 // Merge alts/cols: keep stitched alts, then append curr alts after overlap
                 // charCols are t in [0, seqLen) per chunk (seqLen=32 for w256 full); offset curr's t by stitchedSeqLen
                 val currActualSeqLen = 32 // for w256 full chunk, last chunk may be smaller but use 32 for now
