@@ -17,22 +17,22 @@ class CenteredTextView @JvmOverloads constructor(
 ) : TextView(context, attrs, defStyleAttr) {
 
     private val bounds = Rect()
-    private val refBounds = Rect()
+
+    /** Set by overlay for vertical tategaki — controls axis prioritization. */
+    var isVertical: Boolean = false
 
     override fun onDraw(canvas: Canvas) {
         val textStr = text.toString()
         if (textStr.isEmpty()) return
 
-        // We use a reference character to determine a stable baseline.
-        val refChar = "あ" 
-        paint.getTextBounds(refChar, 0, 1, refBounds)
-        val fixedBaselineOffsetY = (height / 2f) - (refBounds.top + refBounds.bottom) / 2f
-        
-        // Center horizontally based on the exact visual bounds of the rendered glyphs.
+        // Perfect centering: glyph ink center aligns with view (bbox) center.
+        // For horizontal, X is critical; for vertical, Y is critical — we center both
+        // using the actual rendered glyph bounds (including 'vert' feature).
         paint.getTextBounds(textStr, 0, textStr.length, bounds)
-        val x = (width / 2f) - (bounds.left + bounds.right) / 2f
+        val x = width / 2f - (bounds.left + bounds.right) / 2f
+        val y = height / 2f - (bounds.top + bounds.bottom) / 2f
 
         paint.color = currentTextColor
-        canvas.drawText(textStr, x, fixedBaselineOffsetY, paint)
+        canvas.drawText(textStr, x, y, paint)
     }
 }

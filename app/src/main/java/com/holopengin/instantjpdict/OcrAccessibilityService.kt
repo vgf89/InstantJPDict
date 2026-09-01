@@ -650,6 +650,7 @@ class OcrAccessibilityService : AccessibilityService() {
 
             val textView = CenteredTextView(this).apply {
                 text = char
+                isVertical = line.isVertical
                 setTextColor(android.graphics.Color.parseColor("#FF7777"))
                 typeface = android.graphics.Typeface.DEFAULT
                 setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, fixedSize.toFloat() * 0.90f)
