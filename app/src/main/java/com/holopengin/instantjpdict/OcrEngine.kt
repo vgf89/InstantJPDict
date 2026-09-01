@@ -505,11 +505,12 @@ class OcrEngine(private val context: Context) {
             } else crop
 
             val rw = rotated.width; val rh = rotated.height
-            // ——— Long-line split for >10:1 aspect (rw*48/rh>480) — PP-OCR 48×480 crush fix ———
-            // Very long lines (e.g. 976×39 → 1201→480) crush timesteps and skip っ/punct.
-            // Split into overlapping w256 chunks (20% overlap) via smaller static model, then merge.
-            val isLongHoriz = rw >= rh * 3 / 2 && (rw.toFloat() * targetH / rh.toFloat() > modelWidths.last())
-            val isLongVert = rh >= rw * 3 / 2 && (rh.toFloat() * targetH / rw.toFloat() > modelWidths.last())
+            // ——— Long-line split for >640px (rw*48/rh>640, also >960) — PP-OCR 48×480 crush fix ———
+            // Very long lines (e.g. 976×39 → 1201→480, 1003×45→1070) crush timesteps and skip っ/punct.
+            // Split into overlapping w256 chunks (20% overlap) via smaller static model, then stitch.
+            // Threshold 640 (not 480, 960 also valid) to avoid over-splitting 675×58→558→480 while fixing 726×50→696, preserve aspect w256→48.
+            val isLongHoriz = rw >= rh * 3 / 2 && (rw.toFloat() * targetH / rh.toFloat() > 640)
+            val isLongVert = rh >= rw * 3 / 2 && (rh.toFloat() * targetH / rw.toFloat() > 640)
             if (isLongHoriz || isLongVert) {
                 val stitched = if (isLongHoriz) {
                     recognizeAndStitchLongHoriz(rotated, sessions, env, targetH, modelWidths)
@@ -611,9 +612,24 @@ class OcrEngine(private val context: Context) {
         return results.map { it ?: PPOcrResult("", emptyList(), floatArrayOf(), 0) }
     }
 
-    // ——— Long-line split helpers — PP-OCR 48×10:1 crush fix ———
-    // Very long horizontal >960px (976×39 → 1201) and vertical >480px crush timesteps.
+    // ——— Long-line split helpers — PP-OCR 48×960 crush fix ———
+    // Very long horizontal >960px (976×39 → 1201) and vertical >960px crush timesteps.
     // Split into overlapping w256 chunks (20% overlap) via smaller static model, then stitch.
+    // Port of meiki b3babc7^ OcrEngine.kt 709: REC_WIDTH 960/32, maxChunkWidth 960/scale,
+    // anchor second-to-last char localXLeft/nextX 0.8 + stitchHorizontalChunks centerX distance 30
+    // + predictionScore 0.4 + interleaveAlternatives, scaled to PP-OCR 48×256 correctly.
+    private data class ChunkInfo(
+        val text: String,
+        val charCols: FloatArray,
+        val altsPerChar: List<List<Pair<Char, Float>>>,
+        val rawAltsPerTimestep: List<List<Pair<Char, Float>>>,
+        val actualSeqLen: Int,
+        val targetW: Int,
+        val chunkW: Int,
+        val offsetX: Int,
+        val offsetY: Int,
+    )
+
     private fun recognizeAndStitchLongHoriz(
         rotated: Bitmap, sessions: Map<Int, OrtSession>, env: OrtEnvironment,
         targetH: Int, modelWidths: List<Int>
@@ -621,25 +637,26 @@ class OcrEngine(private val context: Context) {
         val rw = rotated.width; val rh = rotated.height
         val scale = targetH.toFloat() / rh.toFloat()
         val maxChunkW = (256 / scale).toInt().coerceAtLeast(64)
-        val overlap = (maxChunkW * 0.2f).toInt().coerceAtLeast(16)
-        val step = maxChunkW - overlap
-        if (step <= 0 || maxChunkW <= 0) return null
-        val chunks = mutableListOf<PPOcrResult>()
-        val chunkXs = mutableListOf<Int>()
+        if (maxChunkW <= 0) return null
+        val chunkMargin = (rh * 0.1f).toInt().coerceAtLeast(2)
+
+        // ——— Phase 1: chunk with anchor-driven nextX (meiki second-to-last char) ———
+        val chunks = mutableListOf<ChunkInfo>()
         var x = 0
         while (x < rw) {
             val w = minOf(maxChunkW, rw - x)
             if (w < 16) break
             val chunkBmp = Bitmap.createBitmap(rotated, x, 0, w, rh)
             val cw = chunkBmp.width; val ch = chunkBmp.height
-            val targetW = minOf(256, (cw.toFloat() * targetH / ch.toFloat()).roundToInt().coerceAtLeast(4))
-            val modelW = modelWidths.firstOrNull { it >= targetW } ?: 256
-            val session = sessions[modelW] ?: sessions[256] ?: return null
-            // run chunk via same logic as single crop (inline to avoid recursion)
+            // preserve aspect w → targetW via cw*48/rh, not stretch
+            val targetW = (cw.toFloat() * targetH / ch.toFloat()).roundToInt().coerceAtLeast(4)
+            val modelW = modelWidths.firstOrNull { it >= targetW } ?: modelWidths.last()
+            val session = sessions[modelW] ?: run { chunkBmp.recycle(); return null }
             val resized = Bitmap.createScaledBitmap(chunkBmp, targetW, targetH, true)
             val pixels = IntArray(targetW * targetH)
             resized.getPixels(pixels, 0, targetW, 0, 0, targetW, targetH)
             resized.recycle()
+            // do not recycle chunkBmp yet for anchor calc? we already have cw
             chunkBmp.recycle()
             val inputFloats = FloatArray(1 * 3 * targetH * modelW)
             for (c in 0 until 3) {
@@ -667,74 +684,161 @@ class OcrEngine(private val context: Context) {
             val cropLogits: Array<*>? = Array<Any>(actualSeqLen) { t -> FloatArray(REC_NUM_CLASSES) { c -> flatOutput[t * REC_NUM_CLASSES + c] } } as Array<*>
             val rawAlts = (0 until actualSeqLen).map { t ->
                 val slice = cropLogits?.getOrNull(t) as? FloatArray ?: return@map emptyList<Pair<Char,Float>>()
-                val pq = java.util.PriorityQueue<Int>(16, compareBy { slice[it] }); for (k in slice.indices) { pq.add(k); if (pq.size>15) pq.poll() }
+                val pq = java.util.PriorityQueue<Int>(16, compareBy { slice[it] }); for (k in slice.indices) { pq.add(k); if(pq.size>15) pq.poll() }
                 pq.toList().sortedByDescending { slice[it] }.map { decodeChar(it) to slice[it] }
             }
             val decoded = ctcDecode(cropLogits, actualSeqLen, REC_NUM_CLASSES, 0f, actualSeqLen)
-            chunks.add(decoded.copy(rawAlternatives = rawAlts))
-            chunkXs.add(x)
+            chunks.add(ChunkInfo(decoded.text, decoded.charCols, decoded.alternatives, rawAlts, actualSeqLen, targetW, cw, x, 0))
             if (x + w >= rw) break
-            x += step
+            // anchor second-to-last char localXLeft/nextX 0.8 (meiki)
+            val txt = decoded.text
+            if (txt.isNotEmpty() && decoded.charCols.isNotEmpty()) {
+                val anchorIdx = if (txt.length >= 2) txt.length - 2 else 0
+                val anchorT = decoded.charCols.getOrNull(anchorIdx) ?: decoded.charCols.last()
+                // localXLeft in chunk pixel coords: (t+0.5)/actualSeqLen * cw (center)
+                val localXLeft = ((anchorT + 0.5f) / actualSeqLen.toFloat()) * cw
+                val nextX = (x + localXLeft.toInt() - chunkMargin).coerceAtLeast(0)
+                if (nextX <= x || nextX >= x + w - 10) {
+                    x += (w * 0.8f).toInt().coerceAtLeast(16)
+                } else {
+                    x = nextX
+                }
+            } else {
+                x += (w * 0.8f).toInt().coerceAtLeast(16)
+            }
         }
         if (chunks.isEmpty()) return null
-        if (chunks.size == 1) return chunks[0]
-        // Stitch via anchor overlap: find best matching char between prev tail (last 10) and curr head (first 10) via centerX distance + predictionScore
-        var stitchedText = chunks[0].text
-        var stitchedAlts = chunks[0].rawAlternatives.toMutableList()
-        var stitchedCols = chunks[0].charCols.toMutableList()
-        var stitchedSeqLen = 32 // actualSeqLen for w256 full chunk, will sum
-        var stitchedActualSeqLens = mutableListOf(32)
-        var prevChunkW = maxChunkW
-        var prevX = chunkXs[0]
-        for (i in 1 until chunks.size) {
-            val curr = chunks[i]; val currX = chunkXs[i]
-            // Estimate char positions for stitch: use simple string overlap fallback (longest common substring 2-5 chars, ignore whitespace/punct diff)
-            val prevText = stitchedText.trim(); val currTextTrim = curr.text.trim()
-            var bestOverlap = 0
-            // Try to find overlapping substring between prev tail and curr head (2-5 chars, no 1-char prediction fallback, ignore leading/trailing spaces and quotes)
-            for (len in minOf(5, prevText.length, currTextTrim.length) downTo 2) {
-                val tail = prevText.takeLast(len).trim().replace(Regex("[\"'‘’“”]"), "")
-                val head = currTextTrim.take(len).trim().replace(Regex("[\"'‘’“”]"), "")
-                if (tail.isNotEmpty() && tail == head) { bestOverlap = len; break }
-                // also handle case where tail is "an '" and head is "an " -> normalize quotes to space
-                val tailNorm = tail.replace("'", " ").replace("\"", " ").trim()
-                val headNorm = head.replace("'", " ").replace("\"", " ").trim()
-                if (tailNorm.isNotEmpty() && tailNorm == headNorm) { bestOverlap = len; break }
-            }
-            if (bestOverlap > 0) {
-                // merge: keep stitched up to overlap, then append curr after overlap
-                // Fix double spaces at boundary: if stitched ends with space and curr after overlap starts with space, collapse
-                var tail = stitchedText.takeLast(bestOverlap); var head = curr.text.take(bestOverlap)
-                // If overlap is spaces, handle
-                stitchedText = stitchedText + curr.text.substring(bestOverlap)
-                // Merge alts/cols: keep stitched alts, then append curr alts after overlap
-                // charCols are t in [0, seqLen) per chunk (seqLen=32 for w256 full); offset curr's t by stitchedSeqLen
-                val currActualSeqLen = 32 // for w256 full chunk, last chunk may be smaller but use 32 for now
-                val currColsOffset = stitchedSeqLen.toFloat()
-                val currColsShifted = curr.charCols.map { it + currColsOffset }
-                stitchedAlts.addAll(curr.rawAlternatives.drop(bestOverlap))
-                stitchedCols.addAll(currColsShifted.drop(bestOverlap))
-                stitchedSeqLen += 32
-            } else {
-                // No overlap found — avoid double spaces at boundary
-                var toAppend = curr.text
-                if (stitchedText.endsWith(" ") && toAppend.startsWith(" ")) toAppend = toAppend.trimStart()
-                else if (stitchedText.endsWith("  ")) stitchedText = stitchedText.trimEnd() + " "
-                stitchedText += toAppend
-                stitchedAlts.addAll(curr.rawAlternatives)
-                val currColsOffset = stitchedSeqLen.toFloat()
-                stitchedCols.addAll(curr.charCols.map { it + currColsOffset })
-                stitchedSeqLen += 32
-            }
-            prevX = currX; prevChunkW = minOf(maxChunkW, rw - currX)
+        if (chunks.size == 1) {
+            val c = chunks[0]
+            Log.d(TAG, "long-line stitch horiz rw=$rw rh=$rh chunks=1 stitchedLen=${c.text.length} seqLen=${c.actualSeqLen} text=${c.text.take(40)}")
+            return PPOcrResult(c.text, c.altsPerChar, c.charCols, c.actualSeqLen, c.rawAltsPerTimestep)
         }
-        Log.d(TAG, "long-line stitch horiz rw=$rw rh=$rh chunks=${chunks.size} stitchedLen=${stitchedText.length} text=${stitchedText.take(40)}")
-        // seqLenTotal is total timesteps: sum of actualSeqLen for stitched chunks
-        val totalSeqLen = stitchedSeqLen
-        // Fix double spaces at chunk boundaries: if stitched ends with space and next starts with space, collapse
-        var finalText = stitchedText
+        // ——— Phase 2: stitch via meiki centerX distance 30 + predictionScore 0.4 + interleave ———
+        // Build per-char global centerX for each chunk
+        val chunkGlobalCenters = chunks.map { ci ->
+            ci.charCols.map { t -> ci.offsetX + (t + 0.5f) * (ci.chunkW.toFloat() / ci.actualSeqLen.toFloat()) }
+        }
+        var stitchedText = StringBuilder(chunks[0].text)
+        var stitchedAlts = chunks[0].altsPerChar.toMutableList()
+        var stitchedCols = chunks[0].charCols.toMutableList()
+        var stitchedGlobal = chunkGlobalCenters[0].toMutableList()
+        var stitchedSeqLen = chunks[0].actualSeqLen
+        // raw for final: concatenated per-timestep raws with offset? keep per-char for simplicity
+        val stitchedRawAll = chunks[0].rawAltsPerTimestep.toMutableList()
+        for (i in 1 until chunks.size) {
+            val curr = chunks[i]
+            val currGlobal = chunkGlobalCenters[i]
+            val currAlts = curr.altsPerChar
+            if (currAlts.isEmpty() || stitchedAlts.isEmpty()) {
+                // fallback: append if beyond lastX+10
+                val lastX = stitchedGlobal.lastOrNull() ?: -100f
+                for (j in currAlts.indices) {
+                    val gx = currGlobal.getOrNull(j) ?: continue
+                    if (gx > lastX + 10) {
+                        // avoid double space at boundary
+                        val ch = curr.text.getOrNull(j) ?: continue
+                        if (stitchedText.isNotEmpty() && stitchedText.last() == ' ' && ch == ' ') continue
+                        stitchedText.append(ch)
+                        stitchedAlts.add(currAlts[j])
+                        stitchedCols.add(curr.charCols[j] + stitchedSeqLen.toFloat())
+                        stitchedGlobal.add(gx)
+                    }
+                }
+                stitchedRawAll.addAll(curr.rawAltsPerTimestep)
+                stitchedSeqLen += curr.actualSeqLen
+                continue
+            }
+            var bestPrevIdx = -1
+            var bestCurrIdx = -1
+            var bestScore = -1f
+            val pStart = maxOf(0, stitchedAlts.size - 10)
+            val cEnd = minOf(currAlts.size, 10)
+            for (pIdx in stitchedAlts.size - 1 downTo pStart) {
+                val pGC = stitchedGlobal[pIdx]
+                for (cIdx in 0 until cEnd) {
+                    val cGX = currGlobal[cIdx]
+                    val dist = abs(pGC - cGX)
+                    if (dist > 30) continue
+                    val pred = comparePredictionVectors(stitchedAlts[pIdx], currAlts[cIdx])
+                    if (pred < 0.4f) continue
+                    val score = (1f - dist / 30f) * 0.3f + pred * 0.7f
+                    if (score > bestScore) {
+                        bestScore = score
+                        bestPrevIdx = pIdx
+                        bestCurrIdx = cIdx
+                    }
+                }
+            }
+            if (bestPrevIdx != -1) {
+                val merged = interleaveAlternatives(stitchedAlts[bestPrevIdx], currAlts[bestCurrIdx]).toMutableList()
+                val toKeep = bestPrevIdx + 1
+                while (stitchedText.length > toKeep) {
+                    stitchedText.deleteCharAt(stitchedText.length - 1)
+                    stitchedAlts.removeAt(stitchedAlts.size - 1)
+                    stitchedCols.removeAt(stitchedCols.size - 1)
+                    stitchedGlobal.removeAt(stitchedGlobal.size - 1)
+                }
+                // update anchor with merged alternatives
+                stitchedAlts[bestPrevIdx] = merged
+                // append curr after anchor
+                for (j in bestCurrIdx + 1 until currAlts.size) {
+                    val ch = curr.text.getOrNull(j) ?: continue
+                    // avoid double space at overlap boundary: if anchor was space and next is space, skip
+                    if (stitchedText.isNotEmpty() && stitchedText.last() == ' ' && ch == ' ') continue
+                    stitchedText.append(ch)
+                    stitchedAlts.add(currAlts[j])
+                    stitchedCols.add(curr.charCols[j] + stitchedSeqLen.toFloat())
+                    stitchedGlobal.add(currGlobal[j])
+                }
+                stitchedRawAll.addAll(curr.rawAltsPerTimestep)
+            } else {
+                // no anchor: append only those > lastX+10
+                val lastX = stitchedGlobal.lastOrNull() ?: -100f
+                var appended = 0
+                for (j in currAlts.indices) {
+                    val gx = currGlobal[j]
+                    if (gx > lastX + 10 || appended == 0 && currAlts.size == 1) {
+                        if (j == 0 && stitchedText.isNotEmpty() && stitchedText.last() == ' ' && curr.text.getOrNull(j) == ' ') {
+                            // collapse double space at boundary: skip leading space of curr
+                            // still add if not double
+                        } else {
+                            val ch = curr.text.getOrNull(j) ?: continue
+                            if (stitchedText.isNotEmpty() && stitchedText.last() == ' ' && ch == ' ') continue
+                            stitchedText.append(ch)
+                            stitchedAlts.add(currAlts[j])
+                            stitchedCols.add(curr.charCols[j] + stitchedSeqLen.toFloat())
+                            stitchedGlobal.add(gx)
+                            appended++
+                        }
+                    } else if (gx > stitchedGlobal.lastOrNull() ?: lastX) {
+                        // if no anchor but still sequential, allow
+                    }
+                }
+                // if nothing appended due to threshold, fallback append all beyond
+                if (appended == 0) {
+                    for (j in currAlts.indices) {
+                        val ch = curr.text.getOrNull(j) ?: continue
+                        if (stitchedText.isNotEmpty() && stitchedText.last() == ' ' && ch == ' ') continue
+                        stitchedText.append(ch)
+                        stitchedAlts.add(currAlts[j])
+                        stitchedCols.add(curr.charCols[j] + stitchedSeqLen.toFloat())
+                        stitchedGlobal.add(currGlobal[j])
+                    }
+                }
+                stitchedRawAll.addAll(curr.rawAltsPerTimestep)
+            }
+            stitchedSeqLen += curr.actualSeqLen
+        }
+        // Final scaling: seqLenTotal = sum actualSeqLen, charCols offset by stitchedSeqLen, so computeCharBoxes with cropW=rw fills full bbox
+        val finalTextRaw = stitchedText.toString()
+        // Collapse double spaces only at chunk boundaries: already handled, but ensure no "  " remains at boundaries (not globally)
+        // Do a single pass to collapse any remaining double spaces introduced at boundaries
+        var finalText = finalTextRaw
+        // only collapse double spaces that were at chunk boundaries (where we already handled), but keep intentional doubles collapsed to single
+        // We collapse globally for now as single pass to avoid "  " artifacts from overlap; this is safe as double spaces are not expected in normal text
         while (finalText.contains("  ")) finalText = finalText.replace("  ", " ")
-        return PPOcrResult(finalText, stitchedAlts, stitchedCols.toFloatArray(), totalSeqLen, stitchedAlts)
+        Log.d(TAG, "long-line stitch horiz rw=$rw rh=$rh chunks=${chunks.size} stitchedLen=${finalText.length} seqLen=$stitchedSeqLen text=${finalText.take(40)}")
+        return PPOcrResult(finalText, stitchedAlts, stitchedCols.toFloatArray(), stitchedSeqLen, stitchedRawAll)
     }
 
     private fun recognizeAndStitchLongVert(
@@ -744,19 +848,18 @@ class OcrEngine(private val context: Context) {
         val rw = rotated.width; val rh = rotated.height
         val scale = targetH.toFloat() / rw.toFloat()
         val maxChunkH = (256 / scale).toInt().coerceAtLeast(64)
-        val overlap = (maxChunkH * 0.2f).toInt().coerceAtLeast(16)
-        val step = maxChunkH - overlap
-        if (step <= 0 || maxChunkH <= 0) return null
-        val chunks = mutableListOf<PPOcrResult>()
+        if (maxChunkH <= 0) return null
+        val chunkMargin = (rw * 0.1f).toInt().coerceAtLeast(2)
+        val chunks = mutableListOf<ChunkInfo>()
         var y = 0
         while (y < rh) {
             val h = minOf(maxChunkH, rh - y)
             if (h < 16) break
             val chunkBmp = Bitmap.createBitmap(rotated, 0, y, rw, h)
             val cw = chunkBmp.width; val ch = chunkBmp.height
-            val targetW = minOf(256, (cw.toFloat() * targetH / ch.toFloat()).roundToInt().coerceAtLeast(4))
-            val modelW = modelWidths.firstOrNull { it >= targetW } ?: 256
-            val session = sessions[modelW] ?: sessions[256] ?: return null
+            val targetW = (cw.toFloat() * targetH / ch.toFloat()).roundToInt().coerceAtLeast(4)
+            val modelW = modelWidths.firstOrNull { it >= targetW } ?: modelWidths.last()
+            val session = sessions[modelW] ?: run { chunkBmp.recycle(); return null }
             val resized = Bitmap.createScaledBitmap(chunkBmp, targetW, targetH, true)
             val pixels = IntArray(targetW * targetH)
             resized.getPixels(pixels, 0, targetW, 0, 0, targetW, targetH)
@@ -783,38 +886,128 @@ class OcrEngine(private val context: Context) {
                 pq.toList().sortedByDescending{ s[it] }.map{ decodeChar(it) to s[it] }
             }
             val decoded = ctcDecode(cropLogits, actualSeqLen, REC_NUM_CLASSES, 0f, actualSeqLen)
-            chunks.add(decoded.copy(rawAlternatives=rawAlts))
-            if (y + h >= rh) break; y += step
-        }
-        if (chunks.isEmpty()) return null
-        if (chunks.size==1) return chunks[0]
-        var stitchedText = chunks[0].text; var stitchedAlts = chunks[0].rawAlternatives.toMutableList()
-        var stitchedCols = chunks[0].charCols.toMutableList()
-        var stitchedSeqLen = 32
-        for (i in 1 until chunks.size) {
-            val curr = chunks[i]
-            var bestOverlap=0
-            for (len in minOf(5, stitchedText.length, curr.text.length) downTo 2) if (stitchedText.takeLast(len)==curr.text.take(len)) { bestOverlap=len; break }
-            if (bestOverlap>0) {
-                stitchedText+=curr.text.substring(bestOverlap)
-                stitchedAlts.addAll(curr.rawAlternatives.drop(bestOverlap))
-                val currColsOffset = stitchedSeqLen.toFloat()
-                stitchedCols.addAll(curr.charCols.map { it + currColsOffset }.drop(bestOverlap))
-                stitchedSeqLen += 32
+            chunks.add(ChunkInfo(decoded.text, decoded.charCols, decoded.alternatives, rawAlts, actualSeqLen, targetW, h, 0, y))
+            if (y + h >= rh) break
+            val txt = decoded.text
+            if (txt.isNotEmpty() && decoded.charCols.isNotEmpty()) {
+                val anchorIdx = if (txt.length >= 2) txt.length - 2 else 0
+                val anchorT = decoded.charCols.getOrNull(anchorIdx) ?: decoded.charCols.last()
+                val localYTop = ((anchorT + 0.5f) / actualSeqLen.toFloat()) * h
+                val nextY = (y + localYTop.toInt() - chunkMargin).coerceAtLeast(0)
+                if (nextY <= y || nextY >= y + h - 10) {
+                    y += (h * 0.8f).toInt().coerceAtLeast(16)
+                } else {
+                    y = nextY
+                }
             } else {
-                var toAppend = curr.text
-                if (stitchedText.endsWith(" ") && toAppend.startsWith(" ")) toAppend = toAppend.trimStart()
-                stitchedText+=toAppend
-                stitchedAlts.addAll(curr.rawAlternatives)
-                stitchedCols.addAll(curr.charCols.map { it + stitchedSeqLen.toFloat() })
-                stitchedSeqLen += 32
+                y += (h * 0.8f).toInt().coerceAtLeast(16)
             }
         }
-        Log.d(TAG, "long-line stitch vert rh=$rh rw=$rw chunks=${chunks.size} stitchedLen=${stitchedText.length}")
-        val totalSeqLen = stitchedSeqLen
-        var finalText = stitchedText
+        if (chunks.isEmpty()) return null
+        if (chunks.size==1) {
+            val c = chunks[0]
+            Log.d(TAG, "long-line stitch vert rh=$rh rw=$rw chunks=1 stitchedLen=${c.text.length} seqLen=${c.actualSeqLen}")
+            return PPOcrResult(c.text, c.altsPerChar, c.charCols, c.actualSeqLen, c.rawAltsPerTimestep)
+        }
+        val chunkGlobalCentersY = chunks.map { ci ->
+            ci.charCols.map { t -> ci.offsetY + (t + 0.5f) * (ci.chunkW.toFloat() / ci.actualSeqLen.toFloat()) }
+        }
+        var stitchedText = StringBuilder(chunks[0].text)
+        var stitchedAlts = chunks[0].altsPerChar.toMutableList()
+        var stitchedCols = chunks[0].charCols.toMutableList()
+        var stitchedGlobal = chunkGlobalCentersY[0].toMutableList()
+        var stitchedSeqLen = chunks[0].actualSeqLen
+        val stitchedRawAll = chunks[0].rawAltsPerTimestep.toMutableList()
+        for (i in 1 until chunks.size) {
+            val curr = chunks[i]
+            val currGlobal = chunkGlobalCentersY[i]
+            val currAlts = curr.altsPerChar
+            if (currAlts.isEmpty() || stitchedAlts.isEmpty()) {
+                val lastY = stitchedGlobal.lastOrNull() ?: -100f
+                for (j in currAlts.indices) {
+                    val gy = currGlobal.getOrNull(j) ?: continue
+                    if (gy > lastY + 10) {
+                        val ch = curr.text.getOrNull(j) ?: continue
+                        if (stitchedText.isNotEmpty() && stitchedText.last() == ' ' && ch == ' ') continue
+                        stitchedText.append(ch)
+                        stitchedAlts.add(currAlts[j])
+                        stitchedCols.add(curr.charCols[j] + stitchedSeqLen.toFloat())
+                        stitchedGlobal.add(gy)
+                    }
+                }
+                stitchedRawAll.addAll(curr.rawAltsPerTimestep)
+                stitchedSeqLen += curr.actualSeqLen
+                continue
+            }
+            var bestPrevIdx = -1
+            var bestCurrIdx = -1
+            var bestScore = -1f
+            val pStart = maxOf(0, stitchedAlts.size - 10)
+            val cEnd = minOf(currAlts.size, 10)
+            for (pIdx in stitchedAlts.size - 1 downTo pStart) {
+                val pGC = stitchedGlobal[pIdx]
+                for (cIdx in 0 until cEnd) {
+                    val cGY = currGlobal[cIdx]
+                    val dist = abs(pGC - cGY)
+                    if (dist > 30) continue
+                    val pred = comparePredictionVectors(stitchedAlts[pIdx], currAlts[cIdx])
+                    if (pred < 0.4f) continue
+                    val score = (1f - dist/30f)*0.3f + pred*0.7f
+                    if (score > bestScore) { bestScore = score; bestPrevIdx = pIdx; bestCurrIdx = cIdx }
+                }
+            }
+            if (bestPrevIdx != -1) {
+                val merged = interleaveAlternatives(stitchedAlts[bestPrevIdx], currAlts[bestCurrIdx]).toMutableList()
+                val toKeep = bestPrevIdx + 1
+                while (stitchedText.length > toKeep) {
+                    stitchedText.deleteCharAt(stitchedText.length-1)
+                    stitchedAlts.removeAt(stitchedAlts.size-1)
+                    stitchedCols.removeAt(stitchedCols.size-1)
+                    stitchedGlobal.removeAt(stitchedGlobal.size-1)
+                }
+                stitchedAlts[bestPrevIdx] = merged
+                for (j in bestCurrIdx+1 until currAlts.size) {
+                    val ch = curr.text.getOrNull(j) ?: continue
+                    if (stitchedText.isNotEmpty() && stitchedText.last()==' ' && ch==' ') continue
+                    stitchedText.append(ch)
+                    stitchedAlts.add(currAlts[j])
+                    stitchedCols.add(curr.charCols[j] + stitchedSeqLen.toFloat())
+                    stitchedGlobal.add(currGlobal[j])
+                }
+                stitchedRawAll.addAll(curr.rawAltsPerTimestep)
+            } else {
+                val lastY = stitchedGlobal.lastOrNull() ?: -100f
+                var appended=0
+                for (j in currAlts.indices) {
+                    val gy = currGlobal[j]
+                    if (gy > lastY + 10) {
+                        val ch = curr.text.getOrNull(j) ?: continue
+                        if (stitchedText.isNotEmpty() && stitchedText.last()==' ' && ch==' ') continue
+                        stitchedText.append(ch)
+                        stitchedAlts.add(currAlts[j])
+                        stitchedCols.add(curr.charCols[j] + stitchedSeqLen.toFloat())
+                        stitchedGlobal.add(gy)
+                        appended++
+                    }
+                }
+                if (appended==0) {
+                    for (j in currAlts.indices) {
+                        val ch = curr.text.getOrNull(j) ?: continue
+                        if (stitchedText.isNotEmpty() && stitchedText.last()==' ' && ch==' ') continue
+                        stitchedText.append(ch)
+                        stitchedAlts.add(currAlts[j])
+                        stitchedCols.add(curr.charCols[j] + stitchedSeqLen.toFloat())
+                        stitchedGlobal.add(currGlobal[j])
+                    }
+                }
+                stitchedRawAll.addAll(curr.rawAltsPerTimestep)
+            }
+            stitchedSeqLen += curr.actualSeqLen
+        }
+        var finalText = stitchedText.toString()
         while (finalText.contains("  ")) finalText = finalText.replace("  ", " ")
-        return PPOcrResult(finalText, stitchedAlts, stitchedCols.toFloatArray(), totalSeqLen, stitchedAlts)
+        Log.d(TAG, "long-line stitch vert rh=$rh rw=$rw chunks=${chunks.size} stitchedLen=${finalText.length} seqLen=$stitchedSeqLen")
+        return PPOcrResult(finalText, stitchedAlts, stitchedCols.toFloatArray(), stitchedSeqLen, stitchedRawAll)
     }
 
     // helpers for stitch — ported from meiki
@@ -827,6 +1020,16 @@ class OcrEngine(private val context: Context) {
         val c1=alt1[0].first; val c2=alt2[0].first
         if (alt2.take(3).any{ it.first==c1 } || alt1.take(3).any{ it.first==c2 }) return 0.5f
         return 0f
+    }
+
+    private fun interleaveAlternatives(alt1: List<Pair<Char, Float>>, alt2: List<Pair<Char, Float>>): List<Pair<Char, Float>> {
+        val merged = mutableMapOf<Char, Float>()
+        alt1.forEach { (ch, sc) -> merged[ch] = sc }
+        alt2.forEach { (ch, sc) ->
+            val ex = merged[ch] ?: 0f
+            if (ex > 0f) merged[ch] = (ex + sc) * 0.8f else merged[ch] = sc * 0.6f
+        }
+        return merged.toList().sortedByDescending { it.second }.take(15)
     }
 
     /**
