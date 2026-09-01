@@ -31,6 +31,14 @@ android {
                 "proguard-rules.pro"
             )
         }
+        create("benchmark") {
+            initWith(getByName("release"))
+            signingConfig = signingConfigs.getByName("debug")
+            isMinifyEnabled = false
+            isShrinkResources = false
+            isDebuggable = false
+            matchingFallbacks += listOf("release")
+        }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_21
@@ -70,7 +78,7 @@ tasks.register<Exec>("buildNavGraphCore") {
 
 // Ensure Rust library is built before merging JNI libs
 tasks.whenTaskAdded {
-    if (name.contains("mergeDebugJniLibFolders") || name.contains("mergeReleaseJniLibFolders")) {
+    if (name.contains("mergeDebugJniLibFolders") || name.contains("mergeReleaseJniLibFolders") || name.contains("mergeBenchmarkJniLibFolders")) {
         dependsOn("buildNavGraphCore")
     }
 }
