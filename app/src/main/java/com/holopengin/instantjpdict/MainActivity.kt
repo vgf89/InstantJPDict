@@ -12,6 +12,7 @@ import android.text.TextWatcher
 import android.util.Log
 import android.view.Gravity
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -131,19 +132,44 @@ class MainActivity : AppCompatActivity() {
         layout.addView(backendSwitch)
 
         // ————— PP-OCR parameter tuning — debug controls — #14 —————
+        // Hidden behind Debug settings checkbox — keeps main screen clean
+        val debugPrefsKey = "debug_settings_enabled"
+        val tuningContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = if (prefs.getBoolean(debugPrefsKey, false)) LinearLayout.VISIBLE else LinearLayout.GONE
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+
+        val debugToggle = CheckBox(this).apply {
+            text = "Debug settings (PP-OCR Tuning)"
+            isChecked = prefs.getBoolean(debugPrefsKey, false)
+            textSize = 14f
+            setPadding(0, 24, 0, 8)
+            setOnCheckedChangeListener { _, checked ->
+                prefs.edit().putBoolean(debugPrefsKey, checked).apply()
+                tuningContainer.visibility = if (checked) LinearLayout.VISIBLE else LinearLayout.GONE
+                Log.i("MainActivity", "debug_settings_enabled=$checked")
+            }
+        }
+        layout.addView(debugToggle)
+        layout.addView(tuningContainer)
+
         val tuningHeader = TextView(this).apply {
             text = "PP-OCR Tuning (Debug)"
             textSize = 18f
             setTypeface(null, android.graphics.Typeface.BOLD)
-            setPadding(0, 32, 0, 8)
+            setPadding(0, 8, 0, 8)
         }
-        layout.addView(tuningHeader)
+        tuningContainer.addView(tuningHeader)
         val tuningHelp = TextView(this).apply {
             text = "Tune for tight (but not too tight) crops and no missing っ / punctuation. Values are live from SharedPreferences (${OcrEngine.PREFS_NAME}); restart overlay or re-run OCR to apply. LONG_SIDE controls resize longest side before letterbox to 960 (model input fixed)."
             textSize = 11f
             setPadding(0, 0, 0, 12)
         }
-        layout.addView(tuningHelp)
+        tuningContainer.addView(tuningHelp)
 
         // live summary line that shows current values
         val liveSummary = TextView(this).apply {
@@ -151,7 +177,7 @@ class MainActivity : AppCompatActivity() {
             setPadding(0, 0, 0, 12)
             setBackgroundColor(android.graphics.Color.argb(20, 0, 0, 0))
         }
-        layout.addView(liveSummary)
+        tuningContainer.addView(liveSummary)
         fun refreshLiveSummary() {
             val thresh = prefs.getFloat(OcrEngine.PREF_DET_THRESH, OcrEngine.DEF_DET_THRESH)
             val unclip = prefs.getFloat(OcrEngine.PREF_DET_UNCLIP, OcrEngine.DEF_DET_UNCLIP)
@@ -331,7 +357,7 @@ class MainActivity : AppCompatActivity() {
                 }
             })
 
-            layout.addView(container)
+            tuningContainer.addView(container)
         }
 
         addTunable("PPOCR_DET_THRESH", OcrEngine.PREF_DET_THRESH, OcrEngine.DEF_DET_THRESH, 0.05f, 0.60f, 0.01f, false)
@@ -340,7 +366,7 @@ class MainActivity : AppCompatActivity() {
         addTunable("X_OVERLAP_THRESHOLD", OcrEngine.PREF_X_OVERLAP, OcrEngine.DEF_X_OVERLAP, 0.0f, 1.0f, 0.01f, false)
         addTunable("REC_CONFIDENCE_THRESHOLD", OcrEngine.PREF_REC_CONF, OcrEngine.DEF_REC_CONF, 0.0f, 0.50f, 0.01f, false)
 
-        addButton(layout, "Reset all tuning to defaults") {
+        addButton(tuningContainer, "Reset all tuning to defaults") {
             prefs.edit()
                 .putFloat(OcrEngine.PREF_DET_THRESH, OcrEngine.DEF_DET_THRESH)
                 .putFloat(OcrEngine.PREF_DET_UNCLIP, OcrEngine.DEF_DET_UNCLIP)
@@ -360,7 +386,7 @@ class MainActivity : AppCompatActivity() {
             setPadding(0, 16, 0, 0)
             setTextColor(android.graphics.Color.DKGRAY)
         }
-        layout.addView(tuningFooter)
+        tuningContainer.addView(tuningFooter)
 
         setContentView(root)
         refreshStatus()

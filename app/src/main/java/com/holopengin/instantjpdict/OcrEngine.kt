@@ -61,8 +61,8 @@ class OcrEngine(private val context: Context) {
         // Defaults (previous hard constants)
         const val DEF_DET_LONG_SIDE = 960
         const val DEF_DET_THRESH = 0.3f
-        const val DEF_DET_UNCLIP = 1.1f
-        const val DEF_X_OVERLAP = 0.3f
+        const val DEF_DET_UNCLIP = 1.50f
+        const val DEF_X_OVERLAP = 0.40f
         const val DEF_REC_CONF = 0.1f
 
         // Legacy aliases — keep source compatibility for old const refs
@@ -505,6 +505,24 @@ class OcrEngine(private val context: Context) {
             } else crop
 
             val rw = rotated.width; val rh = rotated.height
+            // ——— Long-line split for >10:1 aspect (rw*48/rh>480) — PP-OCR 48×480 crush fix ———
+            // Very long lines (e.g. 976×39 → 1201→480) crush timesteps and skip っ/punct.
+            // Split into overlapping w256 chunks (20% overlap) via smaller static model, then merge.
+            val isLongHoriz = rw >= rh * 3 / 2 && (rw.toFloat() * targetH / rh.toFloat() > modelWidths.last())
+            val isLongVert = rh >= rw * 3 / 2 && (rh.toFloat() * targetH / rw.toFloat() > modelWidths.last())
+            if (isLongHoriz || isLongVert) {
+                val stitched = if (isLongHoriz) {
+                    recognizeAndStitchLongHoriz(rotated, sessions, env, targetH, modelWidths)
+                } else {
+                    recognizeAndStitchLongVert(rotated, sessions, env, targetH, modelWidths)
+                }
+                if (stitched != null) {
+                    if (rotated !== crop) rotated.recycle()
+                    results[ci] = stitched
+                    continue
+                }
+                Log.w(TAG, "long-line stitch failed rw=$rw rh=$rh — falling through to crush")
+            }
             val targetW = maxOf(4, minOf(modelWidths.last(),
                 (rw.toFloat() * targetH / rh.toFloat()).roundToInt()
             ))
@@ -591,6 +609,192 @@ class OcrEngine(private val context: Context) {
         }
 
         return results.map { it ?: PPOcrResult("", emptyList(), floatArrayOf(), 0) }
+    }
+
+    // ——— Long-line split helpers — PP-OCR 48×10:1 crush fix ———
+    // Very long horizontal >960px (976×39 → 1201) and vertical >480px crush timesteps.
+    // Split into overlapping w256 chunks (20% overlap) via smaller static model, then stitch.
+    private fun recognizeAndStitchLongHoriz(
+        rotated: Bitmap, sessions: Map<Int, OrtSession>, env: OrtEnvironment,
+        targetH: Int, modelWidths: List<Int>
+    ): PPOcrResult? {
+        val rw = rotated.width; val rh = rotated.height
+        val scale = targetH.toFloat() / rh.toFloat()
+        val maxChunkW = (256 / scale).toInt().coerceAtLeast(64)
+        val overlap = (maxChunkW * 0.2f).toInt().coerceAtLeast(16)
+        val step = maxChunkW - overlap
+        if (step <= 0 || maxChunkW <= 0) return null
+        val chunks = mutableListOf<PPOcrResult>()
+        val chunkXs = mutableListOf<Int>()
+        var x = 0
+        while (x < rw) {
+            val w = minOf(maxChunkW, rw - x)
+            if (w < 16) break
+            val chunkBmp = Bitmap.createBitmap(rotated, x, 0, w, rh)
+            val cw = chunkBmp.width; val ch = chunkBmp.height
+            val targetW = minOf(256, (cw.toFloat() * targetH / ch.toFloat()).roundToInt().coerceAtLeast(4))
+            val modelW = modelWidths.firstOrNull { it >= targetW } ?: 256
+            val session = sessions[modelW] ?: sessions[256] ?: return null
+            // run chunk via same logic as single crop (inline to avoid recursion)
+            val resized = Bitmap.createScaledBitmap(chunkBmp, targetW, targetH, true)
+            val pixels = IntArray(targetW * targetH)
+            resized.getPixels(pixels, 0, targetW, 0, 0, targetW, targetH)
+            resized.recycle()
+            chunkBmp.recycle()
+            val inputFloats = FloatArray(1 * 3 * targetH * modelW)
+            for (c in 0 until 3) {
+                val cOff = c * targetH * modelW
+                for (y in 0 until targetH) for (xx in 0 until targetW) {
+                    val px = pixels[y * targetW + xx]
+                    val gray = ((px shr 16 and 0xFF) * 0.299f + (px shr 8 and 0xFF) * 0.587f + (px and 0xFF) * 0.114f)
+                    inputFloats[cOff + y * modelW + xx] = gray / 128f - 1f
+                }
+            }
+            val seqLen = modelW / 8
+            val recNcnn = recNcnnMap[modelW]
+            val flatOutput = if (recNcnn != null && useNcnnPref) {
+                recNcnn.infer(inputFloats, modelW, targetH) ?: run {
+                    val tensor = OnnxTensor.createTensor(env, java.nio.FloatBuffer.wrap(inputFloats), longArrayOf(1, 3, targetH.toLong(), modelW.toLong()))
+                    val r = session.run(mapOf("x" to tensor)); tensor.close()
+                    val out = r.get(0) as OnnxTensor; val o = FloatArray(seqLen * REC_NUM_CLASSES); out.floatBuffer.get(o); out.close(); r.close(); o
+                }
+            } else {
+                val tensor = OnnxTensor.createTensor(env, java.nio.FloatBuffer.wrap(inputFloats), longArrayOf(1, 3, targetH.toLong(), modelW.toLong()))
+                val r = session.run(mapOf("x" to tensor)); tensor.close()
+                val out = r.get(0) as OnnxTensor; val o = FloatArray(seqLen * REC_NUM_CLASSES); out.floatBuffer.get(o); out.close(); r.close(); o
+            }
+            val actualSeqLen = maxOf(1, ceil(targetW / REC_STRIDE.toFloat()).toInt())
+            val cropLogits: Array<*>? = Array<Any>(actualSeqLen) { t -> FloatArray(REC_NUM_CLASSES) { c -> flatOutput[t * REC_NUM_CLASSES + c] } } as Array<*>
+            val rawAlts = (0 until actualSeqLen).map { t ->
+                val slice = cropLogits?.getOrNull(t) as? FloatArray ?: return@map emptyList<Pair<Char,Float>>()
+                val pq = java.util.PriorityQueue<Int>(16, compareBy { slice[it] }); for (k in slice.indices) { pq.add(k); if (pq.size>15) pq.poll() }
+                pq.toList().sortedByDescending { slice[it] }.map { decodeChar(it) to slice[it] }
+            }
+            val decoded = ctcDecode(cropLogits, actualSeqLen, REC_NUM_CLASSES, 0f, actualSeqLen)
+            chunks.add(decoded.copy(rawAlternatives = rawAlts))
+            chunkXs.add(x)
+            if (x + w >= rw) break
+            x += step
+        }
+        if (chunks.isEmpty()) return null
+        if (chunks.size == 1) return chunks[0]
+        // Stitch via anchor overlap: find best matching char between prev tail (last 10) and curr head (first 10) via centerX distance + predictionScore
+        var stitchedText = chunks[0].text
+        var stitchedAlts = chunks[0].rawAlternatives.toMutableList()
+        var stitchedCols = chunks[0].charCols.toMutableList()
+        var prevChunkW = maxChunkW
+        var prevX = chunkXs[0]
+        for (i in 1 until chunks.size) {
+            val curr = chunks[i]; val currX = chunkXs[i]
+            // Estimate char positions for stitch: use simple string overlap fallback (longest common substring 2-5 chars)
+            val prevText = stitchedText; val currText = curr.text
+            var bestOverlap = 0
+            var bestScore = -1f
+            // Try to find overlapping substring between prev tail and curr head
+            for (len in minOf(5, prevText.length, currText.length) downTo 2) {
+                val tail = prevText.takeLast(len); val head = currText.take(len)
+                if (tail == head) { bestOverlap = len; break }
+                // also try prediction-vector similarity for anchor char
+                if (i < chunks.size) {
+                    val pStart = maxOf(0, stitchedAlts.size - 10); val cEnd = minOf(curr.rawAlternatives.size, 10)
+                    for (pIdx in stitchedAlts.size -1 downTo pStart) for (cIdx in 0 until cEnd) {
+                        val score = comparePredictionVectors(stitchedAlts[pIdx], curr.rawAlternatives[cIdx])
+                        if (score > 0.4f && score > bestScore) { bestScore = score; bestOverlap = 1 }
+                    }
+                }
+            }
+            if (bestOverlap > 0) {
+                // merge: keep stitched up to overlap, then append curr after overlap
+                stitchedText = stitchedText + currText.substring(bestOverlap)
+                // Merge alts/cols: keep stitched alts, then append curr alts after overlap
+                // Approximate cols: shift curr cols by currX
+                val currColsShifted = curr.charCols.map { it + currX * 0.1f } // rough
+                stitchedAlts.addAll(curr.rawAlternatives.drop(bestOverlap))
+                stitchedCols.addAll(currColsShifted.drop(bestOverlap))
+            } else {
+                stitchedText += currText
+                stitchedAlts.addAll(curr.rawAlternatives)
+                stitchedCols.addAll(curr.charCols.map { it + currX * 0.1f })
+            }
+            prevX = currX; prevChunkW = minOf(maxChunkW, rw - currX)
+        }
+        Log.d(TAG, "long-line stitch horiz rw=$rw rh=$rh chunks=${chunks.size} stitchedLen=${stitchedText.length} text=${stitchedText.take(40)}")
+        return PPOcrResult(stitchedText, stitchedAlts, stitchedCols.toFloatArray(), stitchedCols.size, stitchedAlts)
+    }
+
+    private fun recognizeAndStitchLongVert(
+        rotated: Bitmap, sessions: Map<Int, OrtSession>, env: OrtEnvironment,
+        targetH: Int, modelWidths: List<Int>
+    ): PPOcrResult? {
+        val rw = rotated.width; val rh = rotated.height
+        val scale = targetH.toFloat() / rw.toFloat()
+        val maxChunkH = (256 / scale).toInt().coerceAtLeast(64)
+        val overlap = (maxChunkH * 0.2f).toInt().coerceAtLeast(16)
+        val step = maxChunkH - overlap
+        if (step <= 0 || maxChunkH <= 0) return null
+        val chunks = mutableListOf<PPOcrResult>()
+        var y = 0
+        while (y < rh) {
+            val h = minOf(maxChunkH, rh - y)
+            if (h < 16) break
+            val chunkBmp = Bitmap.createBitmap(rotated, 0, y, rw, h)
+            val cw = chunkBmp.width; val ch = chunkBmp.height
+            val targetW = minOf(256, (cw.toFloat() * targetH / ch.toFloat()).roundToInt().coerceAtLeast(4))
+            val modelW = modelWidths.firstOrNull { it >= targetW } ?: 256
+            val session = sessions[modelW] ?: sessions[256] ?: return null
+            val resized = Bitmap.createScaledBitmap(chunkBmp, targetW, targetH, true)
+            val pixels = IntArray(targetW * targetH)
+            resized.getPixels(pixels, 0, targetW, 0, 0, targetW, targetH)
+            resized.recycle(); chunkBmp.recycle()
+            val inputFloats = FloatArray(1 * 3 * targetH * modelW)
+            for (c in 0 until 3) { val cOff = c * targetH * modelW; for (yy in 0 until targetH) for (xx in 0 until targetW) {
+                val px = pixels[yy * targetW + xx]; val gray = ((px shr 16 and 0xFF)*0.299f + (px shr 8 and 0xFF)*0.587f + (px and 0xFF)*0.114f)
+                inputFloats[cOff + yy * modelW + xx] = gray/128f -1f
+            }}
+            val seqLen = modelW/8
+            val recNcnn = recNcnnMap[modelW]
+            val flatOutput = if (recNcnn!=null && useNcnnPref) recNcnn.infer(inputFloats, modelW, targetH) ?: run {
+                val t=OnnxTensor.createTensor(env, java.nio.FloatBuffer.wrap(inputFloats), longArrayOf(1,3,targetH.toLong(),modelW.toLong())); val r=session.run(mapOf("x" to t)); t.close()
+                val o=r.get(0) as OnnxTensor; val oo=FloatArray(seqLen*REC_NUM_CLASSES); o.floatBuffer.get(oo); o.close(); r.close(); oo
+            } else {
+                val t=OnnxTensor.createTensor(env, java.nio.FloatBuffer.wrap(inputFloats), longArrayOf(1,3,targetH.toLong(),modelW.toLong())); val r=session.run(mapOf("x" to t)); t.close()
+                val o=r.get(0) as OnnxTensor; val oo=FloatArray(seqLen*REC_NUM_CLASSES); o.floatBuffer.get(oo); o.close(); r.close(); oo
+            }
+            val actualSeqLen = maxOf(1, ceil(targetW/REC_STRIDE.toFloat()).toInt())
+            val cropLogits: Array<*>? = Array<Any>(actualSeqLen){ t-> FloatArray(REC_NUM_CLASSES){ c-> flatOutput[t*REC_NUM_CLASSES+c] } } as Array<*>
+            val rawAlts = (0 until actualSeqLen).map{ t->
+                val s=cropLogits?.getOrNull(t) as? FloatArray ?: return@map emptyList<Pair<Char,Float>>()
+                val pq=java.util.PriorityQueue<Int>(16, compareBy{ s[it] }); for(k in s.indices){ pq.add(k); if(pq.size>15) pq.poll() }
+                pq.toList().sortedByDescending{ s[it] }.map{ decodeChar(it) to s[it] }
+            }
+            val decoded = ctcDecode(cropLogits, actualSeqLen, REC_NUM_CLASSES, 0f, actualSeqLen)
+            chunks.add(decoded.copy(rawAlternatives=rawAlts))
+            if (y + h >= rh) break; y += step
+        }
+        if (chunks.isEmpty()) return null
+        if (chunks.size==1) return chunks[0]
+        var stitchedText = chunks[0].text; var stitchedAlts = chunks[0].rawAlternatives.toMutableList()
+        for (i in 1 until chunks.size) {
+            val curr = chunks[i]
+            var bestOverlap=0
+            for (len in minOf(5, stitchedText.length, curr.text.length) downTo 2) if (stitchedText.takeLast(len)==curr.text.take(len)) { bestOverlap=len; break }
+            if (bestOverlap>0) { stitchedText+=curr.text.substring(bestOverlap); stitchedAlts.addAll(curr.rawAlternatives.drop(bestOverlap)) }
+            else { stitchedText+=curr.text; stitchedAlts.addAll(curr.rawAlternatives) }
+        }
+        Log.d(TAG, "long-line stitch vert rh=$rh rw=$rw chunks=${chunks.size} stitchedLen=${stitchedText.length}")
+        return PPOcrResult(stitchedText, stitchedAlts, chunks.flatMap { it.charCols.toList() }.toFloatArray(), stitchedAlts.size, stitchedAlts)
+    }
+
+    // helpers for stitch — ported from meiki
+    private fun comparePredictionVectors(alt1: List<Pair<Char,Float>>, alt2: List<Pair<Char,Float>>): Float {
+        if (alt1.isEmpty()||alt2.isEmpty()) return 0f
+        if (alt1[0].first==alt2[0].first) {
+            val set2=alt2.take(5).map{ it.first }.toSet(); var m=0; alt1.take(5).forEach{ if(set2.contains(it.first)) m++ }
+            return 0.6f + (m/5f)*0.4f
+        }
+        val c1=alt1[0].first; val c2=alt2[0].first
+        if (alt2.take(3).any{ it.first==c1 } || alt1.take(3).any{ it.first==c2 }) return 0.5f
+        return 0f
     }
 
     /**
