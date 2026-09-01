@@ -26,24 +26,52 @@ class CenteredTextView @JvmOverloads constructor(
         val textStr = text.toString()
         if (textStr.isEmpty()) return
 
-        // Use reference glyph for font-metrics-driven axis to keep baseline stable.
         val refChar = "あ"
         paint.getTextBounds(refChar, 0, 1, refBounds)
-
         paint.getTextBounds(textStr, 0, textStr.length, bounds)
-        val x: Float
-        val y: Float
+
+        // True centers
+        val viewCenterX = width / 2f
+        val viewCenterY = height / 2f
+        val glyphCenterX: Float
+        val glyphCenterY: Float
         if (isVertical) {
-            // Tategaki: perfectly centered vertically, horizontally via font metrics
-            x = width / 2f - (refBounds.left + refBounds.right) / 2f
-            y = height / 2f - (bounds.top + bounds.bottom) / 2f
+            // Tategaki: primary vertical via glyph, horizontal via metrics
+            glyphCenterX = (refBounds.left + refBounds.right) / 2f
+            glyphCenterY = (bounds.top + bounds.bottom) / 2f
         } else {
-            // Yoko: perfectly centered horizontally, vertically via font metrics
-            x = width / 2f - (bounds.left + bounds.right) / 2f
-            y = height / 2f - (refBounds.top + refBounds.bottom) / 2f
+            glyphCenterX = (bounds.left + bounds.right) / 2f
+            glyphCenterY = (refBounds.top + refBounds.bottom) / 2f
         }
 
-        paint.color = currentTextColor
-        canvas.drawText(textStr, x, y, paint)
+        // Center first: translate glyph center over view center
+        var x = viewCenterX - glyphCenterX
+        var y = viewCenterY - glyphCenterY
+
+        // If still too large, scale uniformly about view center
+        val glyphW = bounds.width().toFloat()
+        val glyphH = bounds.height().toFloat()
+        // Use view bounds with small padding
+        val maxW = width * 0.92f
+        val maxH = height * 0.92f
+        var scale = 1f
+        if (glyphW > maxW || glyphH > maxH) {
+            scale = minOf(maxW / glyphW.coerceAtLeast(1f), maxH / glyphH.coerceAtLeast(1f))
+        }
+
+        if (scale < 0.99f) {
+            canvas.save()
+            canvas.translate(viewCenterX, viewCenterY)
+            canvas.scale(scale, scale)
+            canvas.translate(-viewCenterX, -viewCenterY)
+            // After scale, need to recompute draw position relative to scaled coord?
+            // We already have x,y for unscaled; with canvas scaled about center, draw at same x,y
+            paint.color = currentTextColor
+            canvas.drawText(textStr, x, y, paint)
+            canvas.restore()
+        } else {
+            paint.color = currentTextColor
+            canvas.drawText(textStr, x, y, paint)
+        }
     }
 }

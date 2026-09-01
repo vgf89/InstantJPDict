@@ -650,16 +650,15 @@ class OcrAccessibilityService : AccessibilityService() {
             lineContainer.addView(charContainer, charParams)
 
             // True bbox center: use origBox (may be thin after overlap), not displayBox.
-            // Glyph true center (ink) aligned over bbox true center, textSize fits thin dimension.
+            // Center first (true ink center over bbox center), then scale about center if needed.
             val boxW = origBox.width().coerceAtLeast(1)
             val boxH = origBox.height().coerceAtLeast(1)
-            val fitSize = minOf(boxW, boxH).toFloat() * 0.90f
             val textView = CenteredTextView(this).apply {
                 text = char
                 isVertical = line.isVertical
                 setTextColor(android.graphics.Color.parseColor("#FF7777"))
                 typeface = android.graphics.Typeface.DEFAULT
-                setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, fitSize)
+                setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, fixedSize.toFloat() * 0.90f)
                 setPadding(0, 0, 0, 0)
                 includeFontPadding = false
                 isClickable = false
