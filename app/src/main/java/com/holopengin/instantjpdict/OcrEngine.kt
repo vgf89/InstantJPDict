@@ -34,6 +34,11 @@ class OcrEngine(private val context: Context) {
     private var ortEnv: OrtEnvironment? = null
     private val recSessions = mutableMapOf<Int, OrtSession>()
     private var ppocrVocab: List<String> = emptyList()
+    // ncnn single bucket w64 for #12
+    private var recNcnnW64: RecNcnn? = null
+    private val useNcnnPref: Boolean
+        get() = context.getSharedPreferences("instant_jp_dict_prefs", Context.MODE_PRIVATE)
+            .getString("ocr_backend", "onnx") == "ncnn"
 
     companion object {
         private const val TAG = "PPOCREngine"
@@ -88,6 +93,14 @@ class OcrEngine(private val context: Context) {
                 recSessions[w] = ortEnv!!.createSession(path, sessOpts)
             }
             Log.d(TAG, "Recognition models loaded: ${recSessions.keys}")
+
+            // ── Try ncnn w64 for #12 (single bucket, fallback to ORT if not present) ──
+            try {
+                recNcnnW64 = RecNcnn.create(context, 64)
+                Log.d(TAG, "RecNcnn w64 loaded: $recNcnnW64")
+            } catch (e: Exception) {
+                Log.e(TAG, "RecNcnn w64 failed", e)
+            }
 
             // ── Load vocabulary ──
             val vocabJson = context.assets.open("PP-OCRv6_small_rec_onnx/vocab.json")
@@ -450,17 +463,39 @@ class OcrEngine(private val context: Context) {
             }
 
             val seqLen = modelW / 8
-            val tensor = OnnxTensor.createTensor(env,
-                java.nio.FloatBuffer.wrap(inputFloats),
-                longArrayOf(1, 3, targetH.toLong(), modelW.toLong()))
-            val ortResult = session.run(mapOf("x" to tensor))
-            tensor.close()
-
-            val outputTensor = ortResult.get(0) as OnnxTensor
-            val flatOutput = FloatArray(seqLen * REC_NUM_CLASSES)
-            outputTensor.floatBuffer.get(flatOutput)
-            outputTensor.close()
-            ortResult.close()
+            val flatOutput: FloatArray = if (modelW == 64 && recNcnnW64 != null && useNcnnPref) {
+                // ncnn w64 single-bucket for #12 — fallback to ORT if ncnn fails
+                val ncnnOut = recNcnnW64!!.infer(inputFloats, modelW, targetH)
+                if (ncnnOut != null && ncnnOut.size == seqLen * REC_NUM_CLASSES) {
+                    Log.d(TAG, "ncnn w64 infer ok seq=$seqLen")
+                    ncnnOut
+                } else {
+                    Log.w(TAG, "ncnn w64 infer failed, fallback to ORT")
+                    val tensor = OnnxTensor.createTensor(env,
+                        java.nio.FloatBuffer.wrap(inputFloats),
+                        longArrayOf(1, 3, targetH.toLong(), modelW.toLong()))
+                    val ortResult = session.run(mapOf("x" to tensor))
+                    tensor.close()
+                    val outputTensor = ortResult.get(0) as OnnxTensor
+                    val out = FloatArray(seqLen * REC_NUM_CLASSES)
+                    outputTensor.floatBuffer.get(out)
+                    outputTensor.close()
+                    ortResult.close()
+                    out
+                }
+            } else {
+                val tensor = OnnxTensor.createTensor(env,
+                    java.nio.FloatBuffer.wrap(inputFloats),
+                    longArrayOf(1, 3, targetH.toLong(), modelW.toLong()))
+                val ortResult = session.run(mapOf("x" to tensor))
+                tensor.close()
+                val outputTensor = ortResult.get(0) as OnnxTensor
+                val out = FloatArray(seqLen * REC_NUM_CLASSES)
+                outputTensor.floatBuffer.get(out)
+                outputTensor.close()
+                ortResult.close()
+                out
+            }
 
             val actualSeqLen = maxOf(1, ceil(targetW / REC_STRIDE.toFloat()).toInt())
             val cropLogits: Array<*>? = Array<Any>(actualSeqLen) { t ->
@@ -973,6 +1008,7 @@ fun computeCharBoxes(
     fun close() {
         try { detectModel?.close() } catch (_: Exception) {}
         recSessions.values.forEach { try { it.close() } catch (_: Exception) {} }
+        try { recNcnnW64?.close() } catch (_: Exception) {}
         try { ortEnv?.close() } catch (_: Exception) {}
     }
 }

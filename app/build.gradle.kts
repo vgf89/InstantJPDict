@@ -40,6 +40,17 @@ android {
             matchingFallbacks += listOf("release")
         }
     }
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
+    packaging {
+        jniLibs {
+            keepDebugSymbols += "*/arm64-v8a/*.so"
+        }
+    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_21
         targetCompatibility = JavaVersion.VERSION_21

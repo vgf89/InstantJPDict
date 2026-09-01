@@ -230,4 +230,79 @@ class OcrBenchmarkTest {
         // Real macro run will be via accessibility dump of InstantJPDict settings screen.
         assertTrue(r1.numBoxes > 0 && r2.numBoxes > 0)
     }
+
+    @Test
+    fun benchRecNcnnW64() {
+        // Direct w64 micro-bench: synthetic 48×64 crop — head-to-head ORT vs ncnn #12
+        val appContext = InstrumentationRegistry.getInstrumentation().targetContext
+        // 48×64 input: 3×48×64 = 9216 floats, gray center box simulation
+        val w = 64
+        val h = 48
+        val inputFloats = FloatArray(3 * h * w) { 0f } // neutral gray (0) — actual content doesn't affect timing much
+        // warm: fill with pseudo-random to avoid zero fast-path
+        for (i in inputFloats.indices) inputFloats[i] = ((i * 37) % 255) / 128f - 1f
+
+        // Access OcrEngine internals via reflection for ORT baseline
+        val ortEnvField = engine.javaClass.getDeclaredField("ortEnv").apply { isAccessible = true }
+        val recSessionsField = engine.javaClass.getDeclaredField("recSessions").apply { isAccessible = true }
+        val ortEnv = ortEnvField.get(engine) as ai.onnxruntime.OrtEnvironment
+        @Suppress("UNCHECKED_CAST")
+        val recSessions = recSessionsField.get(engine) as MutableMap<Int, ai.onnxruntime.OrtSession>
+        val ortSession = recSessions[64] ?: error("no ORT session for w64")
+
+        // Ensure ncnn is loaded
+        val recNcnnField = engine.javaClass.getDeclaredField("recNcnnW64").apply { isAccessible = true }
+        var recNcnn = recNcnnField.get(engine) as RecNcnn?
+        if (recNcnn == null) {
+            recNcnn = RecNcnn.create(appContext, 64)
+            assertNotNull("RecNcnn w64 failed to create", recNcnn)
+            recNcnnField.set(engine, recNcnn)
+        }
+        Log.i(TAG, "benchRecNcnnW64: ortSession=${ortSession != null} recNcnn=$recNcnn w=$w h=$h floats=${inputFloats.size}")
+
+        // ORT: 5 runs, median
+        val ortTimes = mutableListOf<Long>()
+        var ortOutSize = 0
+        repeat(5) {
+            val t0 = System.nanoTime()
+            val tensor = ai.onnxruntime.OnnxTensor.createTensor(ortEnv, java.nio.FloatBuffer.wrap(inputFloats), longArrayOf(1, 3, h.toLong(), w.toLong()))
+            val result = ortSession.run(mapOf("x" to tensor))
+            tensor.close()
+            val outTensor = result.get(0) as ai.onnxruntime.OnnxTensor
+            val out = FloatArray(8 * 18710)
+            outTensor.floatBuffer.get(out)
+            ortOutSize = out.size
+            outTensor.close()
+            result.close()
+            ortTimes.add((System.nanoTime() - t0) / 1_000_000)
+        }
+        ortTimes.sort()
+        val ortP50 = ortTimes[ortTimes.size / 2]
+        Log.i(TAG, "benchRecNcnnW64 ORT w64 p50=${ortP50}ms times=$ortTimes outSize=$ortOutSize")
+
+        // ncnn: 5 runs, median
+        val ncnnTimes = mutableListOf<Long>()
+        var ncnnOutSize = 0
+        repeat(5) {
+            val t0 = System.nanoTime()
+            val out = recNcnn!!.infer(inputFloats, w, h)
+            val ms = (System.nanoTime() - t0) / 1_000_000
+            ncnnTimes.add(ms)
+            if (out != null) ncnnOutSize = out.size
+        }
+        ncnnTimes.sort()
+        val ncnnP50 = ncnnTimes[ncnnTimes.size / 2]
+        Log.i(TAG, "benchRecNcnnW64 ncnn w64 p50=${ncnnP50}ms times=$ncnnTimes outSize=$ncnnOutSize speedup=${if (ncnnP50>0) String.format("%.2fx", ortP50.toFloat()/ncnnP50) else "inf"}")
+
+        // Also emit via bundle for cron gating
+        val instr = InstrumentationRegistry.getInstrumentation()
+        val bundle = android.os.Bundle().apply {
+            putLong("ort_w64_p50", ortP50)
+            putLong("ncnn_w64_p50", ncnnP50)
+            putString("bench", "w64 ORT ${ortP50}ms ncnn ${ncnnP50}ms speedup ${if (ncnnP50>0) ortP50.toFloat()/ncnnP50 else 0f}")
+        }
+        instr.sendStatus(0, bundle)
+        assertTrue("ncnn should be faster than ORT for w64", ncnnP50 < ortP50)
+        assertTrue("ncnn output size should be 8*18710", ncnnOutSize == 8 * 18710)
+    }
 }
