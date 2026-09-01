@@ -10,6 +10,7 @@ import org.junit.Assert.*
 import org.junit.BeforeClass
 import org.junit.Test
 import org.junit.runner.RunWith
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
@@ -21,7 +22,7 @@ import kotlin.math.roundToInt
  * Release (real numbers): ./gradlew :app:connectedReleaseAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.holopengin.instantjpdict.OcrBenchmarkTest
  *
  * Output is deterministic (no wall-clock timestamps, only durations) for cron gating.
- * Part of #7
+ * Part of #7, #14 dual-backend A/B + correctness gate (max abs <1e-3 + top-1)
  * penned by Hermes Agent + muse-spark-1.2-contributor
  */
 @RunWith(AndroidJUnit4::class)
@@ -77,6 +78,60 @@ class OcrBenchmarkTest {
             if (sorted.isEmpty()) return 0
             val idx = ((sorted.size - 1) * p).roundToInt().coerceIn(0, sorted.size - 1)
             return sorted[idx]
+        }
+
+        internal fun maxAbsDiff(a: FloatArray, b: FloatArray): Float {
+            var max = 0f
+            val n = minOf(a.size, b.size)
+            for (i in 0 until n) {
+                val d = abs(a[i] - b[i])
+                if (d > max) max = d
+            }
+            // size mismatch counts as large diff
+            if (a.size != b.size) max = maxOf(max, 1e9f)
+            return max
+        }
+
+        internal fun top1Equal(a: FloatArray, b: FloatArray, seqLen: Int, numClasses: Int): Boolean {
+            if (a.size != b.size || a.size != seqLen * numClasses) return false
+            for (t in 0 until seqLen) {
+                var maxA = 0; var vA = Float.NEGATIVE_INFINITY
+                var maxB = 0; var vB = Float.NEGATIVE_INFINITY
+                val base = t * numClasses
+                for (c in 0 until numClasses) {
+                    val va = a[base + c]
+                    val vb = b[base + c]
+                    if (va > vA) { vA = va; maxA = c }
+                    if (vb > vB) { vB = vb; maxB = c }
+                }
+                if (maxA != maxB) return false
+            }
+            return true
+        }
+
+        /** Decode top-1 text from flat logits for quick top-1 check (CTC greedy without blank handling). */
+        private fun decodeTop1Flat(logits: FloatArray, seqLen: Int, numClasses: Int, vocab: List<String>): String {
+            val sb = StringBuilder()
+            var prev = -1
+            for (t in 0 until seqLen) {
+                val base = t * numClasses
+                var best = 0; var bestV = Float.NEGATIVE_INFINITY
+                for (c in 0 until numClasses) {
+                    val v = logits[base + c]
+                    if (v > bestV) { bestV = v; best = c }
+                }
+                if (best == 0) { prev = 0; continue }
+                if (best == prev) continue
+                val ch = when {
+                    best == 18709 -> ' '
+                    best == 18708 -> '　'
+                    best in 1..18708 -> vocab.getOrNull(best - 1)?.firstOrNull() ?: '?'
+                    else -> '?'
+                }
+                if (ch != '�' && ch != '\uFFFD') sb.append(ch)
+                prev = best
+            }
+            return sb.toString()
         }
     }
 
@@ -138,6 +193,37 @@ class OcrBenchmarkTest {
         )
     }
 
+    /** Variant that uses an explicit engine + backend label for A/B — #14 */
+    private fun benchOneImageWithEngine(name: String, bitmap: Bitmap, eng: OcrEngine, backend: String): BenchResult {
+        Log.i(TAG, "bench start $name ${bitmap.width}x${bitmap.height} backend=$backend")
+        val tDet = System.nanoTime()
+        val boxes = eng.detect(bitmap)
+        val detMs = (System.nanoTime() - tDet) / 1_000_000
+        Log.i(TAG, "bench det $name boxes=${boxes.size} detMs=$detMs backend=$backend")
+        if (boxes.isEmpty()) {
+            return BenchResult(name, bitmap.width, bitmap.height, detMs, detMs, detMs, 0, 0, 0, 0, 0, 0, emptyList())
+        }
+        val sampleBoxes = when {
+            boxes.size <= 3 -> boxes
+            else -> listOf(boxes.first(), boxes[boxes.size / 2], boxes.last())
+        }
+        Log.i(TAG, "bench sample ${sampleBoxes.size}/${boxes.size} boxes for rec backend=$backend")
+        val texts = mutableListOf<String>()
+        val collected = mutableListOf<Pair<Int, LineResult>>()
+        val tRec = System.nanoTime()
+        runBlocking {
+            eng.recognizeStreaming(bitmap, sampleBoxes) { pairs -> synchronized(collected) { collected.addAll(pairs) } }
+            var waited = 0
+            while (collected.size < sampleBoxes.size && waited < 30000) { kotlinx.coroutines.delay(50); waited += 50 }
+        }
+        var waited = 0
+        while (collected.size < sampleBoxes.size && waited < 2000) { Thread.sleep(50); waited += 50 }
+        val recMs = (System.nanoTime() - tRec) / 1_000_000
+        for ((_, line) in collected) texts.add(line.text)
+        Log.i(TAG, "bench rec $name sampled=${collected.size}/${sampleBoxes.size} totalBoxes=${boxes.size} recMs=$recMs perCrop=${if (sampleBoxes.isEmpty()) 0 else recMs / sampleBoxes.size} sample=${texts.take(3).joinToString(" | ")} backend=$backend")
+        return BenchResult(name, bitmap.width, bitmap.height, detMs, detMs, detMs, recMs, recMs, recMs, if (sampleBoxes.isEmpty()) 0 else recMs / sampleBoxes.size, if (sampleBoxes.isEmpty()) 0 else recMs / sampleBoxes.size, boxes.size, texts.take(5))
+    }
+
     data class BenchResult(
         val imageName: String,
         val width: Int,
@@ -161,6 +247,7 @@ class OcrBenchmarkTest {
             append(" rec_perCrop_p50=${perCropMsP50}ms p95=${perCropMsP95}ms")
             if (sampleTexts.isNotEmpty()) append(" sample_texts=${sampleTexts.joinToString(" | ")}")
         }
+        fun toLogLineWithBackend(backend: String): String = "bench backend=$backend ${toLogLine()}"
     }
 
     @Test
@@ -232,6 +319,157 @@ class OcrBenchmarkTest {
         // The 4813-line baseline from f6dee5b is ~4813 lines; our 2-image bench is a proxy.
         // Real macro run will be via accessibility dump of InstantJPDict settings screen.
         assertTrue(r1.numBoxes > 0 && r2.numBoxes > 0)
+    }
+
+    /**
+     * #14 dual-backend A/B bench + correctness gate.
+     * For (backend in onnx,ncnn) single-pass per image (Screenshot 2400x1080 37boxes + jpg 1366x768 65boxes, 3-crop sample)
+     * 4 runs total ≈15s (sampled). Asserts max abs <1e-3 + 100% top-1 per #8 and logs bench backend=onnx vs ncnn in one logcat.
+     * Also runs per-bucket synthetic parity gate (w64/128/256/480) for the four REC widths.
+     */
+    @Test
+    fun benchDualBackend_AB_CorrectnessAndBench() {
+        val appContext = InstrumentationRegistry.getInstrumentation().targetContext
+        val prefs = appContext.getSharedPreferences("instant_jp_dict_prefs", android.content.Context.MODE_PRIVATE)
+        val instr = InstrumentationRegistry.getInstrumentation()
+
+        // ── 1. Per-bucket synthetic parity gate (ORT vs ncnn logits) — #8 contract ──
+        val h = 48
+        val numClasses = 18710
+        val ortEnvField = engine.javaClass.getDeclaredField("ortEnv").apply { isAccessible = true }
+        val recSessionsField = engine.javaClass.getDeclaredField("recSessions").apply { isAccessible = true }
+        val ortEnv = ortEnvField.get(engine) as ai.onnxruntime.OrtEnvironment
+        @Suppress("UNCHECKED_CAST")
+        val recSessions = recSessionsField.get(engine) as MutableMap<Int, ai.onnxruntime.OrtSession>
+        val recNcnnMapField = engine.javaClass.getDeclaredField("recNcnnMap").apply { isAccessible = true }
+        @Suppress("UNCHECKED_CAST")
+        var recNcnnMap = recNcnnMapField.get(engine) as MutableMap<Int, RecNcnn>
+        // Ensure vocab for decode helper (load if needed)
+        var vocab: List<String> = emptyList()
+        try {
+            val vField = engine.javaClass.getDeclaredField("ppocrVocab").apply { isAccessible = true }
+            @Suppress("UNCHECKED_CAST")
+            vocab = vField.get(engine) as List<String>
+        } catch (_: Exception) {}
+
+        val bucketResults = mutableListOf<String>()
+        for (w in listOf(64, 128, 256, 480)) {
+            val seqLen = w / 8
+            val inputFloats = FloatArray(3 * h * w) { ((it * 37) % 255) / 128f - 1f }
+            val ortSession = recSessions[w] ?: error("no ORT session for w$w")
+            var recNcnn = recNcnnMap[w]
+            if (recNcnn == null) {
+                recNcnn = RecNcnn.create(appContext, w)
+                assertNotNull("RecNcnn w$w failed to create", recNcnn)
+                recNcnnMap[w] = recNcnn!!
+            }
+            // Single-pass parity (one infer each, not 5×, to keep gate fast)
+            val tensor = ai.onnxruntime.OnnxTensor.createTensor(ortEnv, java.nio.FloatBuffer.wrap(inputFloats), longArrayOf(1, 3, h.toLong(), w.toLong()))
+            val ortResult = ortSession.run(mapOf("x" to tensor))
+            tensor.close()
+            val outTensor = ortResult.get(0) as ai.onnxruntime.OnnxTensor
+            val ortOut = FloatArray(seqLen * numClasses)
+            outTensor.floatBuffer.get(ortOut)
+            outTensor.close()
+            ortResult.close()
+
+            val ncnnOut = recNcnn!!.infer(inputFloats, w, h)
+            assertNotNull("ncnn w$w infer returned null", ncnnOut)
+            assertEquals("ncnn outSize w$w", seqLen * numClasses, ncnnOut!!.size)
+
+            val maxAbs = maxAbsDiff(ortOut, ncnnOut)
+            val top1Ok = top1Equal(ortOut, ncnnOut, seqLen, numClasses)
+            val top1OrtText = if (vocab.isNotEmpty()) decodeTop1Flat(ortOut, seqLen, numClasses, vocab) else "?"
+            val top1NcnnText = if (vocab.isNotEmpty()) decodeTop1Flat(ncnnOut, seqLen, numClasses, vocab) else "?"
+            val line = "gate w$w seq$seqLen maxAbs=$maxAbs top1Eq=$top1Ok ort=\"$top1OrtText\" ncnn=\"$top1NcnnText\""
+            Log.i(TAG, line)
+            bucketResults.add(line)
+            // #8 contract: max abs <1e-3 and 100% top-1
+            assertTrue("maxAbs <1e-3 failed for w$w: $maxAbs (ort vs ncnn)", maxAbs < 1e-3f)
+            assertTrue("top-1 mismatch for w$w ort=\"$top1OrtText\" ncnn=\"$top1NcnnText\"", top1Ok)
+            assertEquals("top-1 text should match for w$w", top1OrtText, top1NcnnText)
+        }
+        Log.i(TAG, "gate per-bucket parity OK: ${bucketResults.joinToString(" | ")}")
+
+        // ── 2. Dual-backend image bench — 4 runs total (Screenshot×2 + jpg×2, 3-crop sample) ≈15s ──
+        val images = listOf(
+            "Screenshot_20260530-172718.png" to "Screenshot",
+            "f5d7d08735383899.jpg" to "jpg"
+        )
+        data class TaggedResult(val backend: String, val imageName: String, val result: BenchResult)
+        val allResults = mutableListOf<TaggedResult>()
+        var totalDet = 0L
+        var totalRec = 0L
+
+        for (backend in listOf("onnx", "ncnn")) {
+            prefs.edit().putString("ocr_backend", backend).apply()
+            // Create fresh engine for this backend so useNcnnPref is read correctly.
+            // We could reuse existing engine but fresh avoids cache staleness and proves prefs wiring.
+            val eng = OcrEngine(appContext)
+            assertTrue("engine $backend failed to load", eng.isReady())
+            Log.i(TAG, "benchDual AB engine backend=$backend ready=${eng.isReady()} recConf=${eng.recConfThresh} detThresh=${OcrEngine.getDetThresh(appContext)}")
+            for ((imgName, _) in images) {
+                val bmp = loadBenchmarkBitmap(imgName)
+                val r = benchOneImageWithEngine(imgName, bmp, eng, backend)
+                bmp.recycle()
+                // Log in required format for cron gating
+                val logLine = r.toLogLineWithBackend(backend)
+                Log.i(TAG, logLine)
+                // Also include numbers in parseable form
+                Log.i(TAG, "bench backend=$backend image=$imgName ${r.width}x${r.height} boxes=${r.numBoxes} det=${r.detMsP50} rec=${r.recTotalMsP50} perCrop=${r.perCropMsP50}")
+                allResults.add(TaggedResult(backend, imgName, r))
+                totalDet += r.detMsP50
+                totalRec += r.recTotalMsP50
+                assertTrue("no boxes for $imgName backend=$backend", r.numBoxes > 0)
+                // Known box counts: Screenshot ~37, jpg ~65 (allow ±15 for tuning)
+                if (imgName.contains("Screenshot")) {
+                    assertTrue("Screenshot boxes expected ~37 got ${r.numBoxes} backend=$backend", r.numBoxes in 20..55)
+                } else {
+                    assertTrue("jpg boxes expected ~65 got ${r.numBoxes} backend=$backend", r.numBoxes in 40..85)
+                }
+            }
+            eng.close()
+        }
+        // Reset to onnx for other tests
+        prefs.edit().putString("ocr_backend", "onnx").apply()
+
+        // Log summary comparing both backends in one logcat for cron gating
+        val byImage = allResults.groupBy { it.imageName }
+        for ((img, list) in byImage) {
+            val onnx = list.firstOrNull { it.backend == "onnx" }?.result
+            val ncnn = list.firstOrNull { it.backend == "ncnn" }?.result
+            if (onnx != null && ncnn != null) {
+                Log.i(TAG, "compare image=$img onnx det=${onnx.detMsP50} rec=${onnx.recTotalMsP50} perCrop=${onnx.perCropMsP50} boxes=${onnx.numBoxes} | ncnn det=${ncnn.detMsP50} rec=${ncnn.recTotalMsP50} perCrop=${ncnn.perCropMsP50} boxes=${ncnn.numBoxes}")
+                // Correctness gate: top-1 texts should match across backends for same sampled crops
+                // We compare sampleTexts; they are CTC-decoded strings (already top-1). Require exact match per image sample.
+                // Allow empty mismatch only if both empty, else assert equality.
+                if (onnx.sampleTexts.isNotEmpty() && ncnn.sampleTexts.isNotEmpty()) {
+                    // For 3-crop sample, each text corresponds to same crop index (first/middle/last)
+                    // Require texts equal element-wise. If OCR is stochastic, a single diff fails gate.
+                    for (i in onnx.sampleTexts.indices) {
+                        val tOnnx = onnx.sampleTexts.getOrNull(i) ?: ""
+                        val tNcnn = ncnn.sampleTexts.getOrNull(i) ?: ""
+                        assertEquals("top-1 text mismatch for $img crop $i backend onnx vs ncnn", tOnnx, tNcnn)
+                    }
+                    Log.i(TAG, "top-1 texts match for $img: ${onnx.sampleTexts.joinToString(" | ")}")
+                }
+            }
+        }
+        Log.i(TAG, "SUMMARY dual AB 4 runs detTotal=${totalDet}ms recTotal=${totalRec}ms avgPerRunDet=${totalDet/4}ms avgPerRunRec=${totalRec/4}ms")
+        Log.i(TAG, "bench backend=onnx vs ncnn complete — gate passed (maxAbs<1e-3 + top-1)")
+
+        // Emit instrumentation bundle for cron gating
+        val bundle = android.os.Bundle().apply {
+            putString("bench", allResults.joinToString(" | ") { it.result.toLogLineWithBackend(it.backend) })
+            putLong("det_total", totalDet)
+            putLong("rec_total", totalRec)
+            putString("gate", bucketResults.joinToString(" | "))
+        }
+        instr.sendStatus(0, bundle)
+
+        // Final asserts ensure both backends produced boxes
+        assertEquals(4, allResults.size)
+        assertTrue(allResults.all { it.result.numBoxes > 0 })
     }
 
     @Test

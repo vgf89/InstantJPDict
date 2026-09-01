@@ -49,20 +49,62 @@ class OcrEngine(private val context: Context) {
     companion object {
         private const val TAG = "PPOCREngine"
 
-        // Detection constants
-        private const val PPOCR_DET_LONG_SIDE = 960
-        private const val PPOCR_DET_THRESH = 0.3f
-        private const val PPOCR_DET_UNCLIP_RATIO = 1.1f
-        private const val X_OVERLAP_THRESHOLD = 0.3f
+        // SharedPreferences keys for tunables — #14
+        const val PREFS_NAME = "instant_jp_dict_prefs"
+        const val PREF_BACKEND = "ocr_backend"
+        const val PREF_DET_THRESH = "ppocr_det_thresh"
+        const val PREF_DET_UNCLIP = "ppocr_det_unclip_ratio"
+        const val PREF_DET_LONG_SIDE = "ppocr_det_long_side"
+        const val PREF_X_OVERLAP = "x_overlap_thresh"
+        const val PREF_REC_CONF = "rec_confidence_thresh"
 
-        // Recognition constants
+        // Defaults (previous hard constants)
+        const val DEF_DET_LONG_SIDE = 960
+        const val DEF_DET_THRESH = 0.3f
+        const val DEF_DET_UNCLIP = 1.1f
+        const val DEF_X_OVERLAP = 0.3f
+        const val DEF_REC_CONF = 0.1f
+
+        // Legacy aliases — keep source compatibility for old const refs
+        const val PPOCR_DET_LONG_SIDE = DEF_DET_LONG_SIDE
+        const val PPOCR_DET_THRESH = DEF_DET_THRESH
+        const val PPOCR_DET_UNCLIP_RATIO = DEF_DET_UNCLIP
+        const val X_OVERLAP_THRESHOLD = DEF_X_OVERLAP
+        const val REC_CONFIDENCE_THRESHOLD = DEF_REC_CONF
+
+        // Helpers for static access (no engine instance needed)
+        fun getDetThresh(ctx: Context): Float =
+            ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getFloat(PREF_DET_THRESH, DEF_DET_THRESH)
+        fun getDetUnclip(ctx: Context): Float =
+            ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getFloat(PREF_DET_UNCLIP, DEF_DET_UNCLIP)
+        fun getDetLongSide(ctx: Context): Int =
+            ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getInt(PREF_DET_LONG_SIDE, DEF_DET_LONG_SIDE)
+        fun getXOverlap(ctx: Context): Float =
+            ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getFloat(PREF_X_OVERLAP, DEF_X_OVERLAP)
+        fun getRecConf(ctx: Context): Float =
+            ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getFloat(PREF_REC_CONF, DEF_REC_CONF)
+
+        // Recognition constants (not tunable)
         private const val REC_TARGET_H = 48
         private const val REC_NUM_CLASSES = 18710  // 0=blank, 1..18708=chars, 18709=space
-        private const val REC_CONFIDENCE_THRESHOLD = 0.1f
         private const val BATCH_SIZE = 1
         private const val REC_STRIDE = 8
 	const val GAP_CHAR = '\u25CC'
     }
+
+    // ——— Tunable getters (live SharedPreferences, defaults from companion) ———
+    private val prefs
+        get() = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    private val detLongSide: Int
+        get() = prefs.getInt(PREF_DET_LONG_SIDE, DEF_DET_LONG_SIDE)
+    private val detThresh: Float
+        get() = prefs.getFloat(PREF_DET_THRESH, DEF_DET_THRESH)
+    private val detUnclip: Float
+        get() = prefs.getFloat(PREF_DET_UNCLIP, DEF_DET_UNCLIP)
+    private val xOverlapThresh: Float
+        get() = prefs.getFloat(PREF_X_OVERLAP, DEF_X_OVERLAP)
+    val recConfThresh: Float
+        get() = prefs.getFloat(PREF_REC_CONF, DEF_REC_CONF)
 
     init {
         try {
@@ -155,36 +197,39 @@ class OcrEngine(private val context: Context) {
         val origW = bitmap.width.toFloat()
         val origH = bitmap.height.toFloat()
 
-        // 1. Resize keeping longest side = 960, pad to 960×960 square
-        val detSize = 960
-        val scale = detSize.toFloat() / maxOf(origW, origH)
+        // 1. Resize keeping longest side = detLongSide (tunable), pad to modelSize×modelSize square
+        // modelSize is fixed LiteRT input (960); detLongSide controls the effective longest side before letterbox
+        val targetLong = detLongSide
+        val modelSize = 960
+        Log.d(TAG, "detect tunables thresh=$detThresh unclip=$detUnclip longSide=$targetLong xOverlap=$xOverlapThresh modelSize=$modelSize")
+        val scale = targetLong.toFloat() / maxOf(origW, origH)
         val resizeW = maxOf((origW * scale).roundToInt(), 32)
         val resizeH = maxOf((origH * scale).roundToInt(), 32)
 
         val resized = Bitmap.createScaledBitmap(bitmap, resizeW, resizeH, true)
 
-        // Letterbox to detSize × detSize (gray padding)
-        val letterbox = Bitmap.createBitmap(detSize, detSize, Bitmap.Config.ARGB_8888)
+        // Letterbox to modelSize × modelSize (gray padding)
+        val letterbox = Bitmap.createBitmap(modelSize, modelSize, Bitmap.Config.ARGB_8888)
         val canvas = android.graphics.Canvas(letterbox)
         canvas.drawColor(Color.rgb(128, 128, 128))
-        canvas.drawBitmap(resized, (detSize - resizeW) / 2f, (detSize - resizeH) / 2f, null)
+        canvas.drawBitmap(resized, (modelSize - resizeW) / 2f, (modelSize - resizeH) / 2f, null)
         canvas.setBitmap(null)
         resized.recycle()
 
         // 2. Build NHWC input with ImageNet normalisation
         val mean = floatArrayOf(0.485f, 0.456f, 0.406f)
         val std = floatArrayOf(0.229f, 0.224f, 0.225f)
-        val imgData = FloatArray(detSize * detSize * 3)
+        val imgData = FloatArray(modelSize * modelSize * 3)
 
-        for (y in 0 until detSize) {
-            for (x in 0 until detSize) {
+        for (y in 0 until modelSize) {
+            for (x in 0 until modelSize) {
                 val px = letterbox.getPixel(x, y)
 
                 val r = ((px shr 16 and 0xFF) / 255f - mean[0]) / std[0]
                 val g = ((px shr 8 and 0xFF) / 255f - mean[1]) / std[1]
                 val b = ((px and 0xFF) / 255f - mean[2]) / std[2]
 
-                val idx = (y * detSize + x) * 3
+                val idx = (y * modelSize + x) * 3
                 // NHWC channel order: 0=R, 1=G, 2=B (ImageNet convention)
                 imgData[idx] = r
                 imgData[idx + 1] = g
@@ -200,9 +245,9 @@ class OcrEngine(private val context: Context) {
 
         model.run(inputBuffers, outputBuffers)
 
-        // 4. Extract probability map [1,detSize,detSize,1]
-        val outH = detSize
-        val outW = detSize
+        // 4. Extract probability map [1,modelSize,modelSize,1]
+        val outH = modelSize
+        val outW = modelSize
         val outputArray = outputBuffers.get(0).readFloat()
         Log.d(TAG, "detect: output size=${outputArray.size} expected=${outH * outW}")
 
@@ -232,8 +277,8 @@ class OcrEngine(private val context: Context) {
         Log.d(TAG, "prob_map: min=$pMin max=$pMax mean=${if (pCount > 0) pSum / pCount else 0f}")
 
         // Scale factors from model output to original image (accounting for letterbox)
-        val scaleWOut = origW / (detSize.toFloat())
-        val scaleHOut = origH / (detSize.toFloat())
+        val scaleWOut = origW / (modelSize.toFloat())
+        val scaleHOut = origH / (modelSize.toFloat())
 
         // 6. Find connected components (contours) via simple flood-fill
         val visited = Array(outH) { BooleanArray(outW) }
@@ -241,7 +286,7 @@ class OcrEngine(private val context: Context) {
 
         for (y in 0 until outH) {
             for (x in 0 until outW) {
-                if (visited[y][x] || probMap[y][x] <= PPOCR_DET_THRESH) continue
+                if (visited[y][x] || probMap[y][x] <= detThresh) continue
 
                 // Flood-fill to find connected component
                 val queue = ArrayDeque<Pair<Int, Int>>()
@@ -263,7 +308,7 @@ class OcrEngine(private val context: Context) {
                             if (dx == 0 && dy == 0) continue
                             val nx = cx + dx; val ny = cy + dy
                             if (nx in 0 until outW && ny in 0 until outH &&
-                                !visited[ny][nx] && probMap[ny][nx] > PPOCR_DET_THRESH
+                                !visited[ny][nx] && probMap[ny][nx] > detThresh
                             ) {
                                 visited[ny][nx] = true
                                 queue.addLast(nx to ny)
@@ -275,9 +320,9 @@ class OcrEngine(private val context: Context) {
                 if (pixelCount < 3) continue // noise filter
 
                 // Convert from output coords to original image coords
-                // (output space is letterbox image centered in detSize×detSize)
-                val imgLeft = (detSize - resizeW) / 2f
-                val imgTop = (detSize - resizeH) / 2f
+                // (output space is letterbox image centered in modelSize×modelSize)
+                val imgLeft = (modelSize - resizeW) / 2f
+                val imgTop = (modelSize - resizeH) / 2f
                 val resScaleW = origW / resizeW.toFloat()
                 val resScaleH = origH / resizeH.toFloat()
                 val bx = ((minX - imgLeft) * resScaleW).roundToInt().coerceAtLeast(0)
@@ -292,7 +337,7 @@ class OcrEngine(private val context: Context) {
                 val bh = (by2 - by).toFloat()
                 val area = bw * bh
                 val perimeter = 2f * (bw + bh)
-                val expand = if (perimeter > 0f) area * PPOCR_DET_UNCLIP_RATIO / perimeter else 0f
+                val expand = if (perimeter > 0f) area * detUnclip / perimeter else 0f
 
                 val ux = (bx - expand).coerceAtLeast(0f).roundToInt()
                 val uy = (by - expand).coerceAtLeast(0f).roundToInt()
@@ -405,7 +450,7 @@ class OcrEngine(private val context: Context) {
         if (minArea <= 0) return false
 
         val iom = interArea / minArea.toFloat()
-        if (iom < X_OVERLAP_THRESHOLD) return false
+        if (iom < xOverlapThresh) return false
 
         val yDiff = abs((a.top + a.bottom) / 2f - (b.top + b.bottom) / 2f)
         val avgH = (a.height() + b.height()) / 2f

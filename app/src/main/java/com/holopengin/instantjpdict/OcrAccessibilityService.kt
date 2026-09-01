@@ -275,6 +275,11 @@ class OcrAccessibilityService : AccessibilityService() {
         if (screenshotOverlay != null) return
         screenshotBitmap = bitmap
         controller.resetState()
+        // #14: load tunable rec threshold + log preferred backend (OcrEngine + controller read prefs)
+        controller.loadFromPrefs(this)
+        val backendPref = getSharedPreferences(OcrEngine.PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(OcrEngine.PREF_BACKEND, "onnx")
+        Log.i("OcrAccessibilityService", "showScreenshotOverlay backend=$backendPref recConf=${controller.recConfidenceThreshold} detThresh=${OcrEngine.getDetThresh(this)} longSide=${OcrEngine.getDetLongSide(this)}")
 
         val params = WindowManager.LayoutParams().apply {
             type = WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
