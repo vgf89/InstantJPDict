@@ -713,39 +713,40 @@ class OcrEngine(private val context: Context) {
             Log.d(TAG, "long-line stitch horiz rw=$rw rh=$rh chunks=1 stitchedLen=${c.text.length} seqLen=${c.actualSeqLen} text=${c.text.take(40)}")
             return PPOcrResult(c.text, c.altsPerChar, c.charCols, c.actualSeqLen, c.rawAltsPerTimestep)
         }
-        // ——— Phase 2: stitch via meiki centerX distance 30 + predictionScore 0.4 + interleave ———
-        // Build per-char global centerX for each chunk
+        // ——— Phase 2: stitch via anchor alignment with identical timestep size ———
+        // Each timestep is identical: rh/6 px original (48/8 stride). Both chunks share same size.
+        // Align second chunk's anchor perfectly over first's same anchor, then progress normally.
+        // Finally scale positions to fit bbox length via totalSeqLen = ceil(rw*48/rh/8).
+        val timestepPx = rh.toFloat() / 6f
+        val totalSeqLen = maxOf(1, ceil(rw.toFloat() * targetH.toFloat() / rh.toFloat() / REC_STRIDE.toFloat()).toInt())
         val chunkGlobalCenters = chunks.map { ci ->
-            ci.charCols.map { t -> ci.offsetX + (t + 0.5f) * (ci.chunkW.toFloat() / ci.actualSeqLen.toFloat()) }
+            ci.charCols.map { t -> ci.offsetX.toFloat() + (t + 0.5f) * timestepPx }
         }
         var stitchedText = StringBuilder(chunks[0].text)
         var stitchedAlts = chunks[0].altsPerChar.toMutableList()
         var stitchedCols = chunks[0].charCols.toMutableList()
         var stitchedGlobal = chunkGlobalCenters[0].toMutableList()
-        var stitchedSeqLen = chunks[0].actualSeqLen
-        // raw for final: concatenated per-timestep raws with offset? keep per-char for simplicity
         val stitchedRawAll = chunks[0].rawAltsPerTimestep.toMutableList()
         for (i in 1 until chunks.size) {
             val curr = chunks[i]
             val currGlobal = chunkGlobalCenters[i]
             val currAlts = curr.altsPerChar
             if (currAlts.isEmpty() || stitchedAlts.isEmpty()) {
-                // fallback: append if beyond lastX+10
-                val lastX = stitchedGlobal.lastOrNull() ?: -100f
+                val lastPx = stitchedGlobal.lastOrNull() ?: -100f
+                val offsetGeomT = curr.offsetX.toFloat() * 6f / rh.toFloat()
                 for (j in currAlts.indices) {
-                    val gx = currGlobal.getOrNull(j) ?: continue
-                    if (gx > lastX + 10) {
-                        // avoid double space at boundary
+                    val candT = offsetGeomT + curr.charCols[j]
+                    val candPx = currGlobal.getOrNull(j) ?: continue
+                    if (candPx > lastPx + 10f) {
                         val ch = curr.text.getOrNull(j) ?: continue
                         if (stitchedText.isNotEmpty() && stitchedText.last() == ' ' && ch == ' ') continue
                         stitchedText.append(ch)
                         stitchedAlts.add(currAlts[j])
-                        stitchedCols.add(curr.charCols[j] + stitchedSeqLen.toFloat())
-                        stitchedGlobal.add(gx)
+                        stitchedCols.add(candT)
+                        stitchedGlobal.add(candPx)
                     }
                 }
                 stitchedRawAll.addAll(curr.rawAltsPerTimestep)
-                stitchedSeqLen += curr.actualSeqLen
                 continue
             }
             var bestPrevIdx = -1
@@ -778,67 +779,57 @@ class OcrEngine(private val context: Context) {
                     stitchedCols.removeAt(stitchedCols.size - 1)
                     stitchedGlobal.removeAt(stitchedGlobal.size - 1)
                 }
-                // update anchor with merged alternatives
                 stitchedAlts[bestPrevIdx] = merged
-                // append curr after anchor
+                val offsetT = stitchedCols[bestPrevIdx] - curr.charCols[bestCurrIdx]
+                val offsetPx = stitchedGlobal[bestPrevIdx] - currGlobal[bestCurrIdx]
                 for (j in bestCurrIdx + 1 until currAlts.size) {
                     val ch = curr.text.getOrNull(j) ?: continue
-                    // avoid double space at overlap boundary: if anchor was space and next is space, skip
                     if (stitchedText.isNotEmpty() && stitchedText.last() == ' ' && ch == ' ') continue
                     stitchedText.append(ch)
                     stitchedAlts.add(currAlts[j])
-                    stitchedCols.add(curr.charCols[j] + stitchedSeqLen.toFloat())
-                    stitchedGlobal.add(currGlobal[j])
+                    stitchedCols.add(curr.charCols[j] + offsetT)
+                    stitchedGlobal.add(currGlobal[j] + offsetPx)
                 }
                 stitchedRawAll.addAll(curr.rawAltsPerTimestep)
             } else {
-                // no anchor: append only those > lastX+10
-                val lastX = stitchedGlobal.lastOrNull() ?: -100f
+                val lastPx = stitchedGlobal.lastOrNull() ?: -100f
                 var appended = 0
                 for (j in currAlts.indices) {
-                    val gx = currGlobal[j]
-                    if (gx > lastX + 10 || appended == 0 && currAlts.size == 1) {
-                        if (j == 0 && stitchedText.isNotEmpty() && stitchedText.last() == ' ' && curr.text.getOrNull(j) == ' ') {
-                            // collapse double space at boundary: skip leading space of curr
-                            // still add if not double
-                        } else {
-                            val ch = curr.text.getOrNull(j) ?: continue
-                            if (stitchedText.isNotEmpty() && stitchedText.last() == ' ' && ch == ' ') continue
-                            stitchedText.append(ch)
-                            stitchedAlts.add(currAlts[j])
-                            stitchedCols.add(curr.charCols[j] + stitchedSeqLen.toFloat())
-                            stitchedGlobal.add(gx)
-                            appended++
-                        }
-                    } else if (gx > stitchedGlobal.lastOrNull() ?: lastX) {
-                        // if no anchor but still sequential, allow
+                    val candPx = currGlobal[j]
+                    if (candPx > lastPx + 10f || (appended == 0 && currAlts.size == 1)) {
+                        val ch = curr.text.getOrNull(j) ?: continue
+                        if (stitchedText.isNotEmpty() && stitchedText.last() == ' ' && ch == ' ') continue
+                        val candT = curr.offsetX.toFloat() * 6f / rh.toFloat() + curr.charCols[j]
+                        stitchedText.append(ch)
+                        stitchedAlts.add(currAlts[j])
+                        stitchedCols.add(candT)
+                        stitchedGlobal.add(candPx)
+                        appended++
                     }
                 }
-                // if nothing appended due to threshold, fallback append all beyond
                 if (appended == 0) {
+                    val lastT = stitchedCols.lastOrNull() ?: 0f
+                    val lastPx2 = stitchedGlobal.lastOrNull() ?: 0f
+                    val fallbackOffsetT = (lastT + 1f) - curr.charCols[0]
+                    val fallbackOffsetPx = (lastPx2 + timestepPx) - currGlobal[0]
                     for (j in currAlts.indices) {
                         val ch = curr.text.getOrNull(j) ?: continue
                         if (stitchedText.isNotEmpty() && stitchedText.last() == ' ' && ch == ' ') continue
                         stitchedText.append(ch)
                         stitchedAlts.add(currAlts[j])
-                        stitchedCols.add(curr.charCols[j] + stitchedSeqLen.toFloat())
-                        stitchedGlobal.add(currGlobal[j])
+                        stitchedCols.add(curr.charCols[j] + fallbackOffsetT)
+                        stitchedGlobal.add(currGlobal[j] + fallbackOffsetPx)
                     }
                 }
                 stitchedRawAll.addAll(curr.rawAltsPerTimestep)
             }
-            stitchedSeqLen += curr.actualSeqLen
         }
-        // Final scaling: seqLenTotal = sum actualSeqLen, charCols offset by stitchedSeqLen, so computeCharBoxes with cropW=rw fills full bbox
+        // Final scaling: charCols are global timesteps with identical size (rh/6). Scale to bbox via totalSeqLen.
         val finalTextRaw = stitchedText.toString()
-        // Collapse double spaces only at chunk boundaries: already handled, but ensure no "  " remains at boundaries (not globally)
-        // Do a single pass to collapse any remaining double spaces introduced at boundaries
         var finalText = finalTextRaw
-        // only collapse double spaces that were at chunk boundaries (where we already handled), but keep intentional doubles collapsed to single
-        // We collapse globally for now as single pass to avoid "  " artifacts from overlap; this is safe as double spaces are not expected in normal text
         while (finalText.contains("  ")) finalText = finalText.replace("  ", " ")
-        Log.d(TAG, "long-line stitch horiz rw=$rw rh=$rh chunks=${chunks.size} stitchedLen=${finalText.length} seqLen=$stitchedSeqLen text=${finalText.take(40)}")
-        return PPOcrResult(finalText, stitchedAlts, stitchedCols.toFloatArray(), stitchedSeqLen, stitchedRawAll)
+        Log.d(TAG, "long-line stitch horiz rw=$rw rh=$rh chunks=${chunks.size} stitchedLen=${finalText.length} seqLen=$totalSeqLen text=${finalText.take(40)}")
+        return PPOcrResult(finalText, stitchedAlts, stitchedCols.toFloatArray(), totalSeqLen, stitchedRawAll)
     }
 
     private fun recognizeAndStitchLongVert(
@@ -909,34 +900,37 @@ class OcrEngine(private val context: Context) {
             Log.d(TAG, "long-line stitch vert rh=$rh rw=$rw chunks=1 stitchedLen=${c.text.length} seqLen=${c.actualSeqLen}")
             return PPOcrResult(c.text, c.altsPerChar, c.charCols, c.actualSeqLen, c.rawAltsPerTimestep)
         }
+        // ——— stitch via anchor alignment with identical timestep size (rw/6) ———
+        val timestepPx = rw.toFloat() / 6f
+        val totalSeqLen = maxOf(1, ceil(rh.toFloat() * targetH.toFloat() / rw.toFloat() / REC_STRIDE.toFloat()).toInt())
         val chunkGlobalCentersY = chunks.map { ci ->
-            ci.charCols.map { t -> ci.offsetY + (t + 0.5f) * (ci.chunkW.toFloat() / ci.actualSeqLen.toFloat()) }
+            ci.charCols.map { t -> ci.offsetY.toFloat() + (t + 0.5f) * timestepPx }
         }
         var stitchedText = StringBuilder(chunks[0].text)
         var stitchedAlts = chunks[0].altsPerChar.toMutableList()
         var stitchedCols = chunks[0].charCols.toMutableList()
         var stitchedGlobal = chunkGlobalCentersY[0].toMutableList()
-        var stitchedSeqLen = chunks[0].actualSeqLen
         val stitchedRawAll = chunks[0].rawAltsPerTimestep.toMutableList()
         for (i in 1 until chunks.size) {
             val curr = chunks[i]
             val currGlobal = chunkGlobalCentersY[i]
             val currAlts = curr.altsPerChar
             if (currAlts.isEmpty() || stitchedAlts.isEmpty()) {
-                val lastY = stitchedGlobal.lastOrNull() ?: -100f
+                val lastPx = stitchedGlobal.lastOrNull() ?: -100f
+                val offsetGeomT = curr.offsetY.toFloat() * 6f / rw.toFloat()
                 for (j in currAlts.indices) {
-                    val gy = currGlobal.getOrNull(j) ?: continue
-                    if (gy > lastY + 10) {
+                    val candT = offsetGeomT + curr.charCols[j]
+                    val candPx = currGlobal.getOrNull(j) ?: continue
+                    if (candPx > lastPx + 10f) {
                         val ch = curr.text.getOrNull(j) ?: continue
                         if (stitchedText.isNotEmpty() && stitchedText.last() == ' ' && ch == ' ') continue
                         stitchedText.append(ch)
                         stitchedAlts.add(currAlts[j])
-                        stitchedCols.add(curr.charCols[j] + stitchedSeqLen.toFloat())
-                        stitchedGlobal.add(gy)
+                        stitchedCols.add(candT)
+                        stitchedGlobal.add(candPx)
                     }
                 }
                 stitchedRawAll.addAll(curr.rawAltsPerTimestep)
-                stitchedSeqLen += curr.actualSeqLen
                 continue
             }
             var bestPrevIdx = -1
@@ -966,48 +960,54 @@ class OcrEngine(private val context: Context) {
                     stitchedGlobal.removeAt(stitchedGlobal.size-1)
                 }
                 stitchedAlts[bestPrevIdx] = merged
+                val offsetT = stitchedCols[bestPrevIdx] - curr.charCols[bestCurrIdx]
+                val offsetPx = stitchedGlobal[bestPrevIdx] - currGlobal[bestCurrIdx]
                 for (j in bestCurrIdx+1 until currAlts.size) {
                     val ch = curr.text.getOrNull(j) ?: continue
                     if (stitchedText.isNotEmpty() && stitchedText.last()==' ' && ch==' ') continue
                     stitchedText.append(ch)
                     stitchedAlts.add(currAlts[j])
-                    stitchedCols.add(curr.charCols[j] + stitchedSeqLen.toFloat())
-                    stitchedGlobal.add(currGlobal[j])
+                    stitchedCols.add(curr.charCols[j] + offsetT)
+                    stitchedGlobal.add(currGlobal[j] + offsetPx)
                 }
                 stitchedRawAll.addAll(curr.rawAltsPerTimestep)
             } else {
-                val lastY = stitchedGlobal.lastOrNull() ?: -100f
+                val lastPx = stitchedGlobal.lastOrNull() ?: -100f
                 var appended=0
                 for (j in currAlts.indices) {
-                    val gy = currGlobal[j]
-                    if (gy > lastY + 10) {
+                    val candPx = currGlobal[j]
+                    if (candPx > lastPx + 10f || (appended==0 && currAlts.size==1)) {
                         val ch = curr.text.getOrNull(j) ?: continue
                         if (stitchedText.isNotEmpty() && stitchedText.last()==' ' && ch==' ') continue
+                        val candT = curr.offsetY.toFloat() * 6f / rw.toFloat() + curr.charCols[j]
                         stitchedText.append(ch)
                         stitchedAlts.add(currAlts[j])
-                        stitchedCols.add(curr.charCols[j] + stitchedSeqLen.toFloat())
-                        stitchedGlobal.add(gy)
+                        stitchedCols.add(candT)
+                        stitchedGlobal.add(candPx)
                         appended++
                     }
                 }
                 if (appended==0) {
+                    val lastT = stitchedCols.lastOrNull() ?: 0f
+                    val lastPx2 = stitchedGlobal.lastOrNull() ?: 0f
+                    val fallbackOffsetT = (lastT + 1f) - curr.charCols[0]
+                    val fallbackOffsetPx = (lastPx2 + timestepPx) - currGlobal[0]
                     for (j in currAlts.indices) {
                         val ch = curr.text.getOrNull(j) ?: continue
                         if (stitchedText.isNotEmpty() && stitchedText.last()==' ' && ch==' ') continue
                         stitchedText.append(ch)
                         stitchedAlts.add(currAlts[j])
-                        stitchedCols.add(curr.charCols[j] + stitchedSeqLen.toFloat())
-                        stitchedGlobal.add(currGlobal[j])
+                        stitchedCols.add(curr.charCols[j] + fallbackOffsetT)
+                        stitchedGlobal.add(currGlobal[j] + fallbackOffsetPx)
                     }
                 }
                 stitchedRawAll.addAll(curr.rawAltsPerTimestep)
             }
-            stitchedSeqLen += curr.actualSeqLen
         }
         var finalText = stitchedText.toString()
         while (finalText.contains("  ")) finalText = finalText.replace("  ", " ")
-        Log.d(TAG, "long-line stitch vert rh=$rh rw=$rw chunks=${chunks.size} stitchedLen=${finalText.length} seqLen=$stitchedSeqLen")
-        return PPOcrResult(finalText, stitchedAlts, stitchedCols.toFloatArray(), stitchedSeqLen, stitchedRawAll)
+        Log.d(TAG, "long-line stitch vert rh=$rh rw=$rw chunks=${chunks.size} stitchedLen=${finalText.length} seqLen=$totalSeqLen")
+        return PPOcrResult(finalText, stitchedAlts, stitchedCols.toFloatArray(), totalSeqLen, stitchedRawAll)
     }
 
     // helpers for stitch — ported from meiki
