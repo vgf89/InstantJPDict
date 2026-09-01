@@ -690,19 +690,10 @@ class OcrEngine(private val context: Context) {
             // Estimate char positions for stitch: use simple string overlap fallback (longest common substring 2-5 chars)
             val prevText = stitchedText; val currText = curr.text
             var bestOverlap = 0
-            var bestScore = -1f
-            // Try to find overlapping substring between prev tail and curr head
+            // Try to find overlapping substring between prev tail and curr head (2-5 chars, no 1-char prediction fallback)
             for (len in minOf(5, prevText.length, currText.length) downTo 2) {
                 val tail = prevText.takeLast(len); val head = currText.take(len)
                 if (tail == head) { bestOverlap = len; break }
-                // also try prediction-vector similarity for anchor char
-                if (i < chunks.size) {
-                    val pStart = maxOf(0, stitchedAlts.size - 10); val cEnd = minOf(curr.rawAlternatives.size, 10)
-                    for (pIdx in stitchedAlts.size -1 downTo pStart) for (cIdx in 0 until cEnd) {
-                        val score = comparePredictionVectors(stitchedAlts[pIdx], curr.rawAlternatives[cIdx])
-                        if (score > 0.4f && score > bestScore) { bestScore = score; bestOverlap = 1 }
-                    }
-                }
             }
             if (bestOverlap > 0) {
                 // merge: keep stitched up to overlap, then append curr after overlap
