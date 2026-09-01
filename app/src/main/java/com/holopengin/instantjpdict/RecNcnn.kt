@@ -7,8 +7,8 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 /**
- * ncnn Rec wrapper — single bucket w64 for #12.
- * Loads 179-layer pnnx→ncnn 10.56 MB bin via JNI.
+ * ncnn Rec wrapper — all buckets w64/128/256/480 for #13 (w64 for #12).
+ * Loads 179-layer pnnx→ncnn 10.56 MB bin per bucket via JNI.
  */
 class RecNcnn private constructor(private val handle: Long, val targetW: Int) {
 

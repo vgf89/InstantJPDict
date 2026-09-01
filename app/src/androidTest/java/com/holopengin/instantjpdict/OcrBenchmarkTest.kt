@@ -38,6 +38,9 @@ class OcrBenchmarkTest {
         @BeforeClass
         fun setupEngine() {
             val appContext = InstrumentationRegistry.getInstrumentation().targetContext
+            // Ensure default is onnx for baseline benches; ncnn benches set prefs explicitly
+            appContext.getSharedPreferences("instant_jp_dict_prefs", android.content.Context.MODE_PRIVATE)
+                .edit().putString("ocr_backend", "onnx").apply()
             val t0 = System.nanoTime()
             engine = OcrEngine(appContext)
             val loadMs = (System.nanoTime() - t0) / 1_000_000
@@ -304,5 +307,110 @@ class OcrBenchmarkTest {
         instr.sendStatus(0, bundle)
         assertTrue("ncnn should be faster than ORT for w64", ncnnP50 < ortP50)
         assertTrue("ncnn output size should be 8*18710", ncnnOutSize == 8 * 18710)
+    }
+
+    @Test
+    fun benchRecNcnnAllBuckets() {
+        // Head-to-head ORT vs ncnn for all 4 buckets + 3-crop ncnn bench for #13
+        val appContext = InstrumentationRegistry.getInstrumentation().targetContext
+        val h = 48
+        val ortEnvField = engine.javaClass.getDeclaredField("ortEnv").apply { isAccessible = true }
+        val recSessionsField = engine.javaClass.getDeclaredField("recSessions").apply { isAccessible = true }
+        val ortEnv = ortEnvField.get(engine) as ai.onnxruntime.OrtEnvironment
+        @Suppress("UNCHECKED_CAST")
+        val recSessions = recSessionsField.get(engine) as MutableMap<Int, ai.onnxruntime.OrtSession>
+        val recNcnnMapField = engine.javaClass.getDeclaredField("recNcnnMap").apply { isAccessible = true }
+        @Suppress("UNCHECKED_CAST")
+        var recNcnnMap = recNcnnMapField.get(engine) as MutableMap<Int, RecNcnn>
+
+        for (w in listOf(64, 128, 256, 480)) {
+            val seqLen = w / 8
+            val inputFloats = FloatArray(3 * h * w) { ((it * 37) % 255) / 128f - 1f }
+            val ortSession = recSessions[w] ?: error("no ORT session for w$w")
+            var recNcnn = recNcnnMap[w]
+            if (recNcnn == null) {
+                recNcnn = RecNcnn.create(appContext, w)
+                assertNotNull("RecNcnn w$w failed to create", recNcnn)
+                recNcnnMap[w] = recNcnn!!
+                recNcnnMapField.set(engine, recNcnnMap)
+            }
+            val ortTimes = mutableListOf<Long>()
+            repeat(5) {
+                val t0 = System.nanoTime()
+                val tensor = ai.onnxruntime.OnnxTensor.createTensor(ortEnv, java.nio.FloatBuffer.wrap(inputFloats), longArrayOf(1, 3, h.toLong(), w.toLong()))
+                val result = ortSession.run(mapOf("x" to tensor))
+                tensor.close()
+                val outTensor = result.get(0) as ai.onnxruntime.OnnxTensor
+                val out = FloatArray(seqLen * 18710)
+                outTensor.floatBuffer.get(out)
+                outTensor.close()
+                result.close()
+                ortTimes.add((System.nanoTime() - t0) / 1_000_000)
+            }
+            ortTimes.sort()
+            val ortP50 = ortTimes[ortTimes.size / 2]
+            val ncnnTimes = mutableListOf<Long>()
+            var ncnnOutSize = 0
+            repeat(5) {
+                val t0 = System.nanoTime()
+                val out = recNcnn!!.infer(inputFloats, w, h)
+                ncnnTimes.add((System.nanoTime() - t0) / 1_000_000)
+                if (out != null) ncnnOutSize = out.size
+            }
+            ncnnTimes.sort()
+            val ncnnP50 = ncnnTimes[ncnnTimes.size / 2]
+            val speedup = if (ncnnP50 > 0) ortP50.toFloat() / ncnnP50 else 0f
+            Log.i(TAG, "benchRecNcnnAllBuckets w$w seq$seqLen ORT p50=${ortP50}ms $ortTimes ncnn p50=${ncnnP50}ms $ncnnTimes speedup=${String.format("%.2fx", speedup)} outSize=$ncnnOutSize")
+            assertTrue("ncnn should be faster than ORT for w$w", ncnnP50 < ortP50)
+            assertTrue("ncnn outSize w$w", ncnnOutSize == seqLen * 18710)
+        }
+
+        // Now 3-crop bench with ncnn forced via prefs (for #13 backend=ncnn gate)
+        appContext.getSharedPreferences("instant_jp_dict_prefs", android.content.Context.MODE_PRIVATE)
+            .edit().putString("ocr_backend", "ncnn").apply()
+        val ncnnEngine = OcrEngine(appContext)
+        assertTrue("ncnnEngine ready", ncnnEngine.isReady())
+        Log.i(TAG, "benchRecNcnnAllBuckets: 3-crop with ncnn forced via prefs")
+        val bmp1 = loadBenchmarkBitmap("Screenshot_20260530-172718.png")
+        val bmp2 = loadBenchmarkBitmap("f5d7d08735383899.jpg")
+        // Use ncnnEngine for bench — copy benchOneImage logic with ncnnEngine
+        fun benchWithEngine(name: String, bitmap: Bitmap, eng: OcrEngine): BenchResult {
+            Log.i(TAG, "bench start $name ${bitmap.width}x${bitmap.height} backend=ncnn")
+            val tDet = System.nanoTime()
+            val boxes = eng.detect(bitmap)
+            val detMs = (System.nanoTime() - tDet) / 1_000_000
+            Log.i(TAG, "bench det $name boxes=${boxes.size} detMs=$detMs backend=ncnn")
+            if (boxes.isEmpty()) return BenchResult(name, bitmap.width, bitmap.height, detMs, detMs, detMs, 0, 0, 0, 0, 0, 0, emptyList())
+            val sampleBoxes = when { boxes.size <= 3 -> boxes else -> listOf(boxes.first(), boxes[boxes.size / 2], boxes.last()) }
+            Log.i(TAG, "bench sample ${sampleBoxes.size}/${boxes.size} boxes for rec backend=ncnn")
+            val texts = mutableListOf<String>()
+            val collected = mutableListOf<Pair<Int, LineResult>>()
+            val tRec = System.nanoTime()
+            kotlinx.coroutines.runBlocking {
+                eng.recognizeStreaming(bitmap, sampleBoxes) { pairs -> synchronized(collected) { collected.addAll(pairs) } }
+                var waited = 0
+                while (collected.size < sampleBoxes.size && waited < 30000) { kotlinx.coroutines.delay(50); waited += 50 }
+            }
+            var waited = 0
+            while (collected.size < sampleBoxes.size && waited < 2000) { Thread.sleep(50); waited += 50 }
+            val recMs = (System.nanoTime() - tRec) / 1_000_000
+            for ((_, line) in collected) texts.add(line.text)
+            Log.i(TAG, "bench rec $name sampled=${collected.size}/${sampleBoxes.size} totalBoxes=${boxes.size} recMs=$recMs perCrop=${if (sampleBoxes.isEmpty()) 0 else recMs / sampleBoxes.size} sample=${texts.take(3).joinToString(" | ")} backend=ncnn")
+            return BenchResult(name, bitmap.width, bitmap.height, detMs, detMs, detMs, recMs, recMs, recMs, if (sampleBoxes.isEmpty()) 0 else recMs / sampleBoxes.size, if (sampleBoxes.isEmpty()) 0 else recMs / sampleBoxes.size, boxes.size, texts.take(5))
+        }
+        val r1 = benchWithEngine("Screenshot_20260530-172718.png", bmp1, ncnnEngine)
+        val r2 = benchWithEngine("f5d7d08735383899.jpg", bmp2, ncnnEngine)
+        Log.i(TAG, "SUMMARY backend=ncnn ${r1.toLogLine()}")
+        Log.i(TAG, "SUMMARY backend=ncnn ${r2.toLogLine()}")
+        val avgPerCrop = (r1.perCropMsP50 + r2.perCropMsP50) / 2
+        Log.i(TAG, "SUMMARY backend=ncnn avg_perCrop_p50=${avgPerCrop}ms")
+        bmp1.recycle()
+        bmp2.recycle()
+        ncnnEngine.close()
+        // Reset to onnx for other tests
+        appContext.getSharedPreferences("instant_jp_dict_prefs", android.content.Context.MODE_PRIVATE)
+            .edit().putString("ocr_backend", "onnx").apply()
+        assertTrue(r1.numBoxes > 0 && r2.numBoxes > 0)
+        assertTrue("ncnn perCrop should be < 1200ms avg (2× of 2407ms baseline)", avgPerCrop < 1200)
     }
 }

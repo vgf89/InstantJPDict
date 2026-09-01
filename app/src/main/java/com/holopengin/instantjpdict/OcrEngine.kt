@@ -27,15 +27,21 @@ import kotlin.math.sqrt
 // ─────────────────────────────────────────────────────────────────────────────
 
 class OcrEngine(private val context: Context) {
-    // PP-OCRv6 detection model (LiteRT CompiledModel)
+    // PP-OCRv6 detection model (LiteRT CompiledModel) + ncnn stub for #13
     private var detectModel: CompiledModel? = null
+    private var detNcnn: DetNcnn? = null
 
     // PP-OCRv6 recognition models — static ONNX at graduated widths
     private var ortEnv: OrtEnvironment? = null
     private val recSessions = mutableMapOf<Int, OrtSession>()
     private var ppocrVocab: List<String> = emptyList()
-    // ncnn single bucket w64 for #12
-    private var recNcnnW64: RecNcnn? = null
+    // ncnn buckets w64/128/256/480 for #13 (w64 for #12) — map for O(1) bucket switch W/8→seq
+    private val recNcnnMap = mutableMapOf<Int, RecNcnn>()
+    // compat for #12 benchRecNcnnW64 reflection (maps to 64)
+    @Suppress("unused")
+    private var recNcnnW64: RecNcnn?
+        get() = recNcnnMap[64]
+        set(v) { if (v != null) recNcnnMap[64] = v else recNcnnMap.remove(64) }
     private val useNcnnPref: Boolean
         get() = context.getSharedPreferences("instant_jp_dict_prefs", Context.MODE_PRIVATE)
             .getString("ocr_backend", "onnx") == "ncnn"
@@ -94,12 +100,26 @@ class OcrEngine(private val context: Context) {
             }
             Log.d(TAG, "Recognition models loaded: ${recSessions.keys}")
 
-            // ── Try ncnn w64 for #12 (single bucket, fallback to ORT if not present) ──
+            // ── Try ncnn buckets for #13 (w64 for #12) — fallback to ORT if not present ──
+            for (w in listOf(64, 128, 256, 480)) {
+                try {
+                    val ncnn = RecNcnn.create(context, w)
+                    if (ncnn != null) {
+                        recNcnnMap[w] = ncnn
+                        Log.d(TAG, "RecNcnn w$w loaded: $ncnn")
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "RecNcnn w$w failed", e)
+                }
+            }
+            Log.d(TAG, "RecNcnn buckets loaded: ${recNcnnMap.keys}")
+
+            // ── Try DetNcnn stub for #13 — fallback to LiteRT until proven ──
             try {
-                recNcnnW64 = RecNcnn.create(context, 64)
-                Log.d(TAG, "RecNcnn w64 loaded: $recNcnnW64")
+                detNcnn = DetNcnn.create(context)
+                Log.d(TAG, "DetNcnn loaded: $detNcnn (stub, fallback to LiteRT)")
             } catch (e: Exception) {
-                Log.e(TAG, "RecNcnn w64 failed", e)
+                Log.e(TAG, "DetNcnn failed", e)
             }
 
             // ── Load vocabulary ──
@@ -126,6 +146,11 @@ class OcrEngine(private val context: Context) {
     // ═════════════════════════════════════════════════════════════════════════
 
     fun detect(bitmap: Bitmap): List<JpDictRect> {
+        // #13 DetNcnn stub — branched on prefs, fallback to LiteRT until proven
+        if (useNcnnPref && detNcnn != null) {
+            Log.d(TAG, "detect: DetNcnn stub w/ prefs==ncnn — fallback to LiteRT until proven")
+            // Real ncnn detect will replace this; for now we fall through to LiteRT
+        }
         val model = detectModel ?: return emptyList()
         val origW = bitmap.width.toFloat()
         val origH = bitmap.height.toFloat()
@@ -463,14 +488,15 @@ class OcrEngine(private val context: Context) {
             }
 
             val seqLen = modelW / 8
-            val flatOutput: FloatArray = if (modelW == 64 && recNcnnW64 != null && useNcnnPref) {
-                // ncnn w64 single-bucket for #12 — fallback to ORT if ncnn fails
-                val ncnnOut = recNcnnW64!!.infer(inputFloats, modelW, targetH)
+            val recNcnn = recNcnnMap[modelW]
+            val flatOutput: FloatArray = if (recNcnn != null && useNcnnPref) {
+                // ncnn bucket for #13 (w64/128/256/480) — fallback to ORT if ncnn fails
+                val ncnnOut = recNcnn.infer(inputFloats, modelW, targetH)
                 if (ncnnOut != null && ncnnOut.size == seqLen * REC_NUM_CLASSES) {
-                    Log.d(TAG, "ncnn w64 infer ok seq=$seqLen")
+                    Log.d(TAG, "ncnn w$modelW infer ok seq=$seqLen")
                     ncnnOut
                 } else {
-                    Log.w(TAG, "ncnn w64 infer failed, fallback to ORT")
+                    Log.w(TAG, "ncnn w$modelW infer failed, fallback to ORT")
                     val tensor = OnnxTensor.createTensor(env,
                         java.nio.FloatBuffer.wrap(inputFloats),
                         longArrayOf(1, 3, targetH.toLong(), modelW.toLong()))
@@ -1007,8 +1033,9 @@ fun computeCharBoxes(
 
     fun close() {
         try { detectModel?.close() } catch (_: Exception) {}
+        try { detNcnn?.close() } catch (_: Exception) {}
         recSessions.values.forEach { try { it.close() } catch (_: Exception) {} }
-        try { recNcnnW64?.close() } catch (_: Exception) {}
+        recNcnnMap.values.forEach { try { it.close() } catch (_: Exception) {} }
         try { ortEnv?.close() } catch (_: Exception) {}
     }
 }

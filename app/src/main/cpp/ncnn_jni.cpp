@@ -148,4 +148,59 @@ Java_com_holopengin_instantjpdict_RecNcnn_inferNative(JNIEnv *env, jclass, jlong
     return jout;
 }
 
+struct DetNcnn {
+    ncnn::Net net;
+};
+
+JNIEXPORT jlong JNICALL
+Java_com_holopengin_instantjpdict_DetNcnn_create(JNIEnv *env, jclass, jstring paramPath_, jstring binPath_) {
+    const char *paramPath = env->GetStringUTFChars(paramPath_, 0);
+    const char *binPath = env->GetStringUTFChars(binPath_, 0);
+    DetNcnn *det = new DetNcnn();
+    ncnn::Option opt;
+    opt.num_threads = 4;
+    opt.use_fp16_packed = false;
+    opt.use_fp16_storage = false;
+    opt.use_fp16_arithmetic = false;
+    opt.use_packing_layout = true;
+    det->net.opt = opt;
+    ncnn::set_cpu_powersave(0);
+    int ret = det->net.load_param(paramPath);
+    if (ret != 0) {
+        LOGE("Det load_param failed %d %s", ret, paramPath);
+        delete det;
+        env->ReleaseStringUTFChars(paramPath_, paramPath);
+        env->ReleaseStringUTFChars(binPath_, binPath);
+        return 0;
+    }
+    ret = det->net.load_model(binPath);
+    if (ret != 0) {
+        LOGE("Det load_model failed %d %s", ret, binPath);
+        delete det;
+        env->ReleaseStringUTFChars(paramPath_, paramPath);
+        env->ReleaseStringUTFChars(binPath_, binPath);
+        return 0;
+    }
+    env->ReleaseStringUTFChars(paramPath_, paramPath);
+    env->ReleaseStringUTFChars(binPath_, binPath);
+    LOGI("DetNcnn created param=%s", paramPath);
+    return (jlong) det;
+}
+
+JNIEXPORT void JNICALL
+Java_com_holopengin_instantjpdict_DetNcnn_destroy(JNIEnv *, jclass, jlong handle) {
+    DetNcnn *det = (DetNcnn *) handle;
+    if (det) {
+        det->net.clear();
+        delete det;
+    }
+}
+
+JNIEXPORT jfloatArray JNICALL
+Java_com_holopengin_instantjpdict_DetNcnn_inferNative(JNIEnv *env, jclass, jlong handle, jobject buffer, jint w, jint h) {
+    // Stub — until postprocess is proven, return null so OcrEngine falls back to LiteRT
+    LOGI("DetNcnn inferNative stub w=%d h=%d", w, h);
+    return nullptr;
+}
+
 } // extern "C"

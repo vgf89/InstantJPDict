@@ -1,12 +1,16 @@
 package com.holopengin.instantjpdict
 
 import android.content.Intent
+import android.content.SharedPreferences
 import android.net.Uri
 import android.os.Bundle
 import android.provider.OpenableColumns
 import android.provider.Settings
+import android.util.Log
 import android.widget.Button
+import android.widget.Switch
 import android.widget.TextView
+import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
@@ -88,6 +92,26 @@ class MainActivity : AppCompatActivity() {
         addButton(layout, "Refresh Status") {
             refreshStatus()
         }
+
+        // OCR backend toggle for A/B — #13, wayfinder-ncnn-port
+        val prefs = getSharedPreferences("instant_jp_dict_prefs", MODE_PRIVATE)
+        val backendSwitch = Switch(this).apply {
+            val cur = prefs.getString("ocr_backend", "onnx") ?: "onnx"
+            text = "OCR Backend: ${cur.uppercase()} (tap to toggle)"
+            isChecked = cur == "ncnn"
+            setOnCheckedChangeListener { _, isChecked ->
+                val backend = if (isChecked) "ncnn" else "onnx"
+                prefs.edit().putString("ocr_backend", backend).apply()
+                text = "OCR Backend: ${backend.uppercase()} (tap to toggle)"
+                Toast.makeText(this@MainActivity, "OCR backend: $backend", Toast.LENGTH_SHORT).show()
+                Log.i("MainActivity", "ocr_backend set to $backend")
+            }
+            layoutParams = android.widget.LinearLayout.LayoutParams(
+                android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
+                android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(0, 16, 0, 16) }
+        }
+        layout.addView(backendSwitch)
 
         setContentView(root)
         refreshStatus()
