@@ -623,22 +623,14 @@ class OcrEngine(private val context: Context) {
             if (w < 16) break
             val chunkBmp = Bitmap.createBitmap(rotated, x, 0, w, rh)
             val cw = chunkBmp.width; val ch = chunkBmp.height
-            // Add white padding (15px) to avoid edge clipping — per Gemini standalone rec
-            val paddedBmp = Bitmap.createBitmap(cw + 30, ch, Bitmap.Config.ARGB_8888)
-            val padCanvas = android.graphics.Canvas(paddedBmp)
-            padCanvas.drawColor(android.graphics.Color.WHITE)
-            padCanvas.drawBitmap(chunkBmp, 15f, 0f, null)
-            padCanvas.setBitmap(null)
-            chunkBmp.recycle()
-            val pcw = paddedBmp.width; val pch = paddedBmp.height
-            // preserve aspect w → targetW via pcw*48/rh, not stretch; cap at 480, dynamic width
-            val targetW = minOf(480, (pcw.toFloat() * targetH / pch.toFloat()).roundToInt().coerceAtLeast(4))
+            // preserve aspect w → targetW via cw*48/rh, not stretch; cap at 480, dynamic width
+            val targetW = minOf(480, (cw.toFloat() * targetH / ch.toFloat()).roundToInt().coerceAtLeast(4))
             val modelW = modelWidths.firstOrNull { it >= targetW } ?: modelWidths.last()
-            val resized = Bitmap.createScaledBitmap(paddedBmp, targetW, targetH, true)
+            val resized = Bitmap.createScaledBitmap(chunkBmp, targetW, targetH, true)
             val pixels = IntArray(targetW * targetH)
             resized.getPixels(pixels, 0, targetW, 0, 0, targetW, targetH)
             resized.recycle()
-            paddedBmp.recycle()
+            chunkBmp.recycle()
             val inputFloats = FloatArray(1 * 3 * targetH * modelW)
             for (c in 0 until 3) {
                 val cOff = c * targetH * modelW
@@ -660,16 +652,15 @@ class OcrEngine(private val context: Context) {
                 pq.toList().sortedByDescending { slice[it] }.map { decodeChar(it) to slice[it] }
             }
             val decoded = ctcDecode(cropLogits, actualSeqLen, REC_NUM_CLASSES, 0f, actualSeqLen)
-            chunks.add(ChunkInfo(decoded.text, decoded.charCols, decoded.alternatives, rawAlts, actualSeqLen, targetW, pcw, x, 0))
+            chunks.add(ChunkInfo(decoded.text, decoded.charCols, decoded.alternatives, rawAlts, actualSeqLen, targetW, cw, x, 0))
             if (x + w >= rw) break
-            // anchor second-to-last char localXLeft/nextX 0.8 (meiki) — use padded width pcw
+            // anchor second-to-last char localXLeft/nextX 0.8 (meiki)
             val txt = decoded.text
             if (txt.isNotEmpty() && decoded.charCols.isNotEmpty()) {
                 val anchorIdx = if (txt.length >= 2) txt.length - 2 else 0
                 val anchorT = decoded.charCols.getOrNull(anchorIdx) ?: decoded.charCols.last()
-                // localXLeft in padded chunk pixel coords: (t+0.5)/actualSeqLen * pcw (center) minus pad
-                val localXLeftPadded = ((anchorT + 0.5f) / actualSeqLen.toFloat()) * pcw
-                val localXLeft = localXLeftPadded - 15f // remove left pad to get original coord
+                // localXLeft in chunk pixel coords: (t+0.5)/actualSeqLen * cw (center)
+                val localXLeft = ((anchorT + 0.5f) / actualSeqLen.toFloat()) * cw
                 val nextX = (x + localXLeft.toInt() - chunkMargin).coerceAtLeast(0)
                 if (nextX <= x || nextX >= x + w - 10) {
                     x += (w * 0.8f).toInt().coerceAtLeast(16)
@@ -822,20 +813,12 @@ class OcrEngine(private val context: Context) {
             if (h < 16) break
             val chunkBmp = Bitmap.createBitmap(rotated, 0, y, rw, h)
             val cw = chunkBmp.width; val ch = chunkBmp.height
-            // White pad 15px top/bottom for vertical edge
-            val paddedBmpV = Bitmap.createBitmap(cw, ch + 30, Bitmap.Config.ARGB_8888)
-            val padCanvasV = android.graphics.Canvas(paddedBmpV)
-            padCanvasV.drawColor(android.graphics.Color.WHITE)
-            padCanvasV.drawBitmap(chunkBmp, 0f, 15f, null)
-            padCanvasV.setBitmap(null)
-            chunkBmp.recycle()
-            val pcwV = paddedBmpV.width; val pchV = paddedBmpV.height
-            val targetW = minOf(480, (pcwV.toFloat() * targetH / pchV.toFloat()).roundToInt().coerceAtLeast(4))
+            val targetW = minOf(480, (cw.toFloat() * targetH / ch.toFloat()).roundToInt().coerceAtLeast(4))
             val modelW = modelWidths.firstOrNull { it >= targetW } ?: modelWidths.last()
-            val resized = Bitmap.createScaledBitmap(paddedBmpV, targetW, targetH, true)
+            val resized = Bitmap.createScaledBitmap(chunkBmp, targetW, targetH, true)
             val pixels = IntArray(targetW * targetH)
             resized.getPixels(pixels, 0, targetW, 0, 0, targetW, targetH)
-            resized.recycle(); paddedBmpV.recycle()
+            resized.recycle(); chunkBmp.recycle()
             val inputFloats = FloatArray(1 * 3 * targetH * modelW)
             for (c in 0 until 3) { val cOff = c * targetH * modelW; for (yy in 0 until targetH) for (xx in 0 until targetW) {
                 val px = pixels[yy * targetW + xx]; val gray = ((px shr 16 and 0xFF)*0.299f + (px shr 8 and 0xFF)*0.587f + (px and 0xFF)*0.114f)
@@ -858,8 +841,7 @@ class OcrEngine(private val context: Context) {
             if (txt.isNotEmpty() && decoded.charCols.isNotEmpty()) {
                 val anchorIdx = if (txt.length >= 2) txt.length - 2 else 0
                 val anchorT = decoded.charCols.getOrNull(anchorIdx) ?: decoded.charCols.last()
-                val localYTopPadded = ((anchorT + 0.5f) / actualSeqLen.toFloat()) * pchV
-                val localYTop = localYTopPadded - 15f
+                val localYTop = ((anchorT + 0.5f) / actualSeqLen.toFloat()) * h
                 val nextY = (y + localYTop.toInt() - chunkMargin).coerceAtLeast(0)
                 if (nextY <= y || nextY >= y + h - 10) {
                     y += (h * 0.8f).toInt().coerceAtLeast(16)
