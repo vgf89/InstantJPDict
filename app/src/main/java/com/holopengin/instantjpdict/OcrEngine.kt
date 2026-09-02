@@ -483,7 +483,10 @@ class OcrEngine(private val context: Context) {
         if (numCrops == 0 || ppocrVocab.isEmpty() || recNcnnMap.isEmpty()) return emptyList()
 
         val targetH = REC_TARGET_H
-        val modelWidths = recNcnnMap.keys.sorted()
+        // For normal rec (non-long), cap at w480 — w960 is only for stitched chunks (long lines)
+        val modelWidths480 = recNcnnMap.keys.filter { it <= 480 }.sorted()
+        val modelWidthsAll = recNcnnMap.keys.sorted()
+        val modelWidths = modelWidths480
 
         val results = coroutineScope {
             (0 until numCrops).map { ci ->
@@ -499,17 +502,17 @@ class OcrEngine(private val context: Context) {
             } else crop
 
             val rw = rotated.width; val rh = rotated.height
-            // ——— Long-line split for >640px (rw*48/rh>640, also >960) — PP-OCR 48×480 crush fix ———
-            // Very long lines (e.g. 976×39 → 1201→480, 1003×45→1070) crush timesteps and skip っ/punct.
-            // Split into overlapping w480 chunks (20% overlap) via largest fitting bucket, then stitch.
-            // Threshold 640 (not 480, 960 also valid; aspect >15:1 also) to avoid over-splitting 675×58→558→480 while fixing 726×50→696, preserve aspect cw*48/rh.
-            val isLongHoriz = rw >= rh * 3 / 2 && (rw.toFloat() * targetH / rh.toFloat() > 640)
-            val isLongVert = rh >= rw * 3 / 2 && (rh.toFloat() * targetH / rw.toFloat() > 640)
+            // ——— Long-line split for >960px (rw*48/rh>960) — PP-OCR 48×960 crush fix ———
+            // Very long lines (e.g. 976×39 → 1201→960, 1003×45→1070) crush timesteps.
+            // Split into overlapping w960 chunks (20% overlap) via w960 bucket, then stitch.
+            // Threshold 960 (not 640) to avoid over-splitting 643×44→701→480 (was 640, broke 643).
+            val isLongHoriz = rw >= rh * 3 / 2 && (rw.toFloat() * targetH / rh.toFloat() > 960)
+            val isLongVert = rh >= rw * 3 / 2 && (rh.toFloat() * targetH / rw.toFloat() > 960)
             if (isLongHoriz || isLongVert) {
                 val stitched = if (isLongHoriz) {
-                    recognizeAndStitchLongHoriz(rotated, targetH, modelWidths)
+                    recognizeAndStitchLongHoriz(rotated, targetH, modelWidthsAll)
                 } else {
-                    recognizeAndStitchLongVert(rotated, targetH, modelWidths)
+                    recognizeAndStitchLongVert(rotated, targetH, modelWidthsAll)
                 }
                 if (stitched != null) {
                     if (rotated !== crop) rotated.recycle()
