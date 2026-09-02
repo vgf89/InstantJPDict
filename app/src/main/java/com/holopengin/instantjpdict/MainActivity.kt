@@ -17,7 +17,6 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.SeekBar
-import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -111,25 +110,6 @@ class MainActivity : AppCompatActivity() {
         addButton(layout, "Refresh Status") {
             refreshStatus()
         }
-
-        // OCR backend toggle for A/B — #13, wayfinder-ncnn-port
-        val backendSwitch = Switch(this).apply {
-            val cur = prefs.getString(OcrEngine.PREF_BACKEND, "onnx") ?: "onnx"
-            text = "OCR Backend: ${cur.uppercase()} (tap to toggle)"
-            isChecked = cur == "ncnn"
-            setOnCheckedChangeListener { _, isChecked ->
-                val backend = if (isChecked) "ncnn" else "onnx"
-                prefs.edit().putString(OcrEngine.PREF_BACKEND, backend).apply()
-                text = "OCR Backend: ${backend.uppercase()} (tap to toggle)"
-                Toast.makeText(this@MainActivity, "OCR backend: $backend", Toast.LENGTH_SHORT).show()
-                Log.i("MainActivity", "ocr_backend set to $backend")
-            }
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { setMargins(0, 16, 0, 16) }
-        }
-        layout.addView(backendSwitch)
 
         // ————— PP-OCR parameter tuning — debug controls — #14 —————
         // Hidden behind Debug settings checkbox — keeps main screen clean
@@ -380,7 +360,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         val tuningFooter = TextView(this).apply {
-            text = "Tip: Use adb to A/B quickly:\nadb shell am broadcast -a com.holopengin.instantjpdict.SET_BACKEND --es backend onnx\nadb shell am broadcast -a com.holopengin.instantjpdict.SET_BACKEND --es backend ncnn"
+            text = "ncnn only — onnxruntime removed (12s→7s proven). DET/REC both ncnn 960×960 / 48×W."
             textSize = 10f
             setPadding(0, 16, 0, 0)
             setTextColor(android.graphics.Color.DKGRAY)
