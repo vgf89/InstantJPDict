@@ -17,8 +17,17 @@ class RecNcnn private constructor(private val handle: Long, val targetW: Int) {
             Log.e(TAG, "infer: bad floats ${floats.size} vs ${3*48*w}")
             return null
         }
-        val bb = ByteBuffer.allocateDirect(floats.size * 4).order(ByteOrder.nativeOrder())
+        var bb = tlBuffer.get()
+        val needed = floats.size * 4
+        if (bb == null || bb.capacity() < needed) {
+            bb = ByteBuffer.allocateDirect(needed.coerceAtLeast(3 * 48 * 480 * 4)).order(ByteOrder.nativeOrder())
+            tlBuffer.set(bb)
+        } else {
+            bb.clear()
+            bb.order(ByteOrder.nativeOrder())
+        }
         bb.asFloatBuffer().put(floats)
+        bb.position(0)
         val out = inferNative(handle, bb, w, h) ?: return null
         return out
     }
@@ -29,6 +38,7 @@ class RecNcnn private constructor(private val handle: Long, val targetW: Int) {
 
     companion object {
         private const val TAG = "RecNcnn"
+        private val tlBuffer = ThreadLocal<ByteBuffer>()
         private var loaded = false
         fun ensureLoaded() {
             if (!loaded) {

@@ -17,8 +17,17 @@ class DetNcnn private constructor(private val handle: Long) {
             Log.e(TAG, "infer: bad floats ${floats.size} vs ${3*w*h}")
             return null
         }
-        val bb = ByteBuffer.allocateDirect(floats.size * 4).order(java.nio.ByteOrder.nativeOrder())
+        var bb = tlBuffer.get()
+        val needed = floats.size * 4
+        if (bb == null || bb.capacity() < needed) {
+            bb = ByteBuffer.allocateDirect(needed.coerceAtLeast(3 * 960 * 960 * 4)).order(java.nio.ByteOrder.nativeOrder())
+            tlBuffer.set(bb)
+        } else {
+            bb.clear()
+            bb.order(java.nio.ByteOrder.nativeOrder())
+        }
         bb.asFloatBuffer().put(floats)
+        bb.position(0)
         return inferNative(handle, bb, w, h)
     }
 
@@ -31,6 +40,7 @@ class DetNcnn private constructor(private val handle: Long) {
 
     companion object {
         private const val TAG = "DetNcnn"
+        private val tlBuffer = ThreadLocal<ByteBuffer>()
         private var loaded = false
         fun ensureLoaded() {
             if (!loaded) {
