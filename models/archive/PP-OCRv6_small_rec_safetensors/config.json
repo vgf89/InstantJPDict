@@ -1,0 +1,37 @@
+{
+    "model_type": "pp_ocrv6_small_rec",
+    "backbone_config": {
+        "model_type": "pp_lcnet_v4",
+        "stem_channels": [3, 48, 96],
+        "stem_type": "large",
+        "out_features": ["stage1", "stage2", "stage3", "stage4"],
+        "out_indices": [1, 2, 3, 4],
+        "block_configs": [
+            [[3, 96, 96, 1, true]],
+            [
+                [3, 96, 96, 1, false],
+                [3, 96, 96, 1, false]
+            ],
+            [
+                [3, 96, 192, [2, 1], false],
+                [3, 192, 192, 1, true],
+                [3, 192, 192, 1, false],
+                [3, 192, 192, 1, true],
+                [3, 192, 192, 1, false],
+                [3, 192, 192, 1, true],
+                [3, 192, 192, 1, false]
+            ],
+            [
+                [3, 192, 384, [2, 1], false],
+                [3, 384, 384, 1, true],
+                [3, 384, 384, 1, false]
+            ]
+        ]
+    },
+    "hidden_act": "silu",
+    "hidden_size": 120,
+    "mlp_ratio": 2.0,
+    "depth": 2,
+    "head_out_channels": 18710,
+    "conv_kernel_size": [1, 7]
+}
