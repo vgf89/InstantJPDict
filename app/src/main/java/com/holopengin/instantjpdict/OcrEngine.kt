@@ -1227,20 +1227,13 @@ fun computeCharBoxes(
         val startTime = System.currentTimeMillis()
         if (recNcnnMap.isEmpty() || ppocrVocab.isEmpty()) return@coroutineScope
 
-        // Build job queue: crop each box, determine orientation
-        data class Job(val idx: Int, val bbox: JpDictRect, val crop: Bitmap, val isVertical: Boolean)
+        // Build job queue — no Bitmap yet, create per batch to avoid 65× pin (rank 6)
+        data class Job(val idx: Int, val bbox: JpDictRect, val isVertical: Boolean)
 
-        val jobs = mutableListOf<Job>()
-        for ((i, box) in lineBoxes.withIndex()) {
-            val cropX = maxOf(box.left, 0)
-            val cropY = maxOf(box.top, 0)
-            val cropW = minOf(bitmap.width - cropX, box.width()).coerceAtLeast(1)
-            val cropH = minOf(bitmap.height - cropY, box.height()).coerceAtLeast(1)
-            val crop = Bitmap.createBitmap(bitmap, cropX, cropY, cropW, cropH)
-            if (crop.width < 4 || crop.height < 4) { crop.recycle(); continue }
-            jobs.add(Job(i, box, crop, box.height() > box.width()))
+        val jobs = lineBoxes.mapIndexedNotNull { i, box ->
+            if (box.width() < 4 || box.height() < 4) null
+            else Job(i, box, box.height() > box.width())
         }
-
         if (jobs.isEmpty()) return@coroutineScope
 
         Log.d(TAG, "Processing ${jobs.size} boxes in batches of $BATCH_SIZE")
@@ -1257,14 +1250,35 @@ fun computeCharBoxes(
         for ((batchIdx, batch) in sortedJobs.chunked(BATCH_SIZE).withIndex()) {
             coroutineContext.ensureActive()
             val tBatch = System.nanoTime()
+            // Create crops per batch — was 65× pin to end, now 4× at a time
+            val cropsWithJobs = batch.mapNotNull { job ->
+                val cropX = maxOf(job.bbox.left, 0)
+                val cropY = maxOf(job.bbox.top, 0)
+                val cropW = minOf(bitmap.width - cropX, job.bbox.width()).coerceAtLeast(1)
+                val cropH = minOf(bitmap.height - cropY, job.bbox.height()).coerceAtLeast(1)
+                if (cropW < 4 || cropH < 4) return@mapNotNull null
+                val crop = try {
+                    Bitmap.createBitmap(bitmap, cropX, cropY, cropW, cropH)
+                } catch (e: Exception) {
+                    Log.e(TAG, "createBitmap failed for $job", e)
+                    return@mapNotNull null
+                }
+                if (crop.width < 4 || crop.height < 4) { crop.recycle(); return@mapNotNull null }
+                job to crop
+            }
+            if (cropsWithJobs.isEmpty()) continue
+            val crops = cropsWithJobs.map { it.second }
+            val batchJobs = cropsWithJobs.map { it.first }
             try {
                 // Early exit if cancelled before batch
-                if (!coroutineContext.isActive) break
-                val crops = batch.map { it.crop }
+                if (!coroutineContext.isActive) {
+                    crops.forEach { try { it.recycle() } catch (_: Exception) {} }
+                    break
+                }
                 val ppocrResults = recognizePpocrBatch(crops)
 
                 val batchResults = mutableListOf<Pair<Int, LineResult>>()
-                for ((index, job) in batch.withIndex()) {
+                for ((index, job) in batchJobs.withIndex()) {
                     val result = ppocrResults.getOrNull(index) ?: continue
                     if (result.text.isEmpty()) continue
 
@@ -1303,15 +1317,15 @@ fun computeCharBoxes(
                 }
                 if (batchResults.isNotEmpty()) {
                     val elapsed = (System.nanoTime() - tBatch) / 1_000_000
-                    Log.d(TAG, "Batch $batchIdx ${batch.size} jobs → ${batchResults.size} lines in ${elapsed}ms")
+                    Log.d(TAG, "Batch $batchIdx ${batchJobs.size} jobs → ${batchResults.size} lines in ${elapsed}ms")
                     mainHandler.post { onLinesRecognized(batchResults) }
                 }
-                // Per-batch recycle — was holding all 65 crops to end (13MB pin)
-                batch.forEach { it.crop.recycle() }
+                // Per-batch recycle — was 65× pin to end (13MB), now 4× at a time
+                crops.forEach { try { it.recycle() } catch (_: Exception) {} }
             } catch (e: Exception) {
                 Log.e(TAG, "Batch $batchIdx failed", e)
                 // Ensure crops recycled even on failure
-                batch.forEach { try { it.crop.recycle() } catch (_: Exception) {} }
+                try { crops.forEach { it.recycle() } } catch (_: Exception) {}
             }
         }
 
