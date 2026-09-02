@@ -96,7 +96,8 @@ class OcrAccessibilityService : AccessibilityService() {
         }
     }
     
-    private val textViews = mutableMapOf<Pair<Int, Int>, TextView>()
+    private val textViews = mutableMapOf<Pair<Int, Int>, View>()
+    private val lineViews = mutableMapOf<Int, LineOverlayView>()
     
     private var repeatJob: kotlinx.coroutines.Job? = null
     private var currentRepeatingKeyCode = 0
@@ -569,6 +570,7 @@ class OcrAccessibilityService : AccessibilityService() {
                     }
 
                     textViews.clear()
+                    lineViews.clear()
                     controller.activeLineResults = MutableList(lineBoxes.size) { null as LineResult? }
                     controller.activeAllChars = mutableListOf()
                     controller.activeAllAlternatives = mutableListOf()
@@ -623,62 +625,23 @@ class OcrAccessibilityService : AccessibilityService() {
         Log.d("OcrAccessibilityService", "addLineToResults line=$lineIdx text='${line.text}' boxes=${line.charBoxes.size} fixedSize=$fixedSize isVertical=${line.isVertical}")
         if (fixedSize == 0) return
 
-        val paintForMeasure = Paint().apply {
-            textSize = fixedSize.toFloat() // Measure at full box size for better spacing
-            typeface = Typeface.DEFAULT
-            if (line.isVertical) {
-                textLocale = Locale.JAPANESE
-                fontFeatureSettings = "'vert' 1"
+        // Single View per line — was 3 Views per char (5850 Views for 65×30)
+        val lineViewTag = "line_overlay_$lineIdx"
+        var lineView = lineContainer.findViewWithTag<LineOverlayView>(lineViewTag)
+        if (lineView == null) {
+            lineView = LineOverlayView(this, line, fixedSize) { charIdx ->
+                performLookup(lineIdx, charIdx, rootLayout)
             }
+            lineView.tag = lineViewTag
+            // LineOverlayView covers full screen, parent is clicksLayer (screen-sized)
+            lineContainer.addView(lineView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        } else {
+            lineView.updateLine(line, fixedSize)
         }
-        val advances = line.text.map { paintForMeasure.measureText(it.toString()) }
-        val displayBoxes = controller.calculateDisplayBoxes(line, advances)
-
+        lineViews[lineIdx] = lineView
+        // Keep textViews map for legacy lookup — point to lineView for each char
         for (i in line.charBoxes.indices) {
-            val origBox = line.charBoxes[i]
-            val char = line.text.getOrNull(i)?.toString() ?: ""
-            
-            val charContainer = FrameLayout(this)
-            val charParams = FrameLayout.LayoutParams(origBox.width().coerceAtLeast(1), origBox.height().coerceAtLeast(1)).apply {
-                leftMargin = origBox.left
-                topMargin = origBox.top
-            }
-            if (charContainer.parent != null) {
-                (charContainer.parent as ViewGroup).removeView(charContainer)
-            }
-            lineContainer.addView(charContainer, charParams)
-
-            // True bbox: origBox (may be thin) — no displayBox post-processing
-            // True glyph ink center over true bbox center, then scale about center if needed
-            val boxW = origBox.width().coerceAtLeast(1)
-            val boxH = origBox.height().coerceAtLeast(1)
-            val textView = CenteredTextView(this).apply {
-                text = char
-                isVertical = line.isVertical
-                setTextColor(android.graphics.Color.parseColor("#FF7777"))
-                typeface = android.graphics.Typeface.DEFAULT
-                setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, fixedSize.toFloat() * 0.90f)
-                setPadding(0, 0, 0, 0)
-                includeFontPadding = false
-                isClickable = false
-                
-                if (line.isVertical) {
-                    textLocale = java.util.Locale.JAPANESE
-                    fontFeatureSettings = "'vert' 1"
-                }
-            }
-            textViews[Pair(lineIdx, i)] = textView
-            charContainer.addView(textView, FrameLayout.LayoutParams(boxW, boxH))
-
-            val boxView = View(this).apply {
-                background = null
-                isClickable = true
-            }
-            charContainer.addView(boxView, FrameLayout.LayoutParams(boxW, boxH))
-
-            boxView.setOnClickListener {
-                performLookup(lineIdx, i, rootLayout)
-            }
+            textViews[Pair(lineIdx, i)] = lineView
         }
         updateNeighborPanelForLine(rootLayout, lineIdx)
     }
@@ -804,8 +767,14 @@ class OcrAccessibilityService : AccessibilityService() {
     }
 
     private fun resetHighlights() {
+        // Clear highlights on all lineViews that had highlights
+        val byLine = controller.lastHighlightedCoords.groupBy { it.first }
+        for ((lineIdx, _) in byLine) {
+            lineViews[lineIdx]?.setHighlighted(emptySet())
+        }
+        // Legacy fallback for old TextView path
         controller.lastHighlightedCoords.forEach { coords ->
-            textViews[coords]?.let { tv ->
+            (textViews[coords] as? android.widget.TextView)?.let { tv ->
                 tv.setTextColor(android.graphics.Color.parseColor("#FF7777"))
                 tv.typeface = android.graphics.Typeface.DEFAULT
             }
@@ -815,8 +784,14 @@ class OcrAccessibilityService : AccessibilityService() {
     private fun updateLookupHighlights(lineIdx: Int, charIdx: Int, wordLength: Int) {
         resetHighlights()
         controller.updateHighlightCoords(lineIdx, charIdx, wordLength)
+        // Group by line for LineOverlayView
+        val byLine = controller.lastHighlightedCoords.groupBy { it.first }
+        for ((lIdx, coords) in byLine) {
+            val charIndices = coords.map { it.second }.toSet()
+            lineViews[lIdx]?.setHighlighted(charIndices)
+        }
         controller.lastHighlightedCoords.forEach { coords ->
-            textViews[coords]?.let { tv ->
+            (textViews[coords] as? android.widget.TextView)?.let { tv ->
                 tv.setTextColor(android.graphics.Color.YELLOW)
                 tv.typeface = android.graphics.Typeface.DEFAULT_BOLD
             }
@@ -1258,7 +1233,12 @@ class OcrAccessibilityService : AccessibilityService() {
     private fun replaceCharacter(lIdx: Int, cIdx: Int, newChar: Char, rootLayout: FrameLayout) {
         controller.updateCharacter(lIdx, cIdx, newChar)
         
-        textViews[Pair(lIdx, cIdx)]?.text = newChar.toString()
+        // Update LineOverlayView if present
+        val line = controller.activeLineResults[lIdx]
+        if (line != null) {
+            lineViews[lIdx]?.updateLine(line, line.charBoxes.map { it.height() }.maxOrNull() ?: 0)
+        }
+        (textViews[Pair(lIdx, cIdx)] as? android.widget.TextView)?.text = newChar.toString()
         
         val browserPanel = rootLayout.findViewWithTag<LinearLayout>("neighbor_scroll_panel")
         browserPanel?.findViewWithTag<TextView>("neighbor_char_$lIdx-$cIdx")?.text = newChar.toString()
@@ -1747,6 +1727,7 @@ class OcrAccessibilityService : AccessibilityService() {
         dictionaryViewCache.clear()
         try { windowManager?.updateViewLayout(floatingView, floatingParams) } catch (e: Exception) { Log.e("OcrAccessibilityService", "Error removing overlay", e) }
         textViews.clear()
+        lineViews.clear()
         cursorView = null
     }
 
