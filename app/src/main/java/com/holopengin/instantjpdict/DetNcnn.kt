@@ -6,18 +6,24 @@ import java.io.File
 import java.nio.ByteBuffer
 
 /**
- * ncnn Det stub for #13 — builds, loads det.param/bin (19KB/4.8MB, 242 nodes, 640×640)
- * via JNI, branched on SharedPreferences ocr_backend (fallback to LiteRT until proven).
- * Real postprocess (poly unclip etc.) lands after the 2× rec proof.
+ * ncnn Det for #15 — loads det.param/bin (19KB/4.8MB, 217 layers) via JNI,
+ * runs DB segmentation 960×960, returns prob map [960*960] float.
+ * No LiteRT fallback — ncnn is the only det path.
  */
 class DetNcnn private constructor(private val handle: Long) {
 
-    /** Stub: returns null so OcrEngine falls back to LiteRT until proven. */
-    fun detect(floats: FloatArray, w: Int, h: Int): FloatArray? {
-        // Real impl will run ncnn and return [n,4] polys + scores; stub returns null → fallback
-        Log.d(TAG, "DetNcnn stub detect called w=$w h=$h floats=${floats.size} — fallback")
-        return null
+    fun infer(floats: FloatArray, w: Int, h: Int): FloatArray? {
+        if (floats.size != 3 * w * h) {
+            Log.e(TAG, "infer: bad floats ${floats.size} vs ${3*w*h}")
+            return null
+        }
+        val bb = ByteBuffer.allocateDirect(floats.size * 4).order(java.nio.ByteOrder.nativeOrder())
+        bb.asFloatBuffer().put(floats)
+        return inferNative(handle, bb, w, h)
     }
+
+    /** Legacy alias for older call sites. */
+    fun detect(floats: FloatArray, w: Int, h: Int): FloatArray? = infer(floats, w, h)
 
     fun close() {
         destroy(handle)

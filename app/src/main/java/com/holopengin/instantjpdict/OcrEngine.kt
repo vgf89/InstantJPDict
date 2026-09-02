@@ -7,8 +7,6 @@ import android.util.Log
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
-import com.google.ai.edge.litert.Accelerator
-import com.google.ai.edge.litert.CompiledModel
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import java.io.File
@@ -27,8 +25,7 @@ import kotlin.math.sqrt
 // ─────────────────────────────────────────────────────────────────────────────
 
 class OcrEngine(private val context: Context) {
-    // PP-OCRv6 detection model (LiteRT CompiledModel) + ncnn stub for #13
-    private var detectModel: CompiledModel? = null
+    // PP-OCRv6 detection model — ncnn only for #15 (LiteRT removed)
     private var detNcnn: DetNcnn? = null
 
     // PP-OCRv6 recognition models — static ONNX at graduated widths
@@ -121,13 +118,14 @@ class OcrEngine(private val context: Context) {
                 return out.absolutePath
             }
 
-            // ── Load PP-OCRv6 detection model (LiteRT) ──
-            val detPath = copyAsset("PP-OCRv6_small_det_onnx/det_float32.tflite")
-            detectModel = CompiledModel.create(
-                detPath,
-                CompiledModel.Options(Accelerator.CPU)
-            )
-            Log.d(TAG, "Detection model loaded")
+            // ── Load PP-OCRv6 detection model — ncnn only for #15 ──
+            // LiteRT removed, DetNcnn is the only det path (960×960 DB)
+            try {
+                detNcnn = DetNcnn.create(context)
+                Log.d(TAG, "DetNcnn loaded: $detNcnn")
+            } catch (e: Exception) {
+                Log.e(TAG, "DetNcnn failed", e)
+            }
 
             // ── Load PP-OCRv6 recognition models (static ONNX at graduated widths) ──
             ortEnv = OrtEnvironment.getEnvironment()
@@ -155,14 +153,6 @@ class OcrEngine(private val context: Context) {
             }
             Log.d(TAG, "RecNcnn buckets loaded: ${recNcnnMap.keys}")
 
-            // ── Try DetNcnn stub for #13 — fallback to LiteRT until proven ──
-            try {
-                detNcnn = DetNcnn.create(context)
-                Log.d(TAG, "DetNcnn loaded: $detNcnn (stub, fallback to LiteRT)")
-            } catch (e: Exception) {
-                Log.e(TAG, "DetNcnn failed", e)
-            }
-
             // ── Load vocabulary ──
             val vocabJson = context.assets.open("PP-OCRv6_small_rec_onnx/vocab.json")
                 .bufferedReader().use { it.readText() }
@@ -180,24 +170,19 @@ class OcrEngine(private val context: Context) {
     }
 
     fun isReady(): Boolean =
-        detectModel != null && recSessions.isNotEmpty() && ppocrVocab.isNotEmpty()
+        detNcnn != null && recSessions.isNotEmpty() && ppocrVocab.isNotEmpty()
 
     // ═════════════════════════════════════════════════════════════════════════
     //  PP-OCRv6 DETECTION (DB segmentation → contours → bounding boxes)
     // ═════════════════════════════════════════════════════════════════════════
 
     fun detect(bitmap: Bitmap): List<JpDictRect> {
-        // #13 DetNcnn stub — branched on prefs, fallback to LiteRT until proven
-        if (useNcnnPref && detNcnn != null) {
-            Log.d(TAG, "detect: DetNcnn stub w/ prefs==ncnn — fallback to LiteRT until proven")
-            // Real ncnn detect will replace this; for now we fall through to LiteRT
-        }
-        val model = detectModel ?: return emptyList()
+        val det = detNcnn ?: return emptyList()
         val origW = bitmap.width.toFloat()
         val origH = bitmap.height.toFloat()
 
         // 1. Resize keeping longest side = detLongSide (fixed 960), pad to modelSize×modelSize square
-        // modelSize is fixed LiteRT input (960); detLongSide fixed to avoid clipping/short boxes
+        // modelSize is fixed ncnn input (960); detLongSide fixed to avoid clipping/short boxes
         val targetLong = detLongSide
         val modelSize = 960
         Log.d(TAG, "detect tunables thresh=$detThresh unclip=$detUnclip longSide=$targetLong xOverlap=$xOverlapThresh modelSize=$modelSize")
@@ -215,47 +200,71 @@ class OcrEngine(private val context: Context) {
         canvas.setBitmap(null)
         resized.recycle()
 
-        // 2. Build NHWC input with ImageNet normalisation
+        // 2. Build NCHW input with ImageNet normalisation for ncnn [3,960,960]
         val mean = floatArrayOf(0.485f, 0.456f, 0.406f)
         val std = floatArrayOf(0.229f, 0.224f, 0.225f)
-        val imgData = FloatArray(modelSize * modelSize * 3)
+        val imgData = FloatArray(3 * modelSize * modelSize)
 
         for (y in 0 until modelSize) {
             for (x in 0 until modelSize) {
                 val px = letterbox.getPixel(x, y)
-
                 val r = ((px shr 16 and 0xFF) / 255f - mean[0]) / std[0]
                 val g = ((px shr 8 and 0xFF) / 255f - mean[1]) / std[1]
                 val b = ((px and 0xFF) / 255f - mean[2]) / std[2]
-
-                val idx = (y * modelSize + x) * 3
-                // NHWC channel order: 0=R, 1=G, 2=B (ImageNet convention)
-                imgData[idx] = r
-                imgData[idx + 1] = g
-                imgData[idx + 2] = b
+                // NCHW: c*H*W + y*W + x
+                imgData[0 * modelSize * modelSize + y * modelSize + x] = r
+                imgData[1 * modelSize * modelSize + y * modelSize + x] = g
+                imgData[2 * modelSize * modelSize + y * modelSize + x] = b
             }
         }
         letterbox.recycle()
 
-        // 3. Run detection via LiteRT
-        val inputBuffers = model.createInputBuffers()
-        val outputBuffers = model.createOutputBuffers()
-        inputBuffers.get(0).writeFloat(imgData)
+        // 3. Run detection via ncnn — no LiteRT fallback
+        val probArr = det.infer(imgData, modelSize, modelSize) ?: return emptyList()
+        // probArr should be modelSize*modelSize (960*960) float prob map
+        // Handle possible downsampled output (e.g., 240*240) by upsampling via nearest
+        val outH: Int
+        val outW: Int
+        val probArrNorm: FloatArray
+        if (probArr.size == modelSize * modelSize) {
+            outH = modelSize
+            outW = modelSize
+            probArrNorm = probArr
+        } else {
+            // Try to infer square size from total
+            val dim = kotlin.math.sqrt(probArr.size.toDouble()).toInt()
+            if (dim * dim == probArr.size && dim <= modelSize) {
+                // Upsample small prob map to modelSize via nearest for postprocess
+                outH = modelSize
+                outW = modelSize
+                probArrNorm = FloatArray(modelSize * modelSize)
+                val scaleSmall = dim.toFloat() / modelSize
+                for (y in 0 until modelSize) {
+                    for (x in 0 until modelSize) {
+                        val sx = (x * scaleSmall).toInt().coerceIn(0, dim - 1)
+                        val sy = (y * scaleSmall).toInt().coerceIn(0, dim - 1)
+                        probArrNorm[y * modelSize + x] = probArr[sy * dim + sx]
+                    }
+                }
+                Log.d(TAG, "detect: upsampled det output ${dim}x${dim} -> ${modelSize}x${modelSize}")
+            } else {
+                // Fallback: treat as flat and use as is
+                val total = probArr.size
+                val side = kotlin.math.sqrt(total.toDouble()).toInt()
+                outH = side
+                outW = side
+                probArrNorm = probArr
+                Log.w(TAG, "detect: unexpected prob size $total, using ${outH}x${outW}")
+            }
+        }
+        Log.d(TAG, "detect: output size=${probArrNorm.size} expected=${modelSize * modelSize} out=${outW}x${outH}")
 
-        model.run(inputBuffers, outputBuffers)
-
-        // 4. Extract probability map [1,modelSize,modelSize,1]
-        val outH = modelSize
-        val outW = modelSize
-        val outputArray = outputBuffers.get(0).readFloat()
-        Log.d(TAG, "detect: output size=${outputArray.size} expected=${outH * outW}")
-
-        val probArr = outputArray
+        val probArrFinal = probArrNorm
 
         // 5. Threshold → binary image
         val probMap = Array(outH) { y ->
             FloatArray(outW) { x ->
-                probArr.getOrElse(y * outW + x) { 0f }
+                probArrFinal.getOrElse(y * outW + x) { 0f }
             }
         }
 
@@ -1512,7 +1521,6 @@ fun computeCharBoxes(
     }
 
     fun close() {
-        try { detectModel?.close() } catch (_: Exception) {}
         try { detNcnn?.close() } catch (_: Exception) {}
         recSessions.values.forEach { try { it.close() } catch (_: Exception) {} }
         recNcnnMap.values.forEach { try { it.close() } catch (_: Exception) {} }

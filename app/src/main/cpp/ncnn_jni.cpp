@@ -198,9 +198,64 @@ Java_com_holopengin_instantjpdict_DetNcnn_destroy(JNIEnv *, jclass, jlong handle
 
 JNIEXPORT jfloatArray JNICALL
 Java_com_holopengin_instantjpdict_DetNcnn_inferNative(JNIEnv *env, jclass, jlong handle, jobject buffer, jint w, jint h) {
-    // Stub — until postprocess is proven, return null so OcrEngine falls back to LiteRT
-    LOGI("DetNcnn inferNative stub w=%d h=%d", w, h);
-    return nullptr;
+    DetNcnn *det = (DetNcnn *) handle;
+    if (!det) return nullptr;
+    float *data = (float *) env->GetDirectBufferAddress(buffer);
+    if (!data) {
+        LOGE("Det GetDirectBufferAddress null");
+        return nullptr;
+    }
+    jlong capacity = env->GetDirectBufferCapacity(buffer);
+    long expectedFloats = 1L * 3 * h * w;
+    if (capacity < expectedFloats * 4) {
+        LOGE("Det buffer too small %ld vs %ld", capacity, expectedFloats*4);
+        return nullptr;
+    }
+    ncnn::Mat in(w, h, 3);
+    for (int c = 0; c < 3; c++) {
+        float *ptr = in.channel(c);
+        long cOff = c * h * w;
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                ptr[y * w + x] = data[cOff + y * w + x];
+            }
+        }
+    }
+    ncnn::Extractor ex = det->net.create_extractor();
+    ex.set_light_mode(true);
+    int ret = ex.input("in0", in);
+    if (ret != 0) {
+        LOGE("Det input in0 failed %d", ret);
+        return nullptr;
+    }
+    ncnn::Mat out;
+    // Try common output names: out0, sigmoid_0, 602, etc. PNNX det uses in0->...->sigmoid
+    const char* tryNames[] = {"out0", "sigmoid_0", "sigmoid", "601", "602", "603", nullptr};
+    ret = -1;
+    for (int i = 0; tryNames[i]; i++) {
+        ret = ex.extract(tryNames[i], out);
+        if (ret == 0) {
+            LOGI("Det extract %s ok dims=%d w=%d h=%d c=%d total=%d", tryNames[i], out.dims, out.w, out.h, out.c, (int)out.total());
+            break;
+        }
+    }
+    if (ret != 0) {
+        // Fallback: try to get any output via dump
+        LOGE("Det extract failed for all names");
+        return nullptr;
+    }
+    // out should be 960x960x1 or 1x960x960, total = w*h
+    int total = (int)out.total();
+    int expected = w * h;
+    // DB outputs 1 channel, but may be w*h*1
+    jfloatArray jout = env->NewFloatArray(total);
+    if (!jout) return nullptr;
+    float *outData = (float*)out.data;
+    // Handle 3 dims case where c=1, h=960, w=960
+    env->SetFloatArrayRegion(jout, 0, total, outData);
+    // If total is w*h*? but we need w*h, and if out is smaller (e.g., 240*240 due to stride), we still return it and let Kotlin handle scaling
+    LOGI("Det infer ok w=%d h=%d outTotal=%d", w, h, total);
+    return jout;
 }
 
 } // extern "C"
