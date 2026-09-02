@@ -346,7 +346,7 @@ class OcrBenchmarkTest {
         } catch (_: Exception) {}
 
         val bucketResults = mutableListOf<String>()
-        for (w in listOf(64, 128, 256, 480, 960)) {
+        for (w in listOf(64, 128, 256, 480)) {
             val seqLen = w / 8
             val inputFloats = FloatArray(3 * h * w) { ((it * 37) % 255) / 128f - 1f }
             var recNcnn = recNcnnMap[w]
@@ -470,7 +470,7 @@ class OcrBenchmarkTest {
         @Suppress("UNCHECKED_CAST")
         var recNcnnMap = recNcnnMapField.get(engine) as MutableMap<Int, RecNcnn>
 
-        for (w in listOf(64, 128, 256, 480, 960)) {
+        for (w in listOf(64, 128, 256, 480)) {
             val seqLen = w / 8
             val inputFloats = FloatArray(3 * h * w) { ((it * 37) % 255) / 128f - 1f }
             var recNcnn = recNcnnMap[w]

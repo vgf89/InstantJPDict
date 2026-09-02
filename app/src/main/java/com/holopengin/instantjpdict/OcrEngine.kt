@@ -126,7 +126,7 @@ class OcrEngine(private val context: Context) {
             }
 
             // ── Load PP-OCRv6 recognition models — ncnn only (onnxruntime removed) ──
-            for (w in listOf(64, 128, 256, 480, 960)) {
+            for (w in listOf(64, 128, 256, 480)) {
                 try {
                     val ncnn = RecNcnn.create(context, w)
                     if (ncnn != null) {
@@ -483,10 +483,7 @@ class OcrEngine(private val context: Context) {
         if (numCrops == 0 || ppocrVocab.isEmpty() || recNcnnMap.isEmpty()) return emptyList()
 
         val targetH = REC_TARGET_H
-        // For normal rec (non-long), cap at w480 — w960 is only for stitched chunks (long lines)
-        val modelWidths480 = recNcnnMap.keys.filter { it <= 480 }.sorted()
-        val modelWidthsAll = recNcnnMap.keys.sorted()
-        val modelWidths = modelWidths480
+        val modelWidths = recNcnnMap.keys.sorted()
 
         val results = coroutineScope {
             (0 until numCrops).map { ci ->
@@ -502,17 +499,17 @@ class OcrEngine(private val context: Context) {
             } else crop
 
             val rw = rotated.width; val rh = rotated.height
-            // ——— Long-line split for >960px (rw*48/rh>960) — PP-OCR 48×960 crush fix ———
-            // Very long lines (e.g. 976×39 → 1201→960, 1003×45→1070) crush timesteps.
-            // Split into overlapping w960 chunks (20% overlap) via w960 bucket, then stitch.
-            // Threshold 960 (not 640) to avoid over-splitting 643×44→701→480 (was 640, broke 643).
-            val isLongHoriz = rw >= rh * 3 / 2 && (rw.toFloat() * targetH / rh.toFloat() > 960)
-            val isLongVert = rh >= rw * 3 / 2 && (rh.toFloat() * targetH / rw.toFloat() > 960)
+            // ——— Long-line split for >640px (rw*48/rh>640) — PP-OCR 48×480 crush fix ———
+            // Very long lines (e.g. 976×39 → 1201→480, 1003×45→1070) crush timesteps.
+            // Split into overlapping w480 chunks (20% overlap) via w480 bucket, then stitch.
+            // Threshold 640 to avoid over-splitting 675×58→558→480 while fixing 726×50→696.
+            val isLongHoriz = rw >= rh * 3 / 2 && (rw.toFloat() * targetH / rh.toFloat() > 640)
+            val isLongVert = rh >= rw * 3 / 2 && (rh.toFloat() * targetH / rw.toFloat() > 640)
             if (isLongHoriz || isLongVert) {
                 val stitched = if (isLongHoriz) {
-                    recognizeAndStitchLongHoriz(rotated, targetH, modelWidthsAll)
+                    recognizeAndStitchLongHoriz(rotated, targetH, modelWidths)
                 } else {
-                    recognizeAndStitchLongVert(rotated, targetH, modelWidthsAll)
+                    recognizeAndStitchLongVert(rotated, targetH, modelWidths)
                 }
                 if (stitched != null) {
                     if (rotated !== crop) rotated.recycle()
@@ -613,7 +610,7 @@ class OcrEngine(private val context: Context) {
         coroutineContext.ensureActive()
         val rw = rotated.width; val rh = rotated.height
         val scale = targetH.toFloat() / rh.toFloat()
-        val maxChunkW = (960 / scale).toInt().coerceAtLeast(64)
+        val maxChunkW = (480 / scale).toInt().coerceAtLeast(64)
         if (maxChunkW <= 0) return null
         val chunkMargin = (rh * 0.1f).toInt().coerceAtLeast(2)
 
@@ -634,8 +631,8 @@ class OcrEngine(private val context: Context) {
             padCanvas.setBitmap(null)
             chunkBmp.recycle()
             val pcw = paddedBmp.width; val pch = paddedBmp.height
-            // preserve aspect w → targetW via pcw*48/rh, not stretch; cap at 960, dynamic width
-            val targetW = minOf(960, (pcw.toFloat() * targetH / pch.toFloat()).roundToInt().coerceAtLeast(4))
+            // preserve aspect w → targetW via pcw*48/rh, not stretch; cap at 480, dynamic width
+            val targetW = minOf(480, (pcw.toFloat() * targetH / pch.toFloat()).roundToInt().coerceAtLeast(4))
             val modelW = modelWidths.firstOrNull { it >= targetW } ?: modelWidths.last()
             val resized = Bitmap.createScaledBitmap(paddedBmp, targetW, targetH, true)
             val pixels = IntArray(targetW * targetH)
@@ -814,7 +811,7 @@ class OcrEngine(private val context: Context) {
         coroutineContext.ensureActive()
         val rw = rotated.width; val rh = rotated.height
         val scale = targetH.toFloat() / rw.toFloat()
-        val maxChunkH = (960 / scale).toInt().coerceAtLeast(64)
+        val maxChunkH = (480 / scale).toInt().coerceAtLeast(64)
         if (maxChunkH <= 0) return null
         val chunkMargin = (rw * 0.1f).toInt().coerceAtLeast(2)
         val chunks = mutableListOf<ChunkInfo>()
@@ -833,7 +830,7 @@ class OcrEngine(private val context: Context) {
             padCanvasV.setBitmap(null)
             chunkBmp.recycle()
             val pcwV = paddedBmpV.width; val pchV = paddedBmpV.height
-            val targetW = minOf(960, (pcwV.toFloat() * targetH / pchV.toFloat()).roundToInt().coerceAtLeast(4))
+            val targetW = minOf(480, (pcwV.toFloat() * targetH / pchV.toFloat()).roundToInt().coerceAtLeast(4))
             val modelW = modelWidths.firstOrNull { it >= targetW } ?: modelWidths.last()
             val resized = Bitmap.createScaledBitmap(paddedBmpV, targetW, targetH, true)
             val pixels = IntArray(targetW * targetH)
