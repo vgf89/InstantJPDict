@@ -51,10 +51,10 @@ class RecNcnn private constructor(private val handle: Long, val targetW: Int) {
             val paramFile = File(cache, paramName)
             val binFile = File(cache, binName)
             try {
-                context.assets.open("ncnn/$paramName").use { ins -> paramFile.outputStream().use { ins.copyTo(it) } }
-                context.assets.open("ncnn/$binName").use { ins -> binFile.outputStream().use { ins.copyTo(it) } }
+                context.assets.open("PP-OCRv6_small_ncnn/$paramName").use { ins -> paramFile.outputStream().use { ins.copyTo(it) } }
+                context.assets.open("PP-OCRv6_small_ncnn/$binName").use { ins -> binFile.outputStream().use { ins.copyTo(it) } }
             } catch (e: Exception) {
-                Log.e(TAG, "copy asset ncnn/$paramName failed", e)
+                Log.e(TAG, "copy asset PP-OCRv6_small_ncnn/$paramName failed", e)
                 return null
             }
             val h = create(paramFile.absolutePath, binFile.absolutePath, targetW)

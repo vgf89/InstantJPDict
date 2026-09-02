@@ -35,14 +35,6 @@
                 android:resource="@xml/accessibility_service_config" />
         </service>
 
-        <!-- #14 A/B switch via adb — exported for am broadcast -->
-        <receiver
-            android:name=".BackendSwitchReceiver"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="com.holopengin.instantjpdict.SET_BACKEND" />
-            </intent-filter>
-        </receiver>
     </application>
 
 </manifest>

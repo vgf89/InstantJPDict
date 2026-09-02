@@ -96,7 +96,7 @@ class OcrEngine(private val context: Context) {
 
     init {
         try {
-            val cacheDir = File(context.cacheDir, "litert_models")
+            val cacheDir = File(context.cacheDir, "model_cache")
             cacheDir.mkdirs()
             // Clear stale cached models so asset updates take effect
             cacheDir.listFiles()?.forEach { it.delete() }
@@ -133,8 +133,8 @@ class OcrEngine(private val context: Context) {
             }
             Log.d(TAG, "RecNcnn buckets loaded: ${recNcnnMap.keys}")
 
-            // ── Load vocabulary ──
-            val vocabJson = context.assets.open("PP-OCRv6_small_rec_onnx/vocab.json")
+            // ── Load vocabulary — now from PP-OCRv6_small_ncnn (was PP-OCRv6_small_rec_onnx) ──
+            val vocabJson = context.assets.open("PP-OCRv6_small_ncnn/vocab.json")
                 .bufferedReader().use { it.readText() }
             val listType = object : TypeToken<List<String>>() {}.type
             ppocrVocab = Gson().fromJson(vocabJson, listType)
