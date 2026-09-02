@@ -150,6 +150,7 @@ Java_com_holopengin_instantjpdict_RecNcnn_inferNative(JNIEnv *env, jclass, jlong
 
 struct DetNcnn {
     ncnn::Net net;
+    std::string cachedOutName;
 };
 
 JNIEXPORT jlong JNICALL
@@ -221,6 +222,7 @@ Java_com_holopengin_instantjpdict_DetNcnn_inferNative(JNIEnv *env, jclass, jlong
             }
         }
     }
+    LOGI("Det input in0 w=%d h=%d c=3 total=%d mean0=%.3f", w, h, (int)in.total(), in.channel(0)[0]);
     ncnn::Extractor ex = det->net.create_extractor();
     ex.set_light_mode(true);
     int ret = ex.input("in0", in);
@@ -229,18 +231,30 @@ Java_com_holopengin_instantjpdict_DetNcnn_inferNative(JNIEnv *env, jclass, jlong
         return nullptr;
     }
     ncnn::Mat out;
-    // Try common output names: out0, sigmoid_0, 602, etc. PNNX det uses in0->...->sigmoid
-    const char* tryNames[] = {"out0", "sigmoid_0", "sigmoid", "601", "602", "603", nullptr};
     ret = -1;
-    for (int i = 0; tryNames[i]; i++) {
-        ret = ex.extract(tryNames[i], out);
+    // Cached output name — try it first to avoid 6 extracts per infer (2-5ms)
+    if (!det->cachedOutName.empty()) {
+        ret = ex.extract(det->cachedOutName.c_str(), out);
         if (ret == 0) {
-            LOGI("Det extract %s ok dims=%d w=%d h=%d c=%d total=%d", tryNames[i], out.dims, out.w, out.h, out.c, (int)out.total());
-            break;
+            LOGI("Det extract cached %s ok dims=%d w=%d h=%d c=%d total=%d", det->cachedOutName.c_str(), out.dims, out.w, out.h, out.c, (int)out.total());
+        } else {
+            LOGE("Det cached extract %s failed %d, trying others", det->cachedOutName.c_str(), ret);
+            ret = -1;
         }
     }
     if (ret != 0) {
-        // Fallback: try to get any output via dump
+        const char* tryNames[] = {"out0", "sigmoid_0", "sigmoid", "sigmoid_62", "602", "603", "601", nullptr};
+        for (int i = 0; tryNames[i]; i++) {
+            ret = ex.extract(tryNames[i], out);
+            LOGI("Det try %s ret=%d", tryNames[i], ret);
+            if (ret == 0) {
+                det->cachedOutName = tryNames[i];
+                LOGI("Det extract %s ok dims=%d w=%d h=%d c=%d total=%d (cached)", tryNames[i], out.dims, out.w, out.h, out.c, (int)out.total());
+                break;
+            }
+        }
+    }
+    if (ret != 0) {
         LOGE("Det extract failed for all names");
         return nullptr;
     }
