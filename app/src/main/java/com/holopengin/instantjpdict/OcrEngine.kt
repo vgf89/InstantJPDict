@@ -7,7 +7,10 @@ import android.util.Log
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import java.io.File
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlin.coroutines.coroutineContext
@@ -78,7 +81,7 @@ class OcrEngine(private val context: Context) {
         // Recognition constants (not tunable)
         private const val REC_TARGET_H = 48
         private const val REC_NUM_CLASSES = 18710  // 0=blank, 1..18708=chars, 18709=space
-        private const val BATCH_SIZE = 1
+        private const val BATCH_SIZE = 4
         private const val REC_STRIDE = 8
 	const val GAP_CHAR = '\u25CC'
     }
@@ -483,14 +486,15 @@ class OcrEngine(private val context: Context) {
         if (numCrops == 0 || ppocrVocab.isEmpty() || recNcnnMap.isEmpty()) return emptyList()
 
         val targetH = REC_TARGET_H
-        val results = arrayOfNulls<PPOcrResult?>(numCrops)
         val modelWidths = recNcnnMap.keys.sorted()
 
-        for (ci in 0 until numCrops) {
-            coroutineContext.ensureActive()
-            val crop = crops[ci]
-            val cw = crop.width; val ch = crop.height
-            if (cw < 4 || ch < 4) continue
+        val results = coroutineScope {
+            (0 until numCrops).map { ci ->
+                async(Dispatchers.Default) {
+                    coroutineContext.ensureActive()
+                    val crop = crops[ci]
+                    val cw = crop.width; val ch = crop.height
+                    if (cw < 4 || ch < 4) return@async null as PPOcrResult?
 
             val rotated: Bitmap = if (ch >= cw * 3 / 2) {
                 val mat = android.graphics.Matrix().apply { postRotate(270f) }
@@ -512,8 +516,7 @@ class OcrEngine(private val context: Context) {
                 }
                 if (stitched != null) {
                     if (rotated !== crop) rotated.recycle()
-                    results[ci] = stitched
-                    continue
+                    return@async stitched
                 }
                 Log.w(TAG, "long-line stitch failed rw=$rw rh=$rh — falling through to crush")
             }
@@ -547,16 +550,16 @@ class OcrEngine(private val context: Context) {
             val recNcnn = recNcnnMap[modelW]
             if (recNcnn == null) {
                 Log.e(TAG, "recNcnn w$modelW missing — skip crop")
-                continue
+                return@async null
             }
             val flatOutput: FloatArray = recNcnn.infer(inputFloats, modelW, targetH)
                 ?: run {
                     Log.e(TAG, "recNcnn w$modelW infer failed — skip crop")
-                    continue
+                    return@async null
                 }
             if (flatOutput.size != seqLen * REC_NUM_CLASSES) {
                 Log.e(TAG, "recNcnn w$modelW bad output ${flatOutput.size} vs ${seqLen * REC_NUM_CLASSES}")
-                continue
+                return@async null
             }
             Log.d(TAG, "ncnn w$modelW infer ok seq=$seqLen")
 
@@ -579,10 +582,11 @@ class OcrEngine(private val context: Context) {
             }
 
             val result = ctcDecode(cropLogits, actualSeqLen, REC_NUM_CLASSES, 0f, actualSeqLen)
-            results[ci] = result.copy(rawAlternatives = rawAlts)
-        }
-
-        return results.map { it ?: PPOcrResult("", emptyList(), floatArrayOf(), 0) }
+                    return@async result.copy(rawAlternatives = rawAlts)
+                }
+            }.awaitAll()
+        }.map { it ?: PPOcrResult("", emptyList(), floatArrayOf(), 0) }
+        return results
     }
 
     // ——— Long-line split helpers — PP-OCR 48×960 crush fix ———
@@ -1262,6 +1266,7 @@ fun computeCharBoxes(
                 val crops = batch.map { it.crop }
                 val ppocrResults = recognizePpocrBatch(crops)
 
+                val batchResults = mutableListOf<Pair<Int, LineResult>>()
                 for ((index, job) in batch.withIndex()) {
                     val result = ppocrResults.getOrNull(index) ?: continue
                     if (result.text.isEmpty()) continue
@@ -1297,23 +1302,23 @@ fun computeCharBoxes(
                         cropX = job.bbox.left,
                         cropY = job.bbox.top,
                     )
-
-                    val elapsed = (System.nanoTime() - tBatch) / 1_000_000
-                    Log.d(TAG, "Batch $batchIdx job ${job.idx} (${job.bbox.width()}x${job.bbox.height()}${if (job.isVertical) "V" else "H"}) "
-                            + "→ '${finalText}' ${charBoxes.size} chars in ${elapsed}ms")
-
-                    // Stream result to UI immediately
-                    mainHandler.post { onLinesRecognized(listOf(job.idx to lineResult)) }
+                    batchResults.add(job.idx to lineResult)
                 }
+                if (batchResults.isNotEmpty()) {
+                    val elapsed = (System.nanoTime() - tBatch) / 1_000_000
+                    Log.d(TAG, "Batch $batchIdx ${batch.size} jobs → ${batchResults.size} lines in ${elapsed}ms")
+                    mainHandler.post { onLinesRecognized(batchResults) }
+                }
+                // Per-batch recycle — was holding all 65 crops to end (13MB pin)
+                batch.forEach { it.crop.recycle() }
             } catch (e: Exception) {
                 Log.e(TAG, "Batch $batchIdx failed", e)
+                // Ensure crops recycled even on failure
+                batch.forEach { try { it.crop.recycle() } catch (_: Exception) {} }
             }
         }
 
         Log.d(TAG, "All batches finished")
-
-        // Recycle all crop bitmaps
-        jobs.forEach { it.crop.recycle() }
 
         val elapsed = System.currentTimeMillis() - startTime
         Log.d(TAG, "Streaming recognition for ${lineBoxes.size} lines took ${elapsed}ms")
