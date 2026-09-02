@@ -16,6 +16,8 @@ class LineOverlayView(
     context: Context,
     private var line: LineResult,
     private var fixedSize: Int,
+    private var lineLeft: Int,
+    private var lineTop: Int,
     private val onCharClick: (charIdx: Int) -> Unit
 ) : View(context) {
 
@@ -39,9 +41,11 @@ class LineOverlayView(
         updateHitRects()
     }
 
-    fun updateLine(newLine: LineResult, newFixedSize: Int) {
+    fun updateLine(newLine: LineResult, newFixedSize: Int, newLineLeft: Int = lineLeft, newLineTop: Int = lineTop) {
         line = newLine
         fixedSize = newFixedSize
+        lineLeft = newLineLeft
+        lineTop = newLineTop
         paint.textSize = fixedSize * 0.90f
         if (line.isVertical) {
             paint.textLocale = java.util.Locale.JAPANESE
@@ -62,15 +66,17 @@ class LineOverlayView(
     private fun updateHitRects() {
         hitRects.clear()
         for (box in line.charBoxes) {
-            hitRects.add(android.graphics.Rect(box.left, box.top, box.right, box.bottom))
+            hitRects.add(android.graphics.Rect(box.left - lineLeft, box.top - lineTop, box.right - lineLeft, box.bottom - lineTop))
         }
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        // View covers the entire screenshot; parent FrameLayout is screen-sized
-        val w = MeasureSpec.getSize(widthMeasureSpec)
-        val h = MeasureSpec.getSize(heightMeasureSpec)
-        setMeasuredDimension(w, h)
+        // View is sized to line bounds (lineW/lineH), parent already positioned at lineLeft/top
+        val lineW = (line.charBoxes.maxOfOrNull { it.right } ?: 0) - (line.charBoxes.minOfOrNull { it.left } ?: 0)
+        val lineH = (line.charBoxes.maxOfOrNull { it.bottom } ?: 0) - (line.charBoxes.minOfOrNull { it.top } ?: 0)
+        val w = if (lineW > 0) lineW else MeasureSpec.getSize(widthMeasureSpec)
+        val h = if (lineH > 0) lineH else MeasureSpec.getSize(heightMeasureSpec)
+        setMeasuredDimension(w.coerceAtLeast(1), h.coerceAtLeast(1))
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -87,8 +93,8 @@ class LineOverlayView(
 
             val boxW = box.width().coerceAtLeast(1)
             val boxH = box.height().coerceAtLeast(1)
-            val viewCenterX = box.centerX().toFloat()
-            val viewCenterY = box.centerY().toFloat()
+            val viewCenterX = (box.centerX() - lineLeft).toFloat()
+            val viewCenterY = (box.centerY() - lineTop).toFloat()
 
             // Measure glyph at current paint size
             paint.getTextBounds(charStr, 0, charStr.length, bounds)

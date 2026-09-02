@@ -626,17 +626,33 @@ class OcrAccessibilityService : AccessibilityService() {
         if (fixedSize == 0) return
 
         // Single View per line — was 3 Views per char (5850 Views for 65×30)
+        val lineLeft = line.charBoxes.minOfOrNull { it.left } ?: 0
+        val lineTop = line.charBoxes.minOfOrNull { it.top } ?: 0
+        val lineRight = line.charBoxes.maxOfOrNull { it.right } ?: 0
+        val lineBottom = line.charBoxes.maxOfOrNull { it.bottom } ?: 0
+        val lineW = (lineRight - lineLeft).coerceAtLeast(1)
+        val lineH = (lineBottom - lineTop).coerceAtLeast(1)
         val lineViewTag = "line_overlay_$lineIdx"
         var lineView = lineContainer.findViewWithTag<LineOverlayView>(lineViewTag)
         if (lineView == null) {
-            lineView = LineOverlayView(this, line, fixedSize) { charIdx ->
+            lineView = LineOverlayView(this, line, fixedSize, lineLeft, lineTop) { charIdx ->
                 performLookup(lineIdx, charIdx, rootLayout)
             }
             lineView.tag = lineViewTag
-            // LineOverlayView covers full screen, parent is clicksLayer (screen-sized)
-            lineContainer.addView(lineView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            lineContainer.addView(lineView, FrameLayout.LayoutParams(lineW, lineH).apply {
+                leftMargin = lineLeft
+                topMargin = lineTop
+            })
         } else {
-            lineView.updateLine(line, fixedSize)
+            lineView.updateLine(line, fixedSize, lineLeft, lineTop)
+            // Update layout params if line bounds changed
+            (lineView.layoutParams as? FrameLayout.LayoutParams)?.let { lp ->
+                lp.width = lineW
+                lp.height = lineH
+                lp.leftMargin = lineLeft
+                lp.topMargin = lineTop
+                lineView.layoutParams = lp
+            }
         }
         lineViews[lineIdx] = lineView
         // Keep textViews map for legacy lookup — point to lineView for each char
