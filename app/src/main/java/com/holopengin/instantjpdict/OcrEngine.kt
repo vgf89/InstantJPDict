@@ -126,7 +126,7 @@ class OcrEngine(private val context: Context) {
             }
 
             // ── Load PP-OCRv6 recognition models — ncnn only (onnxruntime removed) ──
-            for (w in listOf(64, 128, 256, 480)) {
+            for (w in listOf(64, 128, 256, 480, 960)) {
                 try {
                     val ncnn = RecNcnn.create(context, w)
                     if (ncnn != null) {
@@ -610,7 +610,7 @@ class OcrEngine(private val context: Context) {
         coroutineContext.ensureActive()
         val rw = rotated.width; val rh = rotated.height
         val scale = targetH.toFloat() / rh.toFloat()
-        val maxChunkW = (480 / scale).toInt().coerceAtLeast(64)
+        val maxChunkW = (960 / scale).toInt().coerceAtLeast(64)
         if (maxChunkW <= 0) return null
         val chunkMargin = (rh * 0.1f).toInt().coerceAtLeast(2)
 
@@ -623,8 +623,8 @@ class OcrEngine(private val context: Context) {
             if (w < 16) break
             val chunkBmp = Bitmap.createBitmap(rotated, x, 0, w, rh)
             val cw = chunkBmp.width; val ch = chunkBmp.height
-            // preserve aspect w → targetW via cw*48/rh, not stretch; cap at 480
-            val targetW = minOf(480, (cw.toFloat() * targetH / ch.toFloat()).roundToInt().coerceAtLeast(4))
+            // preserve aspect w → targetW via cw*48/rh, not stretch; cap at 960
+            val targetW = minOf(960, (cw.toFloat() * targetH / ch.toFloat()).roundToInt().coerceAtLeast(4))
             val modelW = modelWidths.firstOrNull { it >= targetW } ?: modelWidths.last()
             val resized = Bitmap.createScaledBitmap(chunkBmp, targetW, targetH, true)
             val pixels = IntArray(targetW * targetH)
@@ -802,7 +802,7 @@ class OcrEngine(private val context: Context) {
         coroutineContext.ensureActive()
         val rw = rotated.width; val rh = rotated.height
         val scale = targetH.toFloat() / rw.toFloat()
-        val maxChunkH = (480 / scale).toInt().coerceAtLeast(64)
+        val maxChunkH = (960 / scale).toInt().coerceAtLeast(64)
         if (maxChunkH <= 0) return null
         val chunkMargin = (rw * 0.1f).toInt().coerceAtLeast(2)
         val chunks = mutableListOf<ChunkInfo>()
@@ -813,7 +813,7 @@ class OcrEngine(private val context: Context) {
             if (h < 16) break
             val chunkBmp = Bitmap.createBitmap(rotated, 0, y, rw, h)
             val cw = chunkBmp.width; val ch = chunkBmp.height
-            val targetW = minOf(480, (cw.toFloat() * targetH / ch.toFloat()).roundToInt().coerceAtLeast(4))
+            val targetW = minOf(960, (cw.toFloat() * targetH / ch.toFloat()).roundToInt().coerceAtLeast(4))
             val modelW = modelWidths.firstOrNull { it >= targetW } ?: modelWidths.last()
             val resized = Bitmap.createScaledBitmap(chunkBmp, targetW, targetH, true)
             val pixels = IntArray(targetW * targetH)

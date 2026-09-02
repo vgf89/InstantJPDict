@@ -20,18 +20,18 @@ Archived per user request: onnx/pdiparams/safetensors moved from `app/src/main/a
 ```
 model.safetensors (HF, PP-LCNetV4)
   → PyTorch (transformers/paddle2torch, keep SiLU, depth 2, hidden 120)
-  → ONNX (opset 17, dynamic batch, fixed H=48, W in {64,128,256,480})
+  → ONNX (opset 17, dynamic batch, fixed H=48, W in {64,128,256,480,960})
   → pnnx 20260526 (opt + fuse: SiLU→Swish, GELU chain→GELU, ReduceMean→Reduction, LayerNorm, Pow→Square)
   → ncnn 2130e00 (CPU-only, see below)
 ```
 
 Validated in #5:
 
-- **Buckets**: `48×64` (`seq 8`), `48×128` (`16`), `48×256` (`32`), `48×480` (`60`) — `179` layers / `206` blobs each, `15.5 KB` param + `10.56 MB` bin, `GELU 13` `Swish 5` `LayerNorm 5` `SDPA 2`.
-- **Parity**: `HF (safetensors, torch) vs ORT (onnx) vs ncnn` — `max |logit| 4–8e-5`, `100%` CTC top-1 greedy match on 2 bench images × 4 buckets. Zero manual edits to pnnx output.
-- **Outputs**: `app/src/main/assets/PP-OCRv6_small_ncnn/rec_w{64,128,256,480}.param/.bin` (Git LFS, `app/src/main/assets/PP-OCRv6_small_ncnn/*.bin`).
+- **Buckets**: `48×64` (`seq 8`), `48×128` (`16`), `48×256` (`32`), `48×480` (`60`), `48×960` (`120`) — `179` layers / `206` blobs each, `15.5 KB` param + `10.56 MB` bin (`960` `~21 MB` bin), `GELU 13` `Swish 5` `LayerNorm 5` `SDPA 2`.
+- **Parity**: `HF (safetensors, torch) vs ORT (onnx) vs ncnn` — `max |logit| 4–8e-5`, `100%` CTC top-1 greedy match on 2 bench images × 5 buckets. Zero manual edits to pnnx output.
+- **Outputs**: `app/src/main/assets/PP-OCRv6_small_ncnn/rec_w{64,128,256,480,960}.param/.bin` (Git LFS, `app/src/main/assets/PP-OCRv6_small_ncnn/*.bin`).
 
-**Why static buckets, not dynamic-W**: pnnx/ncnn dynamic-shape ergonomics (`-1` dim) not yet proven for `W/8` CTC; 4 buckets cover `rw*48/rh ≤ 480` crush case with `w480` chunking (`OcrEngine:508` `>640` split).
+**Why static buckets, not dynamic-W**: pnnx/ncnn dynamic-shape ergonomics (`-1` dim) not yet proven for `W/8` CTC; 5 buckets `64..960` cover `rw*48/rh ≤ 960` crush case with `w960` chunking (`OcrEngine:508` `>640` split, `maxChunkW 960/scale`).
 
 ### Det — 960×960 DB
 
@@ -81,8 +81,8 @@ pnnx models/archive/PP-OCRv6_small_det_onnx/inference.onnx \
 ./pnnx det.pnnx.param det.pnnx.bin det.param det.bin
 # copy to app/src/main/assets/PP-OCRv6_small_ncnn/ (LFS)
 
-# 4. Verify parity (HF vs ORT vs ncnn, 4 buckets, 2 images)
-python tools/verify_nccn_parity.py --buckets 64,128,256,480 --images benchmark/*.png,*.jpg
+# 4. Verify parity (HF vs ORT vs ncnn, 5 buckets, 2 images)
+python tools/verify_nccn_parity.py --buckets 64,128,256,480,960 --images benchmark/*.png,*.jpg
 # expect maxAbs 4–8e-5, 100% CTC
 
 # 5. Android
@@ -103,7 +103,7 @@ models/archive/
   PP-OCRv6_small_rec_safetensors/ — model.safetensors, config.json  (HF canonical)
   meiki.text.*.onnx — legacy Meiki baselines (pre-PP-OCRv6)
 app/src/main/assets/
-  PP-OCRv6_small_ncnn/ — det.param/bin, rec_w{64,128,256,480}.param/bin, vocab.json (LFS + vocab, shipped, PP-OCR conversion)
+  PP-OCRv6_small_ncnn/ — det.param/bin, rec_w{64,128,256,480,960}.param/bin, vocab.json (LFS + vocab, shipped, PP-OCR conversion)
 ```
 
 Do not re-add `*.onnx`/`*.pdiparams`/`*.tflite` to `app/src/main/assets/PP-OCRv6_*` — they belong in `models/archive`.
