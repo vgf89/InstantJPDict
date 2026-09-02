@@ -183,21 +183,23 @@ class OcrEngine(private val context: Context) {
         canvas.setBitmap(null)
         resized.recycle()
 
-        // 2. Build NCHW input with ImageNet normalisation for ncnn [3,960,960]
+        // 2. Build NCHW input with ImageNet normalisation for ncnn [3,960,960] — bulk getPixels (was 921k getPixel JNI)
         val mean = floatArrayOf(0.485f, 0.456f, 0.406f)
         val std = floatArrayOf(0.229f, 0.224f, 0.225f)
         val imgData = FloatArray(3 * modelSize * modelSize)
-
+        val pixels = IntArray(modelSize * modelSize)
+        letterbox.getPixels(pixels, 0, modelSize, 0, 0, modelSize, modelSize)
+        // Single-pass NCHW write — 1 getPixels + 1 loop vs 921k getPixel
         for (y in 0 until modelSize) {
             for (x in 0 until modelSize) {
-                val px = letterbox.getPixel(x, y)
+                val px = pixels[y * modelSize + x]
                 val r = ((px shr 16 and 0xFF) / 255f - mean[0]) / std[0]
                 val g = ((px shr 8 and 0xFF) / 255f - mean[1]) / std[1]
                 val b = ((px and 0xFF) / 255f - mean[2]) / std[2]
-                // NCHW: c*H*W + y*W + x
-                imgData[0 * modelSize * modelSize + y * modelSize + x] = r
-                imgData[1 * modelSize * modelSize + y * modelSize + x] = g
-                imgData[2 * modelSize * modelSize + y * modelSize + x] = b
+                val base = y * modelSize + x
+                imgData[base] = r
+                imgData[modelSize * modelSize + base] = g
+                imgData[2 * modelSize * modelSize + base] = b
             }
         }
         letterbox.recycle()
