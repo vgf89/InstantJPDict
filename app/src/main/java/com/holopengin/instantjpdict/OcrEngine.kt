@@ -249,26 +249,17 @@ class OcrEngine(private val context: Context) {
 
         val probArrFinal = probArrNorm
 
-        // 5. Threshold → binary image
-        val probMap = Array(outH) { y ->
-            FloatArray(outW) { x ->
-                probArrFinal.getOrElse(y * outW + x) { 0f }
-            }
-        }
-
-        // Debug: prob map stats
+        // Debug: prob map stats — flat probArrFinal, no 2D Array (was 960 FloatArray allocs)
         var pMin = Float.MAX_VALUE
         var pMax = Float.MIN_VALUE
         var pSum = 0f
         var pCount = 0
-        for (y in 0 until outH) {
-            for (x in 0 until outW) {
-                val v = probMap[y][x]
-                pMin = minOf(pMin, v)
-                pMax = maxOf(pMax, v)
-                pSum += v
-                pCount++
-            }
+        for (i in probArrFinal.indices) {
+            val v = probArrFinal[i]
+            pMin = minOf(pMin, v)
+            pMax = maxOf(pMax, v)
+            pSum += v
+            pCount++
         }
         Log.d(TAG, "prob_map: min=$pMin max=$pMax mean=${if (pCount > 0) pSum / pCount else 0f}")
 
@@ -276,25 +267,30 @@ class OcrEngine(private val context: Context) {
         val scaleWOut = origW / (modelSize.toFloat())
         val scaleHOut = origH / (modelSize.toFloat())
 
-        // 6. Find connected components (contours) via simple flood-fill
-        val visited = Array(outH) { BooleanArray(outW) }
+        // 6. Find connected components (contours) via flat flood-fill — no Pair boxing, no 2D Array
+        val visited = ByteArray(outH * outW)
         val rawBoxes = mutableListOf<JpDictRect>()
-
+        // Reuse single Int queue to avoid per-component ArrayDeque alloc
+        val q = IntArray(outH * outW)
         for (y in 0 until outH) {
             for (x in 0 until outW) {
-                if (visited[y][x] || probMap[y][x] <= detThresh) continue
+                val idx = y * outW + x
+                if (visited[idx].toInt() != 0 || probArrFinal[idx] <= detThresh) continue
 
-                // Flood-fill to find connected component
-                val queue = ArrayDeque<Pair<Int, Int>>()
-                queue.addLast(x to y)
-                visited[y][x] = true
+                // Flood-fill via Int queue (y*W+x), no Pair
+                var qHead = 0
+                var qTail = 0
+                q[qTail++] = idx
+                visited[idx] = 1
 
                 var minX = x; var maxX = x
                 var minY = y; var maxY = y
                 var pixelCount = 0
 
-                while (queue.isNotEmpty()) {
-                    val (cx, cy) = queue.removeFirst()
+                while (qHead < qTail) {
+                    val cur = q[qHead++]
+                    val cx = cur % outW
+                    val cy = cur / outW
                     pixelCount++
                     minX = minOf(minX, cx); maxX = maxOf(maxX, cx)
                     minY = minOf(minY, cy); maxY = maxOf(maxY, cy)
@@ -303,11 +299,12 @@ class OcrEngine(private val context: Context) {
                         for (dx in -1..1) {
                             if (dx == 0 && dy == 0) continue
                             val nx = cx + dx; val ny = cy + dy
-                            if (nx in 0 until outW && ny in 0 until outH &&
-                                !visited[ny][nx] && probMap[ny][nx] > detThresh
-                            ) {
-                                visited[ny][nx] = true
-                                queue.addLast(nx to ny)
+                            if (nx in 0 until outW && ny in 0 until outH) {
+                                val nIdx = ny * outW + nx
+                                if (visited[nIdx].toInt() == 0 && probArrFinal[nIdx] > detThresh) {
+                                    visited[nIdx] = 1
+                                    q[qTail++] = nIdx
+                                }
                             }
                         }
                     }
