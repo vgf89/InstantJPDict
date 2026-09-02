@@ -144,15 +144,38 @@ class LineOverlayView(
         }
     }
 
+    private var downHitIdx: Int = -1
+
     override fun onTouchEvent(event: android.view.MotionEvent): Boolean {
-        if (event.action == android.view.MotionEvent.ACTION_UP) {
-            val x = event.x.toInt()
-            val y = event.y.toInt()
-            for (i in hitRects.indices) {
-                if (hitRects[i].contains(x, y)) {
-                    onCharClick(i)
+        when (event.action) {
+            android.view.MotionEvent.ACTION_DOWN -> {
+                val x = event.x.toInt()
+                val y = event.y.toInt()
+                for (i in hitRects.indices) {
+                    if (hitRects[i].contains(x, y)) {
+                        downHitIdx = i
+                        // Claim touch so parent drag doesn't start
+                        parent?.requestDisallowInterceptTouchEvent(true)
+                        return true
+                    }
+                }
+                downHitIdx = -1
+                return false
+            }
+            android.view.MotionEvent.ACTION_UP -> {
+                if (downHitIdx != -1) {
+                    val x = event.x.toInt()
+                    val y = event.y.toInt()
+                    // Only trigger if still on same char (allow small move)
+                    if (hitRects[downHitIdx].contains(x, y)) {
+                        onCharClick(downHitIdx)
+                    }
+                    downHitIdx = -1
                     return true
                 }
+            }
+            android.view.MotionEvent.ACTION_CANCEL -> {
+                downHitIdx = -1
             }
         }
         return super.onTouchEvent(event)
