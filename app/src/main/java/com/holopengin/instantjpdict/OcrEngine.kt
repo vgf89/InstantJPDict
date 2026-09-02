@@ -4,9 +4,6 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.util.Log
-import ai.onnxruntime.OnnxTensor
-import ai.onnxruntime.OrtEnvironment
-import ai.onnxruntime.OrtSession
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import java.io.File
@@ -28,20 +25,15 @@ class OcrEngine(private val context: Context) {
     // PP-OCRv6 detection model — ncnn only for #15 (LiteRT removed)
     private var detNcnn: DetNcnn? = null
 
-    // PP-OCRv6 recognition models — static ONNX at graduated widths
-    private var ortEnv: OrtEnvironment? = null
-    private val recSessions = mutableMapOf<Int, OrtSession>()
+    // PP-OCRv6 recognition models — ncnn only for #15 (onnxruntime removed)
     private var ppocrVocab: List<String> = emptyList()
-    // ncnn buckets w64/128/256/480 for #13 (w64 for #12) — map for O(1) bucket switch W/8→seq
+    // ncnn buckets w64/128/256/480 — map for O(1) bucket switch W/8→seq
     private val recNcnnMap = mutableMapOf<Int, RecNcnn>()
     // compat for #12 benchRecNcnnW64 reflection (maps to 64)
     @Suppress("unused")
     private var recNcnnW64: RecNcnn?
         get() = recNcnnMap[64]
         set(v) { if (v != null) recNcnnMap[64] = v else recNcnnMap.remove(64) }
-    private val useNcnnPref: Boolean
-        get() = context.getSharedPreferences("instant_jp_dict_prefs", Context.MODE_PRIVATE)
-            .getString("ocr_backend", "onnx") == "ncnn"
 
     companion object {
         private const val TAG = "PPOCREngine"
@@ -127,19 +119,7 @@ class OcrEngine(private val context: Context) {
                 Log.e(TAG, "DetNcnn failed", e)
             }
 
-            // ── Load PP-OCRv6 recognition models (static ONNX at graduated widths) ──
-            ortEnv = OrtEnvironment.getEnvironment()
-            val sessOpts = OrtSession.SessionOptions()
-            sessOpts.setIntraOpNumThreads(4)
-            sessOpts.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
-            try { sessOpts.addNnapi() } catch (_: Exception) {}
-            for (w in listOf(64, 128, 256, 480)) {
-                val path = copyAsset("PP-OCRv6_small_rec_onnx/rec_w${w}.onnx")
-                recSessions[w] = ortEnv!!.createSession(path, sessOpts)
-            }
-            Log.d(TAG, "Recognition models loaded: ${recSessions.keys}")
-
-            // ── Try ncnn buckets for #13 (w64 for #12) — fallback to ORT if not present ──
+            // ── Load PP-OCRv6 recognition models — ncnn only (onnxruntime removed) ──
             for (w in listOf(64, 128, 256, 480)) {
                 try {
                     val ncnn = RecNcnn.create(context, w)
@@ -170,7 +150,7 @@ class OcrEngine(private val context: Context) {
     }
 
     fun isReady(): Boolean =
-        detNcnn != null && recSessions.isNotEmpty() && ppocrVocab.isNotEmpty()
+        detNcnn != null && recNcnnMap.isNotEmpty() && ppocrVocab.isNotEmpty()
 
     // ═════════════════════════════════════════════════════════════════════════
     //  PP-OCRv6 DETECTION (DB segmentation → contours → bounding boxes)
@@ -487,20 +467,17 @@ class OcrEngine(private val context: Context) {
     )
 
     /**
-     * Run PP-OCRv6 CTC recognition on a single image crop using LiteRT Interpreter.
-     * The interpreter input tensor is resized to the crop's actual width for efficiency.
+     * Run PP-OCRv6 CTC recognition via ncnn buckets (no onnxruntime).
      */
     private fun recognizePpocrBatch(
-        sessions: Map<Int, OrtSession>,
-        env: OrtEnvironment,
         crops: List<Bitmap>,
     ): List<PPOcrResult> {
         val numCrops = crops.size
-        if (numCrops == 0 || ppocrVocab.isEmpty()) return emptyList()
+        if (numCrops == 0 || ppocrVocab.isEmpty() || recNcnnMap.isEmpty()) return emptyList()
 
         val targetH = REC_TARGET_H
         val results = arrayOfNulls<PPOcrResult?>(numCrops)
-        val modelWidths = sessions.keys.sorted()
+        val modelWidths = recNcnnMap.keys.sorted()
 
         for (ci in 0 until numCrops) {
             val crop = crops[ci]
@@ -521,9 +498,9 @@ class OcrEngine(private val context: Context) {
             val isLongVert = rh >= rw * 3 / 2 && (rh.toFloat() * targetH / rw.toFloat() > 640)
             if (isLongHoriz || isLongVert) {
                 val stitched = if (isLongHoriz) {
-                    recognizeAndStitchLongHoriz(rotated, sessions, env, targetH, modelWidths)
+                    recognizeAndStitchLongHoriz(rotated, targetH, modelWidths)
                 } else {
-                    recognizeAndStitchLongVert(rotated, sessions, env, targetH, modelWidths)
+                    recognizeAndStitchLongVert(rotated, targetH, modelWidths)
                 }
                 if (stitched != null) {
                     if (rotated !== crop) rotated.recycle()
@@ -539,7 +516,6 @@ class OcrEngine(private val context: Context) {
             if (rotated !== crop) rotated.recycle()
 
             val modelW = modelWidths.first { it >= targetW }
-            val session = sessions[modelW]!!
 
             val pixels = IntArray(targetW * targetH)
             resized.getPixels(pixels, 0, targetW, 0, 0, targetW, targetH)
@@ -561,39 +537,20 @@ class OcrEngine(private val context: Context) {
 
             val seqLen = modelW / 8
             val recNcnn = recNcnnMap[modelW]
-            val flatOutput: FloatArray = if (recNcnn != null && useNcnnPref) {
-                // ncnn bucket for #13 (w64/128/256/480) — fallback to ORT if ncnn fails
-                val ncnnOut = recNcnn.infer(inputFloats, modelW, targetH)
-                if (ncnnOut != null && ncnnOut.size == seqLen * REC_NUM_CLASSES) {
-                    Log.d(TAG, "ncnn w$modelW infer ok seq=$seqLen")
-                    ncnnOut
-                } else {
-                    Log.w(TAG, "ncnn w$modelW infer failed, fallback to ORT")
-                    val tensor = OnnxTensor.createTensor(env,
-                        java.nio.FloatBuffer.wrap(inputFloats),
-                        longArrayOf(1, 3, targetH.toLong(), modelW.toLong()))
-                    val ortResult = session.run(mapOf("x" to tensor))
-                    tensor.close()
-                    val outputTensor = ortResult.get(0) as OnnxTensor
-                    val out = FloatArray(seqLen * REC_NUM_CLASSES)
-                    outputTensor.floatBuffer.get(out)
-                    outputTensor.close()
-                    ortResult.close()
-                    out
-                }
-            } else {
-                val tensor = OnnxTensor.createTensor(env,
-                    java.nio.FloatBuffer.wrap(inputFloats),
-                    longArrayOf(1, 3, targetH.toLong(), modelW.toLong()))
-                val ortResult = session.run(mapOf("x" to tensor))
-                tensor.close()
-                val outputTensor = ortResult.get(0) as OnnxTensor
-                val out = FloatArray(seqLen * REC_NUM_CLASSES)
-                outputTensor.floatBuffer.get(out)
-                outputTensor.close()
-                ortResult.close()
-                out
+            if (recNcnn == null) {
+                Log.e(TAG, "recNcnn w$modelW missing — skip crop")
+                continue
             }
+            val flatOutput: FloatArray = recNcnn.infer(inputFloats, modelW, targetH)
+                ?: run {
+                    Log.e(TAG, "recNcnn w$modelW infer failed — skip crop")
+                    continue
+                }
+            if (flatOutput.size != seqLen * REC_NUM_CLASSES) {
+                Log.e(TAG, "recNcnn w$modelW bad output ${flatOutput.size} vs ${seqLen * REC_NUM_CLASSES}")
+                continue
+            }
+            Log.d(TAG, "ncnn w$modelW infer ok seq=$seqLen")
 
             val actualSeqLen = maxOf(1, ceil(targetW / REC_STRIDE.toFloat()).toInt())
             val cropLogits: Array<*>? = Array<Any>(actualSeqLen) { t ->
@@ -639,8 +596,7 @@ class OcrEngine(private val context: Context) {
     )
 
     private fun recognizeAndStitchLongHoriz(
-        rotated: Bitmap, sessions: Map<Int, OrtSession>, env: OrtEnvironment,
-        targetH: Int, modelWidths: List<Int>
+        rotated: Bitmap, targetH: Int, modelWidths: List<Int>
     ): PPOcrResult? {
         val rw = rotated.width; val rh = rotated.height
         val scale = targetH.toFloat() / rh.toFloat()
@@ -659,7 +615,6 @@ class OcrEngine(private val context: Context) {
             // preserve aspect w → targetW via cw*48/rh, not stretch; cap at 480
             val targetW = minOf(480, (cw.toFloat() * targetH / ch.toFloat()).roundToInt().coerceAtLeast(4))
             val modelW = modelWidths.firstOrNull { it >= targetW } ?: modelWidths.last()
-            val session = sessions[modelW] ?: run { chunkBmp.recycle(); return null }
             val resized = Bitmap.createScaledBitmap(chunkBmp, targetW, targetH, true)
             val pixels = IntArray(targetW * targetH)
             resized.getPixels(pixels, 0, targetW, 0, 0, targetW, targetH)
@@ -676,18 +631,8 @@ class OcrEngine(private val context: Context) {
                 }
             }
             val seqLen = modelW / 8
-            val recNcnn = recNcnnMap[modelW]
-            val flatOutput = if (recNcnn != null && useNcnnPref) {
-                recNcnn.infer(inputFloats, modelW, targetH) ?: run {
-                    val tensor = OnnxTensor.createTensor(env, java.nio.FloatBuffer.wrap(inputFloats), longArrayOf(1, 3, targetH.toLong(), modelW.toLong()))
-                    val r = session.run(mapOf("x" to tensor)); tensor.close()
-                    val out = r.get(0) as OnnxTensor; val o = FloatArray(seqLen * REC_NUM_CLASSES); out.floatBuffer.get(o); out.close(); r.close(); o
-                }
-            } else {
-                val tensor = OnnxTensor.createTensor(env, java.nio.FloatBuffer.wrap(inputFloats), longArrayOf(1, 3, targetH.toLong(), modelW.toLong()))
-                val r = session.run(mapOf("x" to tensor)); tensor.close()
-                val out = r.get(0) as OnnxTensor; val o = FloatArray(seqLen * REC_NUM_CLASSES); out.floatBuffer.get(o); out.close(); r.close(); o
-            }
+            val recNcnn = recNcnnMap[modelW] ?: run { Log.e(TAG, "recNcnn $modelW missing"); return null }
+            val flatOutput = recNcnn.infer(inputFloats, modelW, targetH) ?: run { Log.e(TAG, "recNcnn $modelW infer null"); return null }
             val actualSeqLen = maxOf(1, ceil(targetW / REC_STRIDE.toFloat()).toInt())
             val cropLogits: Array<*>? = Array<Any>(actualSeqLen) { t -> FloatArray(REC_NUM_CLASSES) { c -> flatOutput[t * REC_NUM_CLASSES + c] } } as Array<*>
             val rawAlts = (0 until actualSeqLen).map { t ->
@@ -841,8 +786,7 @@ class OcrEngine(private val context: Context) {
     }
 
     private fun recognizeAndStitchLongVert(
-        rotated: Bitmap, sessions: Map<Int, OrtSession>, env: OrtEnvironment,
-        targetH: Int, modelWidths: List<Int>
+        rotated: Bitmap, targetH: Int, modelWidths: List<Int>
     ): PPOcrResult? {
         val rw = rotated.width; val rh = rotated.height
         val scale = targetH.toFloat() / rw.toFloat()
@@ -858,7 +802,6 @@ class OcrEngine(private val context: Context) {
             val cw = chunkBmp.width; val ch = chunkBmp.height
             val targetW = minOf(480, (cw.toFloat() * targetH / ch.toFloat()).roundToInt().coerceAtLeast(4))
             val modelW = modelWidths.firstOrNull { it >= targetW } ?: modelWidths.last()
-            val session = sessions[modelW] ?: run { chunkBmp.recycle(); return null }
             val resized = Bitmap.createScaledBitmap(chunkBmp, targetW, targetH, true)
             val pixels = IntArray(targetW * targetH)
             resized.getPixels(pixels, 0, targetW, 0, 0, targetW, targetH)
@@ -869,14 +812,8 @@ class OcrEngine(private val context: Context) {
                 inputFloats[cOff + yy * modelW + xx] = gray/128f -1f
             }}
             val seqLen = modelW/8
-            val recNcnn = recNcnnMap[modelW]
-            val flatOutput = if (recNcnn!=null && useNcnnPref) recNcnn.infer(inputFloats, modelW, targetH) ?: run {
-                val t=OnnxTensor.createTensor(env, java.nio.FloatBuffer.wrap(inputFloats), longArrayOf(1,3,targetH.toLong(),modelW.toLong())); val r=session.run(mapOf("x" to t)); t.close()
-                val o=r.get(0) as OnnxTensor; val oo=FloatArray(seqLen*REC_NUM_CLASSES); o.floatBuffer.get(oo); o.close(); r.close(); oo
-            } else {
-                val t=OnnxTensor.createTensor(env, java.nio.FloatBuffer.wrap(inputFloats), longArrayOf(1,3,targetH.toLong(),modelW.toLong())); val r=session.run(mapOf("x" to t)); t.close()
-                val o=r.get(0) as OnnxTensor; val oo=FloatArray(seqLen*REC_NUM_CLASSES); o.floatBuffer.get(oo); o.close(); r.close(); oo
-            }
+            val recNcnn = recNcnnMap[modelW] ?: run { Log.e(TAG, "recNcnn $modelW missing"); return null }
+            val flatOutput = recNcnn.infer(inputFloats, modelW, targetH) ?: run { Log.e(TAG, "recNcnn $modelW infer null"); return null }
             val actualSeqLen = maxOf(1, ceil(targetW/REC_STRIDE.toFloat()).toInt())
             val cropLogits: Array<*>? = Array<Any>(actualSeqLen){ t-> FloatArray(REC_NUM_CLASSES){ c-> flatOutput[t*REC_NUM_CLASSES+c] } } as Array<*>
             val rawAlts = (0 until actualSeqLen).map{ t->
@@ -1275,7 +1212,7 @@ fun computeCharBoxes(
         onLinesRecognized: (List<Pair<Int, LineResult>>) -> Unit
     ) = coroutineScope {
         val startTime = System.currentTimeMillis()
-        if (recSessions.isEmpty() || ppocrVocab.isEmpty()) return@coroutineScope
+        if (recNcnnMap.isEmpty() || ppocrVocab.isEmpty()) return@coroutineScope
 
         // Build job queue: crop each box, determine orientation
         data class Job(val idx: Int, val bbox: JpDictRect, val crop: Bitmap, val isVertical: Boolean)
@@ -1302,15 +1239,13 @@ fun computeCharBoxes(
         }
 
         val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
-        val models = recSessions
-        val env = ortEnv ?: return@coroutineScope
 
         // Process in batches of BATCH_SIZE, delivering each result as it completes.
         for ((batchIdx, batch) in sortedJobs.chunked(BATCH_SIZE).withIndex()) {
             val tBatch = System.nanoTime()
             try {
                 val crops = batch.map { it.crop }
-                val ppocrResults = recognizePpocrBatch(models, env, crops)
+                val ppocrResults = recognizePpocrBatch(crops)
 
                 for ((index, job) in batch.withIndex()) {
                     val result = ppocrResults.getOrNull(index) ?: continue
@@ -1386,11 +1321,9 @@ fun computeCharBoxes(
         oldLine: LineResult,
         crop: Bitmap,
     ): LineResult {
-        val models = recSessions
-        if (models.isEmpty()) return oldLine
-        val env = ortEnv ?: return oldLine
+        if (recNcnnMap.isEmpty()) return oldLine
         try {
-            val ppocrResults = recognizePpocrBatch(models, env, listOf(crop))
+            val ppocrResults = recognizePpocrBatch(listOf(crop))
             if (ppocrResults.isEmpty()) return oldLine
             val result = ppocrResults[0]
             if (result.text.isEmpty()) return oldLine
@@ -1522,9 +1455,7 @@ fun computeCharBoxes(
 
     fun close() {
         try { detNcnn?.close() } catch (_: Exception) {}
-        recSessions.values.forEach { try { it.close() } catch (_: Exception) {} }
         recNcnnMap.values.forEach { try { it.close() } catch (_: Exception) {} }
-        try { ortEnv?.close() } catch (_: Exception) {}
     }
 }
 
