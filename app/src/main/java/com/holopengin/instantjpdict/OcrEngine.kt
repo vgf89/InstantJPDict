@@ -8,6 +8,9 @@ import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import java.io.File
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
+import kotlin.coroutines.coroutineContext
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.max
@@ -468,10 +471,12 @@ class OcrEngine(private val context: Context) {
 
     /**
      * Run PP-OCRv6 CTC recognition via ncnn buckets (no onnxruntime).
+     * Cooperative cancellation: checks coroutineContext.isActive.
      */
-    private fun recognizePpocrBatch(
+    private suspend fun recognizePpocrBatch(
         crops: List<Bitmap>,
     ): List<PPOcrResult> {
+        coroutineContext.ensureActive()
         val numCrops = crops.size
         if (numCrops == 0 || ppocrVocab.isEmpty() || recNcnnMap.isEmpty()) return emptyList()
 
@@ -480,6 +485,7 @@ class OcrEngine(private val context: Context) {
         val modelWidths = recNcnnMap.keys.sorted()
 
         for (ci in 0 until numCrops) {
+            coroutineContext.ensureActive()
             val crop = crops[ci]
             val cw = crop.width; val ch = crop.height
             if (cw < 4 || ch < 4) continue
@@ -595,9 +601,10 @@ class OcrEngine(private val context: Context) {
         val offsetY: Int,
     )
 
-    private fun recognizeAndStitchLongHoriz(
+    private suspend fun recognizeAndStitchLongHoriz(
         rotated: Bitmap, targetH: Int, modelWidths: List<Int>
     ): PPOcrResult? {
+        coroutineContext.ensureActive()
         val rw = rotated.width; val rh = rotated.height
         val scale = targetH.toFloat() / rh.toFloat()
         val maxChunkW = (480 / scale).toInt().coerceAtLeast(64)
@@ -608,6 +615,7 @@ class OcrEngine(private val context: Context) {
         val chunks = mutableListOf<ChunkInfo>()
         var x = 0
         while (x < rw) {
+            coroutineContext.ensureActive()
             val w = minOf(maxChunkW, rw - x)
             if (w < 16) break
             val chunkBmp = Bitmap.createBitmap(rotated, x, 0, w, rh)
@@ -785,9 +793,10 @@ class OcrEngine(private val context: Context) {
         return PPOcrResult(finalText, stitchedAlts, stitchedCols.toFloatArray(), totalSeqLen, stitchedRawAll)
     }
 
-    private fun recognizeAndStitchLongVert(
+    private suspend fun recognizeAndStitchLongVert(
         rotated: Bitmap, targetH: Int, modelWidths: List<Int>
     ): PPOcrResult? {
+        coroutineContext.ensureActive()
         val rw = rotated.width; val rh = rotated.height
         val scale = targetH.toFloat() / rw.toFloat()
         val maxChunkH = (480 / scale).toInt().coerceAtLeast(64)
@@ -796,6 +805,7 @@ class OcrEngine(private val context: Context) {
         val chunks = mutableListOf<ChunkInfo>()
         var y = 0
         while (y < rh) {
+            coroutineContext.ensureActive()
             val h = minOf(maxChunkH, rh - y)
             if (h < 16) break
             val chunkBmp = Bitmap.createBitmap(rotated, 0, y, rw, h)
@@ -1240,10 +1250,13 @@ fun computeCharBoxes(
 
         val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
-        // Process in batches of BATCH_SIZE, delivering each result as it completes.
+        // Process in batches — cooperative cancellation for #18 (overlay closed → cancel)
         for ((batchIdx, batch) in sortedJobs.chunked(BATCH_SIZE).withIndex()) {
+            coroutineContext.ensureActive()
             val tBatch = System.nanoTime()
             try {
+                // Early exit if cancelled before batch
+                if (!coroutineContext.isActive) break
                 val crops = batch.map { it.crop }
                 val ppocrResults = recognizePpocrBatch(crops)
 
@@ -1317,7 +1330,7 @@ fun computeCharBoxes(
      * logits are cached for threshold adjustment, but for Android it's fast
      * enough to re-run.
      */
-    fun processLineFromRawChunks(
+    suspend fun processLineFromRawChunks(
         oldLine: LineResult,
         crop: Bitmap,
     ): LineResult {
