@@ -413,8 +413,8 @@ class OcrBenchmarkTest {
         }
         instr.sendStatus(0, bundle)
 
-        // Final asserts ensure both backends produced boxes
-        assertEquals(4, allResults.size)
+        // Final asserts ensure ncnn produced boxes (2 runs: 1 backend × 2 images, #15 ncnn-only)
+        assertEquals(2, allResults.size)
         assertTrue(allResults.all { it.result.numBoxes > 0 })
     }
 
