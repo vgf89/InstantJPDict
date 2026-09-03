@@ -109,4 +109,14 @@ app/src/main/assets/
 Do not re-add `*.onnx`/`*.pdiparams`/`*.tflite` to `app/src/main/assets/PP-OCRv6_*` — they belong in `models/archive`.
 
 ---
+
+## INT8 mixed precision — rec w256/w480 (#16)
+
+- **What**: `ncnn2table` (KL) + `ncnn2int8` on `rec_w256`/`rec_w480`, calibration from `tools/gen_rec_calib_npy.py` (208 line crops: `misc/trails_*` horiz + `misc/vert_large` rotated, exact runtime preprocessing `gray/127.5-1` + zero-pad to bucket). `w64/w128` stay FP16 (fast already at 43/58ms; short strings + thin calibration).
+- **Exclusion**: 10 SE-branch 1x1 convs kept FP16 (`convrelu_5/6/7/8/9`, `conv_42/52/58/64/72`) — int8 1x1 on tiny 1x1-spatial SE inputs misshapes output (e.g. same input → fp32 `3x1x1`, int8 `12x1x3`), cascading into depthwise crashes. Delete weight+blob rows from table (note: `ncnn2int8` does NOT honor `#` comments — rows must be deleted).
+- **Parity** (host, 60+34 files): `w480` 95% text-exact CER 0.006, `w256` 88% CER 0.027. End-to-end `benchRec` sample texts identical to FP16.
+- **Speed** (Pixel 7a): `w256 p50 117→53ms`, `w480 p50 235→100ms` (~2.2x); `jpg perCrop 2087→1483ms`. Bins `10.56→5.3MB` each.
+- **Known upstream bug**: `ConvolutionDepthWise::load_model` crashes on scale terms `201/202` (double requantize fuse via split fanout) — fixed locally in `/home/holopengin/repos/ncnn` (`4897b1db`, `% 100` residue, mirrors `Convolution::load_model`). No PR per owner policy.
+
+---
 *penned by opencode2 + muse-spark-1.2-contributor*
