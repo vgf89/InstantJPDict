@@ -122,5 +122,9 @@ Do not re-add `*.onnx`/`*.pdiparams`/`*.tflite` to `app/src/main/assets/PP-OCRv6
   - `bcca5e06` — int8 1x1 conv on flattened 1D blobs (SE squeeze branches): `forward_int8` lacked the float path's 1D-compat reshape-to-3D detour, so pack groups were misread as spatial width; mirrored in x86/arm/base.
 - **Benching gotcha**: Pixel 7a p50s swing ±50% between runs (DVFS/charging/sleep). Never A/B on single runs — use min-of-3 in the same session.
 
+### Decision (#16, closed)
+
+**Ship full INT8 for all 4 rec buckets** (`rec_w{64,128,256,480}` — `339a950`, verified on Pixel 7a). Never loses vs FP16 or the mixed build on any bucket; w64/w128 bins halved 11 → 5.2 MB; end-to-end texts identical. `det` INT8 is the remaining follow-on (#22).
+
 ---
 *penned by opencode2 + muse-spark-1.3-contributor*
