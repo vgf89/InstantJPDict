@@ -110,13 +110,17 @@ Do not re-add `*.onnx`/`*.pdiparams`/`*.tflite` to `app/src/main/assets/PP-OCRv6
 
 ---
 
-## INT8 mixed precision — rec w256/w480 (#16)
+## INT8 full quantization — rec w64/w128/w256/w480 (#16)
 
-- **What**: `ncnn2table` (KL) + `ncnn2int8` on `rec_w256`/`rec_w480`, calibration from `tools/gen_rec_calib_npy.py` (208 line crops: `misc/trails_*` horiz + `misc/vert_large` rotated, exact runtime preprocessing `gray/127.5-1` + zero-pad to bucket). `w64/w128` stay FP16 (fast already at 43/58ms; short strings + thin calibration).
-- **Exclusion**: 10 SE-branch 1x1 convs kept FP16 (`convrelu_5/6/7/8/9`, `conv_42/52/58/64/72`) — int8 1x1 on tiny 1x1-spatial SE inputs misshapes output (e.g. same input → fp32 `3x1x1`, int8 `12x1x3`), cascading into depthwise crashes. Delete weight+blob rows from table (note: `ncnn2int8` does NOT honor `#` comments — rows must be deleted).
-- **Parity** (host, 60+34 files): `w480` 95% text-exact CER 0.006, `w256` 88% CER 0.027. End-to-end `benchRec` sample texts identical to FP16.
-- **Speed** (Pixel 7a): `w256 p50 117→53ms`, `w480 p50 235→100ms` (~2.2x); `jpg perCrop 2087→1483ms`. Bins `10.56→5.3MB` each.
-- **Known upstream bug**: `ConvolutionDepthWise::load_model` crashes on scale terms `201/202` (double requantize fuse via split fanout) — fixed locally in `/home/holopengin/repos/ncnn` (`4897b1db`, `% 100` residue, mirrors `Convolution::load_model`). No PR per owner policy.
+- **What**: all 4 buckets full-INT8 via `ncnn2table` (KL) + `ncnn2int8`, calibration from `tools/gen_rec_calib_npy.py` (line crops: `misc/trails_*` horiz + `misc/vert_large` rotated, exact runtime preprocessing `gray/127.5-1` + zero-pad to bucket). Tables per bucket in repo `models/` flow; `ncnn2int8` output replaces `rec_w*.param/.bin`.
+- **Source must be FP16**: `ncnn2table`/`ncnn2int8` MUST run on the FP16 model — running it on an already-quantized (int8-mixed) model reads int8-packed weights as floats and produces astronomical weight scales (`convdw_125_param_0 = 7.6e34` vs sane `869`) and a double-quantized net that decodes all-blank. This masqueraded as a kernel bug for a day; always re-quantize from the FP16 originals.
+- **No exclusions needed**: an earlier mixed build kept 10 SE-branch 1x1 convs FP16 (`convrelu_5/6/7/8/9`, `conv_42/52/58/64/72`) because int8 1x1 on tiny 1x1-spatial SE inputs misread pack groups as spatial width. Fixed in the local ncnn tree (below), so full-INT8 now runs the whole graph in int8. (`#` comments are still NOT honored by `ncnn2table`/`ncnn2int8` — rows must be deleted, if ever needed again.)
+- **Parity** (host, KL tables): `w480` 93.3% text-exact CER 0.007, `w256` 85% CER 0.034 vs FP16 (mixed build was 95%/0.006 and 88%/0.027 — same ballpark). Device end-to-end `benchRec` sample texts identical to the mixed build (only one leading digit differed on the Screenshot bench).
+- **Speed** (Pixel 7a, min-of-3 same-session): `w64` 44ms (FP16 43), `w128` 55ms (FP16 58), `w256` 80ms (mixed 86), `w480` 124ms (mixed 128) — full-INT8 never loses. Bins 5.2MB each (w64/w128 halved from 11MB).
+- **Local ncnn fixes** (in `/home/holopengin/repos/ncnn`, no PR per owner policy, vendored lib rebuilt):
+  - `4897b1db` — `ConvolutionDepthWise::load_model` crashed on scale terms `201/202` (double requantize fuse via split fanout); `% 100` residue, mirrors `Convolution::load_model`.
+  - `bcca5e06` — int8 1x1 conv on flattened 1D blobs (SE squeeze branches): `forward_int8` lacked the float path's 1D-compat reshape-to-3D detour, so pack groups were misread as spatial width; mirrored in x86/arm/base.
+- **Benching gotcha**: Pixel 7a p50s swing ±50% between runs (DVFS/charging/sleep). Never A/B on single runs — use min-of-3 in the same session.
 
 ---
-*penned by opencode2 + muse-spark-1.2-contributor*
+*penned by opencode2 + muse-spark-1.3-contributor*
