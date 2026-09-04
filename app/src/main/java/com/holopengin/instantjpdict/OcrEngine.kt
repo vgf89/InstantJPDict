@@ -501,7 +501,7 @@ class OcrEngine(private val context: Context) {
             val rw = rotated.width; val rh = rotated.height
             // ——— Long-line split for >640px (rw*48/rh>640) — PP-OCR 48×480 crush fix ———
             // Very long lines (e.g. 976×39 → 1201→480, 1003×45→1070) crush timesteps.
-            // Split into overlapping w480 chunks (20% overlap) via w480 bucket, then stitch.
+            // Split into overlapping w480 chunks (10% fallback overlap) via w480 bucket, then stitch.
             // Threshold 640 to avoid over-splitting 675×58→558→480 while fixing 726×50→696.
             val isLongHoriz = rw >= rh * 3 / 2 && (rw.toFloat() * targetH / rh.toFloat() > 640)
             val isLongVert = rh >= rw * 3 / 2 && (rh.toFloat() * targetH / rw.toFloat() > 640)
@@ -588,7 +588,7 @@ class OcrEngine(private val context: Context) {
 
     // ——— Long-line split helpers — PP-OCR 48×960 crush fix ———
     // Very long horizontal >960px (976×39 → 1201) and vertical >960px crush timesteps.
-    // Split into overlapping w480 chunks (20% overlap) via largest fitting bucket, then stitch.
+    // Split into overlapping w480 chunks (10% fallback overlap) via largest fitting bucket, then stitch.
     // Port of meiki b3babc7^ OcrEngine.kt 709: REC_WIDTH 960/32, maxChunkWidth 960/scale,
     // anchor second-to-last char localXLeft/nextX 0.8 + stitchHorizontalChunks centerX distance 30
     // + predictionScore 0.4 + interleaveAlternatives, scaled to PP-OCR 48×480 correctly.
@@ -663,12 +663,12 @@ class OcrEngine(private val context: Context) {
                 val localXLeft = ((anchorT + 0.5f) / actualSeqLen.toFloat()) * cw
                 val nextX = (x + localXLeft.toInt() - chunkMargin).coerceAtLeast(0)
                 if (nextX <= x || nextX >= x + w - 10) {
-                    x += (w * 0.8f).toInt().coerceAtLeast(16)
+                    x += (w * 0.9f).toInt().coerceAtLeast(16)
                 } else {
                     x = nextX
                 }
             } else {
-                x += (w * 0.8f).toInt().coerceAtLeast(16)
+                x += (w * 0.9f).toInt().coerceAtLeast(16)
             }
         }
         if (chunks.isEmpty()) return null
@@ -844,12 +844,12 @@ class OcrEngine(private val context: Context) {
                 val localYTop = ((anchorT + 0.5f) / actualSeqLen.toFloat()) * h
                 val nextY = (y + localYTop.toInt() - chunkMargin).coerceAtLeast(0)
                 if (nextY <= y || nextY >= y + h - 10) {
-                    y += (h * 0.8f).toInt().coerceAtLeast(16)
+                    y += (h * 0.9f).toInt().coerceAtLeast(16)
                 } else {
                     y = nextY
                 }
             } else {
-                y += (h * 0.8f).toInt().coerceAtLeast(16)
+                y += (h * 0.9f).toInt().coerceAtLeast(16)
             }
         }
         if (chunks.isEmpty()) return null
