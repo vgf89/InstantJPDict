@@ -126,5 +126,13 @@ Do not re-add `*.onnx`/`*.pdiparams`/`*.tflite` to `app/src/main/assets/PP-OCRv6
 
 **Ship full INT8 for all 4 rec buckets** (`rec_w{64,128,256,480}` — `339a950`, verified on Pixel 7a). Never loses vs FP16 or the mixed build on any bucket; w64/w128 bins halved 11 → 5.2 MB; end-to-end texts identical. `det` INT8 is the remaining follow-on (#22).
 
+### Det — full INT8 attempted, NOT shippable (#22, host parity FAIL)
+
+- **What**: same flow as rec — `tools/gen_det_calib_npy.py` (new, mirrors `OcrEngine.detect` exactly: longest-side→960 bilinear, centered 128-gray letterbox, ImageNet norm, `(3,960,960)` NCHW) → `ncnn2table` KL `shape=[960,960,3] type=1` → `ncnn2int8` from the FP16 source (`det.param/bin` shipped = FP16-storage, verified identical to `/tmp/det.ncnn.*`; table scales sane, no double-quant). Bin `4.8 → 2.5 MB` as expected.
+- **Note**: issue text says `960x544` letterbox — stale (Meiki-era det size, matches the `960x544` files in the ONNX-era `calibration_data/detect/` set). Shipped PP-OCRv6 graph is `960x960`; table dims verified against it before running.
+- **Parity** (host, `tools/int8-dev/det_compare.cpp` + `tools/det_box_iou.py`, OcrEngine postprocess mirror `thresh 0.3 / unclip 1.5 / xOverlap 0.4`): maxAbs `~0.99` everywhere (`<1e-3` gate missed by 3 orders), mask-agree `98.4%`, but **box meanIoU `0.61` calib / `0.89` bench-crops, only `12%/33%` of boxes ≥0.95** (gate: `≥0.95`). INT8 fragments/merges components (`108→141` boxes on one page, `133→22` on another).
+- **Tried, no recovery**: int8 thresh sweep `0.3→0.05` (IoU flat/down); mixed build with 8 FPN-tail layers FP16 (`convrelu_15/122/124/16/126/17/127/18` rows deleted — backbone noise dominates, mask-agree unchanged `98.397%` vs `98.386%`); screenshots-only recalibration (13×`960x544`, strictly worse: IoU `0.45`). Deconvolution head layers are never quantized by `ncnn2int8` (not in table) — the damage is distributed backbone noise amplified by sigmoid thresholding, unlike CTC-argmax rec which tolerates it.
+- **Verdict**: keep det FP16 (`4.8 MB`). Principled follow-up is per-layer sensitivity → targeted exclusions, not global KL. Device A/B + APK delta not run (nothing shippable to bench).
+
 ---
 *penned by opencode2 + muse-spark-1.3-contributor*
