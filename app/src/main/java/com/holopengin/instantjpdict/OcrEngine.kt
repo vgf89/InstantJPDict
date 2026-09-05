@@ -84,6 +84,9 @@ class OcrEngine(private val context: Context) {
         private const val FURIGANA_GAP_RATIO = 0.5f     // gap <= 50% of large short-side
         private const val FURIGANA_OVERLAP_RATIO = 0.5f // overlap >= 50% of small long-side
         private const val VERTICAL_MIN_ASPECT = 1.25f   // h >= 1.25w → vertical; squarer → horizontal
+        // Absolute ceiling: real short columns (e.g. 458px) dwarf ruby runs even when the
+        // ratio matches — ruby longer than 12% of the image side is not ruby. #28
+        private const val FURIGANA_MAX_FRAC = 0.12f
 
         // Recognition constants (not tunable)
         private const val REC_TARGET_H = 48
@@ -395,7 +398,7 @@ class OcrEngine(private val context: Context) {
         // 6b. Furigana filter (#28) on RAW contour geometry (pre-unclip, pre-merge):
         // unclip padding inflates overlap and fabricates ruby matches out of stacked
         // column fragments (only their padding overlaps). Kept indices gate rawBoxes.
-        val keepNonRuby = filterFurigana(rawPreBoxes)
+        val keepNonRuby = filterFurigana(rawPreBoxes, rawBoxes, bitmap.width, bitmap.height)
         val keptUnclipped = rawBoxes.filterIndexed { i, _ -> keepNonRuby.getOrElse(i) { true } }
         if (keptUnclipped.size != rawBoxes.size) {
             val dropped = rawPreBoxes.filterIndexed { i, _ -> !keepNonRuby.getOrElse(i) { true } }
@@ -529,37 +532,45 @@ class OcrEngine(private val context: Context) {
 
     /** Tiny vertical box hugging a much larger vertical box (either side). #28
      * Center must lie OUTSIDE the big box: stacked column fragments (tail of the
-     * column above/below, overlapping only via unclip padding) share its x-range. */
-    private fun isRubyVertical(small: JpDictRect, big: JpDictRect): Boolean {
-        if (small.height() >= big.height() * FURIGANA_SIZE_RATIO) return false
-        val cx = (small.left + small.right) / 2
-        if (cx >= big.left && cx <= big.right) return false
-        if (gapLen(small.left, small.right, big.left, big.right) > big.width() * FURIGANA_GAP_RATIO) return false
-        if (overlapLen(small.top, small.bottom, big.top, big.bottom) < small.height() * FURIGANA_OVERLAP_RATIO) return false
+     * column above/below, overlapping only via unclip padding) share its x-range.
+     * Size/center/overlap use RAW contour geometry; gap uses UNCLIPPED (raw gutters
+     * are real pixels, unclipped closes them to ruby distance). */
+    private fun isRubyVertical(
+        sRaw: JpDictRect, bRaw: JpDictRect, sUn: JpDictRect, bUn: JpDictRect, imgH: Int,
+    ): Boolean {
+        if (sRaw.height() >= bRaw.height() * FURIGANA_SIZE_RATIO) return false
+        if (sRaw.height() >= imgH * FURIGANA_MAX_FRAC) return false
+        val cx = (sRaw.left + sRaw.right) / 2
+        if (cx >= bRaw.left && cx <= bRaw.right) return false
+        if (gapLen(sUn.left, sUn.right, bUn.left, bUn.right) > bUn.width() * FURIGANA_GAP_RATIO) return false
+        if (overlapLen(sRaw.top, sRaw.bottom, bRaw.top, bRaw.bottom) < sRaw.height() * FURIGANA_OVERLAP_RATIO) return false
         return true
     }
 
-    /** Tiny horizontal box right above a much larger horizontal box. #28 */
-    private fun isRubyHorizontal(small: JpDictRect, big: JpDictRect): Boolean {
-        if (small.width() >= big.width() * FURIGANA_SIZE_RATIO) return false
-        if (small.bottom > big.top + 2) return false
-        if (big.top - small.bottom > big.height() * FURIGANA_GAP_RATIO) return false
-        if (overlapLen(small.left, small.right, big.left, big.right) < small.width() * FURIGANA_OVERLAP_RATIO) return false
+    /** Tiny horizontal box right above a much larger horizontal box. #28 (same split). */
+    private fun isRubyHorizontal(
+        sRaw: JpDictRect, bRaw: JpDictRect, sUn: JpDictRect, bUn: JpDictRect, imgW: Int,
+    ): Boolean {
+        if (sRaw.width() >= bRaw.width() * FURIGANA_SIZE_RATIO) return false
+        if (sRaw.width() >= imgW * FURIGANA_MAX_FRAC) return false
+        if (sUn.bottom > bUn.top + 2) return false
+        if (bUn.top - sUn.bottom > bUn.height() * FURIGANA_GAP_RATIO) return false
+        if (overlapLen(sRaw.left, sRaw.right, bRaw.left, bRaw.right) < sRaw.width() * FURIGANA_OVERLAP_RATIO) return false
         return true
     }
 
-    /** Keep-flags for likely-furigana boxes: tiny + hugging a much larger
-     * same-orientation box. Runs on RAW contour geometry — see call site. #28 */
-    private fun filterFurigana(boxes: List<JpDictRect>): BooleanArray {
-        if (boxes.size < 2) return BooleanArray(boxes.size) { true }
-        return BooleanArray(boxes.size) { i ->
-            val small = boxes[i]
+    /** Keep-flags for likely-furigana boxes. raw/uncl are index-aligned (raw contours
+     * vs unclipped detect boxes). #28 */
+    private fun filterFurigana(raw: List<JpDictRect>, uncl: List<JpDictRect>, imgW: Int, imgH: Int): BooleanArray {
+        if (raw.size < 2) return BooleanArray(raw.size) { true }
+        return BooleanArray(raw.size) { i ->
+            val small = raw[i]
             val checkVert = isVerticalBox(small) || isSquareBox(small)
             val checkHoriz = !isVerticalBox(small) || isSquareBox(small)
-            !(boxes.indices.any { j ->
+            !(raw.indices.any { j ->
                 j != i && (
-                    (checkVert && isVerticalBox(boxes[j]) && isRubyVertical(small, boxes[j])) ||
-                    (checkHoriz && !isVerticalBox(boxes[j]) && isRubyHorizontal(small, boxes[j]))
+                    (checkVert && isVerticalBox(raw[j]) && isRubyVertical(raw[i], raw[j], uncl[i], uncl[j], imgH)) ||
+                    (checkHoriz && !isVerticalBox(raw[j]) && isRubyHorizontal(raw[i], raw[j], uncl[i], uncl[j], imgW))
                 )
             })
         }
