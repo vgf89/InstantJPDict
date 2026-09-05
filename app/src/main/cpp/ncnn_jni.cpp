@@ -113,7 +113,11 @@ Java_com_holopengin_instantjpdict_RecNcnn_inferNative(JNIEnv *env, jclass, jlong
     ex.set_light_mode(true);
     ex.input("in0", in);
     ncnn::Mat out;
-    int ret = ex.extract("out0", out);
+    // Skip softmax_30: extract gemm_8 logits directly (blob 204, see rec_dyn.param:180-181).
+    // Argmax/top-15 order is identical (softmax monotonic); scores become logits, which no
+    // consumer reads absolutely (blankThreshold path is relative, default 0 = pure greedy).
+    // Lazy eval never runs softmax — saves ~4% (its exp/sum over 18710×seq). #25
+    int ret = ex.extract(204, out);
     if (ret != 0) {
         LOGE("extract out0 failed %d", ret);
         return nullptr;
