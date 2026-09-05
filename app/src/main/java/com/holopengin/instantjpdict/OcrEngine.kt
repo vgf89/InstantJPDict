@@ -1273,29 +1273,15 @@ fun computeCharBoxes(
 
         Log.d(TAG, "Processing ${jobs.size} boxes in batches of $BATCH_SIZE")
 
-        // Sort by exact model width needed (largest first) so heavy lines start early
-        // and same-width lines batch together; within a width keep reading order —
-        // vertical lines right-to-left, then horizontal lines top-to-bottom
-        // (same comparators as sortDetectedBoxes). #21, dynamic widths #23.
-        fun widthFor(job: Job): Int {
-            val cw = job.bbox.width(); val ch = job.bbox.height()
-            // Mirror recognizePpocrBatch: 270° rotation swaps dims, long lines go max width.
-            val rw = if (ch >= cw * 3 / 2) ch else cw
-            val rh = if (ch >= cw * 3 / 2) cw else ch
-            val isLong = (rw >= rh * 3 / 2 && rw.toFloat() * REC_TARGET_H / rh.toFloat() > 2000) ||
-                    (rh >= rw * 3 / 2 && rh.toFloat() * REC_TARGET_H / rw.toFloat() > 2000)
-            if (isLong) return 2000
-            val targetW = maxOf(4, minOf(2000,
-                (rw.toFloat() * REC_TARGET_H / rh.toFloat()).roundToInt()))
-            return ((targetW + 7) / 8) * 8
-        }
-        val sortedJobs = jobs.sortedWith(
-            compareByDescending { job: Job -> widthFor(job) }
-                .thenBy { if (it.isVertical) 0 else 1 }
-                .thenByDescending { if (it.isVertical) it.bbox.right else Int.MIN_VALUE }
-                .thenBy { it.bbox.top }
-                .thenBy { if (it.isVertical) 0 else it.bbox.left }
-        )
+        // Simple reading order (#24) — dynamic widths made size-sorting moot:
+        // vertical lines right-to-left first, then horizontal lines top-to-bottom
+        // (same per-group comparators as sortDetectedBoxes, groups flipped).
+        // Results stay keyed by job idx, so only arrival order changes.
+        val verticals = jobs.filter { it.isVertical }
+            .sortedWith(compareByDescending<Job> { it.bbox.right }.thenBy { it.bbox.top })
+        val horizontals = jobs.filter { !it.isVertical }
+            .sortedWith(compareBy<Job> { it.bbox.top }.thenBy { it.bbox.left })
+        val sortedJobs = verticals + horizontals
 
         val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
