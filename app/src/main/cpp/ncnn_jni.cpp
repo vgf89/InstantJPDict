@@ -168,10 +168,14 @@ Java_com_holopengin_instantjpdict_DetNcnn_create(JNIEnv *env, jclass, jstring pa
     const char *binPath = env->GetStringUTFChars(binPath_, 0);
     DetNcnn *det = new DetNcnn();
     ncnn::Option opt;
-    opt.num_threads = 4;
-    opt.use_fp16_packed = false;
-    opt.use_fp16_storage = false;
-    opt.use_fp16_arithmetic = false;
+    // 1 thread + fp16 throughout (#25 det tune): min-of-3 same-session —
+    // jpg 1522→892ms, screenshot 1396→855ms vs 4-thread fp32; box IoU ≥0.95
+    // holds (mean 0.99+, worst single-box 0.63). Det bin is fp16-storage already.
+    opt.num_threads = 1;
+    opt.use_fp16_packed = true;
+    opt.use_fp16_storage = true;
+    opt.use_fp16_arithmetic = true;
+    LOGI("DetNcnn threads=1 fp16=1");
     opt.use_packing_layout = true;
     det->net.opt = opt;
     ncnn::set_cpu_powersave(0);
