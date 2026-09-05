@@ -105,7 +105,10 @@ int main(int argc, char** argv) {
         auto a = ctc_collapse(ro, NC), b = ctc_collapse(to, NC);
         if (a.empty()) continue; // no reference signal
         int e = edit_dist(a, b);
-        printf("%s ed=%d alen=%zu blen=%zu ref=%s\n", tag.c_str(), e, a.size(), b.size(), rp.c_str());
+        std::string sa, sb;
+        for (int id : a) { sa += std::to_string(id); sa += ","; }
+        for (int id : b) { sb += std::to_string(id); sb += ","; }
+        printf("%s ed=%d alen=%zu blen=%zu ref=%s avec=%s bvec=%s\n", tag.c_str(), e, a.size(), b.size(), rp.c_str(), sa.c_str(), sb.c_str());
         edSum[tag] += e; chSum[tag] += a.size(); nPair[tag]++; if (e == 0) nExact[tag]++;
     }
     for (auto& kv : edSum)
