@@ -78,6 +78,13 @@ class OcrEngine(private val context: Context) {
         fun getRecSquish(ctx: Context): Float =
             ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getFloat(PREF_REC_SQUISH, DEF_REC_SQUISH)
 
+        // Furigana filter thresholds (#28) — conservative: better to recognize ruby
+        // than to drop real small text.
+        private const val FURIGANA_SIZE_RATIO = 0.3f    // small long-side < 30% of large long-side
+        private const val FURIGANA_GAP_RATIO = 0.5f     // gap <= 50% of large short-side
+        private const val FURIGANA_OVERLAP_RATIO = 0.5f // overlap >= 50% of small long-side
+        private const val VERTICAL_MIN_ASPECT = 1.25f   // h >= 1.25w → vertical; squarer → horizontal
+
         // Recognition constants (not tunable)
         private const val REC_TARGET_H = 48
         private const val REC_NUM_CLASSES = 18710  // 0=blank, 1..18708=chars, 18709=space
@@ -307,6 +314,9 @@ class OcrEngine(private val context: Context) {
         // 6. Find connected components (contours) via flat flood-fill — no Pair boxing, no 2D Array
         val visited = ByteArray(outH * outW)
         val rawBoxes = mutableListOf<JpDictRect>()
+        // Pre-unclip contour boxes, parallel to rawBoxes — furigana matching runs on these
+        // because unclip padding fabricates overlap for stacked fragments. #28
+        val rawPreBoxes = mutableListOf<JpDictRect>()
         // Reuse single Int queue to avoid per-component ArrayDeque alloc
         val q = IntArray(outH * outW)
         for (y in 0 until outH) {
@@ -375,14 +385,27 @@ class OcrEngine(private val context: Context) {
                 val uy2 = (by2 + expand).coerceAtMost(origH).roundToInt()
 
                 if (ux2 - ux < 4 || uy2 - uy < 4) continue
+                rawPreBoxes.add(JpDictRect(bx, by, bx2, by2))
                 rawBoxes.add(JpDictRect(ux, uy, ux2, uy2))
             }
         }
 
         Log.d(TAG, "detect: raw ${rawBoxes.size} boxes")
 
+        // 6b. Furigana filter (#28) on RAW contour geometry (pre-unclip, pre-merge):
+        // unclip padding inflates overlap and fabricates ruby matches out of stacked
+        // column fragments (only their padding overlaps). Kept indices gate rawBoxes.
+        val keepNonRuby = filterFurigana(rawPreBoxes)
+        val keptUnclipped = rawBoxes.filterIndexed { i, _ -> keepNonRuby.getOrElse(i) { true } }
+        if (keptUnclipped.size != rawBoxes.size) {
+            val dropped = rawPreBoxes.filterIndexed { i, _ -> !keepNonRuby.getOrElse(i) { true } }
+            Log.d(TAG, "detect: furigana ${rawBoxes.size} → ${keptUnclipped.size} boxes, dropped=${
+                dropped.joinToString(";") { "${it.width()}x${it.height()}@${it.left},${it.top}" }
+            }")
+        }
+
         // 7. Post-processing: merge overlapping boxes
-        val merged = mergeOverlappingBoxes(rawBoxes)
+        val merged = mergeOverlappingBoxes(keptUnclipped)
 
         // 8. Filter degenerate boxes
         val filtered = merged.filter { it.width() >= 10 && it.height() >= 10 }
@@ -487,10 +510,65 @@ class OcrEngine(private val context: Context) {
         return yDiff <= avgH
     }
 
+    /** Shared orientation rule (#28): near-square boxes count as horizontal so lone
+     * upright characters never enter the model sideways. */
+    private fun isVerticalBox(box: JpDictRect): Boolean =
+        box.height().toFloat() >= box.width() * VERTICAL_MIN_ASPECT
+
+    /** Near-square (single-kanji-like) box: checked against both furigana rules. #28 */
+    private fun isSquareBox(box: JpDictRect): Boolean {
+        val w = box.width(); val h = box.height()
+        return minOf(w, h).toFloat() >= maxOf(w, h) / VERTICAL_MIN_ASPECT
+    }
+
+    private fun overlapLen(a1: Int, a2: Int, b1: Int, b2: Int): Int =
+        (minOf(a2, b2) - maxOf(a1, b1)).coerceAtLeast(0)
+
+    private fun gapLen(a1: Int, a2: Int, b1: Int, b2: Int): Int =
+        maxOf(0, maxOf(a1, b1) - minOf(a2, b2))
+
+    /** Tiny vertical box hugging a much larger vertical box (either side). #28
+     * Center must lie OUTSIDE the big box: stacked column fragments (tail of the
+     * column above/below, overlapping only via unclip padding) share its x-range. */
+    private fun isRubyVertical(small: JpDictRect, big: JpDictRect): Boolean {
+        if (small.height() >= big.height() * FURIGANA_SIZE_RATIO) return false
+        val cx = (small.left + small.right) / 2
+        if (cx >= big.left && cx <= big.right) return false
+        if (gapLen(small.left, small.right, big.left, big.right) > big.width() * FURIGANA_GAP_RATIO) return false
+        if (overlapLen(small.top, small.bottom, big.top, big.bottom) < small.height() * FURIGANA_OVERLAP_RATIO) return false
+        return true
+    }
+
+    /** Tiny horizontal box right above a much larger horizontal box. #28 */
+    private fun isRubyHorizontal(small: JpDictRect, big: JpDictRect): Boolean {
+        if (small.width() >= big.width() * FURIGANA_SIZE_RATIO) return false
+        if (small.bottom > big.top + 2) return false
+        if (big.top - small.bottom > big.height() * FURIGANA_GAP_RATIO) return false
+        if (overlapLen(small.left, small.right, big.left, big.right) < small.width() * FURIGANA_OVERLAP_RATIO) return false
+        return true
+    }
+
+    /** Keep-flags for likely-furigana boxes: tiny + hugging a much larger
+     * same-orientation box. Runs on RAW contour geometry — see call site. #28 */
+    private fun filterFurigana(boxes: List<JpDictRect>): BooleanArray {
+        if (boxes.size < 2) return BooleanArray(boxes.size) { true }
+        return BooleanArray(boxes.size) { i ->
+            val small = boxes[i]
+            val checkVert = isVerticalBox(small) || isSquareBox(small)
+            val checkHoriz = !isVerticalBox(small) || isSquareBox(small)
+            !(boxes.indices.any { j ->
+                j != i && (
+                    (checkVert && isVerticalBox(boxes[j]) && isRubyVertical(small, boxes[j])) ||
+                    (checkHoriz && !isVerticalBox(boxes[j]) && isRubyHorizontal(small, boxes[j]))
+                )
+            })
+        }
+    }
+
     private fun sortDetectedBoxes(boxes: List<JpDictRect>): List<JpDictRect> {
-        val horizontal = boxes.filter { it.width() >= it.height() }
+        val horizontal = boxes.filter { !isVerticalBox(it) }
             .sortedWith(compareBy({ it.top }, { it.left }))
-        val vertical = boxes.filter { it.height() > it.width() }
+        val vertical = boxes.filter { isVerticalBox(it) }
             .sortedWith(compareByDescending<JpDictRect> { it.right }.thenBy { it.top })
         return horizontal + vertical
     }
@@ -1285,7 +1363,7 @@ fun computeCharBoxes(
 
         val jobs = lineBoxes.mapIndexedNotNull { i, box ->
             if (box.width() < 4 || box.height() < 4) null
-            else Job(i, box, box.height() > box.width())
+            else Job(i, box, isVerticalBox(box))
         }
         if (jobs.isEmpty()) return@coroutineScope
 
