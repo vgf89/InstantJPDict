@@ -332,12 +332,16 @@ class OcrBenchmarkTest {
         val prefs = appContext.getSharedPreferences("instant_jp_dict_prefs", android.content.Context.MODE_PRIVATE)
         val instr = InstrumentationRegistry.getInstrumentation()
 
-        // ── 1. Per-bucket ncnn smoke gate — #15 onnxruntime removed, ncnn only ──
+        // ── 1. Dynamic-width ncnn smoke gate — single rec_dyn model (#23), incl. off-bucket 200 ──
         val h = 48
         val numClasses = 18710
-        val recNcnnMapField = engine.javaClass.getDeclaredField("recNcnnMap").apply { isAccessible = true }
-        @Suppress("UNCHECKED_CAST")
-        var recNcnnMap = recNcnnMapField.get(engine) as MutableMap<Int, RecNcnn>
+        val recDynField = engine.javaClass.getDeclaredField("recDynNcnn").apply { isAccessible = true }
+        var recNcnn = recDynField.get(engine) as RecNcnn?
+        if (recNcnn == null) {
+            recNcnn = RecNcnn.create(appContext)
+            assertNotNull("RecNcnn dyn failed to create", recNcnn)
+            recDynField.set(engine, recNcnn)
+        }
         var vocab: List<String> = emptyList()
         try {
             val vField = engine.javaClass.getDeclaredField("ppocrVocab").apply { isAccessible = true }
@@ -346,15 +350,9 @@ class OcrBenchmarkTest {
         } catch (_: Exception) {}
 
         val bucketResults = mutableListOf<String>()
-        for (w in listOf(64, 128, 256, 480)) {
+        for (w in listOf(64, 200, 480)) {
             val seqLen = w / 8
             val inputFloats = FloatArray(3 * h * w) { ((it * 37) % 255) / 128f - 1f }
-            var recNcnn = recNcnnMap[w]
-            if (recNcnn == null) {
-                recNcnn = RecNcnn.create(appContext, w)
-                assertNotNull("RecNcnn w$w failed to create", recNcnn)
-                recNcnnMap[w] = recNcnn!!
-            }
             val ncnnOut = recNcnn!!.infer(inputFloats, w, h)
             assertNotNull("ncnn w$w infer returned null", ncnnOut)
             assertEquals("ncnn outSize w$w", seqLen * numClasses, ncnnOut!!.size)
@@ -363,7 +361,7 @@ class OcrBenchmarkTest {
             Log.i(TAG, line)
             bucketResults.add(line)
         }
-        Log.i(TAG, "gate per-bucket ncnn OK: ${bucketResults.joinToString(" | ")}")
+        Log.i(TAG, "gate dynamic-width ncnn OK: ${bucketResults.joinToString(" | ")}")
 
         // ── 2. Dual-backend image bench — 4 runs total (Screenshot×2 + jpg×2, 3-crop sample) ≈15s ──
         val images = listOf(
@@ -419,67 +417,60 @@ class OcrBenchmarkTest {
     }
 
     @Test
-    fun benchRecNcnnW64() {
-        // ncnn w64 micro-bench — onnxruntime removed for #15, ncnn only
+    fun benchRecNcnnDynWidths() {
+        // Dynamic-width micro-bench (#23) — one rec_dyn handle, several widths incl. off-bucket
         val appContext = InstrumentationRegistry.getInstrumentation().targetContext
-        val w = 64
         val h = 48
-        val inputFloats = FloatArray(3 * h * w) { 0f }
-        for (i in inputFloats.indices) inputFloats[i] = ((i * 37) % 255) / 128f - 1f
-
-        val recNcnnMapField2 = engine.javaClass.getDeclaredField("recNcnnMap").apply { isAccessible = true }
-        @Suppress("UNCHECKED_CAST")
-        var recNcnnMap2 = recNcnnMapField2.get(engine) as MutableMap<Int, RecNcnn>
-        var recNcnn = recNcnnMap2[64]
+        val recDynField = engine.javaClass.getDeclaredField("recDynNcnn").apply { isAccessible = true }
+        var recNcnn = recDynField.get(engine) as RecNcnn?
         if (recNcnn == null) {
-            recNcnn = RecNcnn.create(appContext, 64)
-            assertNotNull("RecNcnn w64 failed to create", recNcnn)
-            recNcnnMap2[64] = recNcnn!!
-            recNcnnMapField2.set(engine, recNcnnMap2)
+            recNcnn = RecNcnn.create(appContext)
+            assertNotNull("RecNcnn dyn failed to create", recNcnn)
+            recDynField.set(engine, recNcnn)
         }
-        Log.i(TAG, "benchRecNcnnW64: recNcnn=$recNcnn w=$w h=$h floats=${inputFloats.size}")
-
-        val ncnnTimes = mutableListOf<Long>()
-        var ncnnOutSize = 0
-        repeat(5) {
-            val t0 = System.nanoTime()
-            val out = recNcnn!!.infer(inputFloats, w, h)
-            val ms = (System.nanoTime() - t0) / 1_000_000
-            ncnnTimes.add(ms)
-            if (out != null) ncnnOutSize = out.size
+        val bundleOut = mutableListOf<String>()
+        for (w in listOf(64, 200, 480)) {
+            val inputFloats = FloatArray(3 * h * w) { ((it * 37) % 255) / 128f - 1f }
+            Log.i(TAG, "benchRecNcnnDynWidths: recNcnn=$recNcnn w=$w h=$h floats=${inputFloats.size}")
+            val ncnnTimes = mutableListOf<Long>()
+            var ncnnOutSize = 0
+            repeat(5) {
+                val t0 = System.nanoTime()
+                val out = recNcnn!!.infer(inputFloats, w, h)
+                val ms = (System.nanoTime() - t0) / 1_000_000
+                ncnnTimes.add(ms)
+                if (out != null) ncnnOutSize = out.size
+            }
+            ncnnTimes.sort()
+            val ncnnP50 = ncnnTimes[ncnnTimes.size / 2]
+            Log.i(TAG, "benchRecNcnnDynWidths ncnn w$w p50=${ncnnP50}ms times=$ncnnTimes outSize=$ncnnOutSize")
+            bundleOut.add("w$w ${ncnnP50}ms")
+            assertTrue("ncnn output size should be ${w / 8}*18710", ncnnOutSize == (w / 8) * 18710)
         }
-        ncnnTimes.sort()
-        val ncnnP50 = ncnnTimes[ncnnTimes.size / 2]
-        Log.i(TAG, "benchRecNcnnW64 ncnn w64 p50=${ncnnP50}ms times=$ncnnTimes outSize=$ncnnOutSize")
 
         val instr = InstrumentationRegistry.getInstrumentation()
         val bundle = android.os.Bundle().apply {
-            putLong("ncnn_w64_p50", ncnnP50)
-            putString("bench", "w64 ncnn ${ncnnP50}ms")
+            putString("bench", "dyn ncnn ${bundleOut.joinToString(", ")}")
         }
         instr.sendStatus(0, bundle)
-        assertTrue("ncnn output size should be 8*18710", ncnnOutSize == 8 * 18710)
     }
 
     @Test
     fun benchRecNcnnAllBuckets() {
-        // ncnn only for all 4 buckets + 3-crop bench — onnxruntime removed for #15
+        // Dynamic-width ncnn (#23) + 3-crop bench — onnxruntime removed for #15
         val appContext = InstrumentationRegistry.getInstrumentation().targetContext
         val h = 48
-        val recNcnnMapField = engine.javaClass.getDeclaredField("recNcnnMap").apply { isAccessible = true }
-        @Suppress("UNCHECKED_CAST")
-        var recNcnnMap = recNcnnMapField.get(engine) as MutableMap<Int, RecNcnn>
+        val recDynField = engine.javaClass.getDeclaredField("recDynNcnn").apply { isAccessible = true }
+        var recNcnn = recDynField.get(engine) as RecNcnn?
+        if (recNcnn == null) {
+            recNcnn = RecNcnn.create(appContext)
+            assertNotNull("RecNcnn dyn failed to create", recNcnn)
+            recDynField.set(engine, recNcnn)
+        }
 
-        for (w in listOf(64, 128, 256, 480)) {
+        for (w in listOf(64, 200, 480)) {
             val seqLen = w / 8
             val inputFloats = FloatArray(3 * h * w) { ((it * 37) % 255) / 128f - 1f }
-            var recNcnn = recNcnnMap[w]
-            if (recNcnn == null) {
-                recNcnn = RecNcnn.create(appContext, w)
-                assertNotNull("RecNcnn w$w failed to create", recNcnn)
-                recNcnnMap[w] = recNcnn!!
-                recNcnnMapField.set(engine, recNcnnMap)
-            }
             val ncnnTimes = mutableListOf<Long>()
             var ncnnOutSize = 0
             repeat(5) {

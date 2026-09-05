@@ -7,8 +7,8 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 /**
- * ncnn Rec wrapper — all buckets w64/128/256/480 for #13 (w64 for #12).
- * Loads 179-layer pnnx→ncnn 10.56 MB bin per bucket via JNI.
+ * ncnn Rec wrapper — single dynamic-width model rec_dyn (#23, was 4 buckets w64/128/256/480).
+ * Loads 179-layer pnnx→ncnn 5.2 MB INT8 bin via JNI; exact-width inference (mult of 8).
  */
 class RecNcnn private constructor(private val handle: Long, val targetW: Int) {
 
@@ -56,8 +56,9 @@ class RecNcnn private constructor(private val handle: Long, val targetW: Int) {
             ensureLoaded()
             val cache = File(context.cacheDir, "ncnn")
             cache.mkdirs()
-            val paramName = "rec_w${targetW}.param"
-            val binName = "rec_w${targetW}.bin"
+            // Single dynamic-width model (#23) — targetW only sizes seqLen/buffers now.
+            val paramName = "rec_dyn.param"
+            val binName = "rec_dyn.bin"
             val paramFile = File(cache, paramName)
             val binFile = File(cache, binName)
             try {

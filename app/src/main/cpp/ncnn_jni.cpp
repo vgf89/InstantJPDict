@@ -125,9 +125,9 @@ Java_com_holopengin_instantjpdict_RecNcnn_inferNative(JNIEnv *env, jclass, jlong
     // ncnn Mat for that would be w=18710, h=seqLen, c=1 or w=seqLen, h=18710?
     // Need to handle both. Log dims.
     LOGI("ncnn out dims=%d w=%d h=%d c=%d total=%d", out.dims, out.w, out.h, out.c, (int)out.total());
-    // For w64: seq=8, classes=18710 -> expect out.w=18710, out.h=8, out.c=1 (or transposed)
-    // We'll copy as flat float array seqLen * 18710 in row-major seqLen x classes
-    int seqLen = rec->seqLen;
+    // Dynamic width (#23): sequence length comes from the ACTUAL input width, not the
+    // create-time targetW. Kotlin always passes a multiple of 8 (zero-padded exact width).
+    int seqLen = w / 8;
     int numClasses = 18710;
     // Allocate output float array
     jfloatArray jout = env->NewFloatArray(seqLen * numClasses);

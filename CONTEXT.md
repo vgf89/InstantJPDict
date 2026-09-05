@@ -21,11 +21,11 @@ Per-character `JpDictRect` derived from CTC `charCols` (`(t+0.5)*avgColW`) via `
 _Avoid_: glyph box, character rect
 
 **Crop**:
-`Bitmap` slice per `JpDictRect` fed to rec (`48×W` after resize, `W` from `Bucket`).
+`Bitmap` slice per `JpDictRect` fed to rec (`48×W` after resize, exact `W`, padded to mult-of-8).
 _Avoid_: patch, snippet, ROI
 
 **Bucket**:
-Static rec width `64/128/256/480` (`48×W`, stride `8`, `seqLen=W/8`).
+Legacy static rec widths `64/128/256/480` — removed in #23. Rec is one dynamic-width model (`rec_dyn`, exact `W`, stride `8`, `seqLen=W/8`).
 _Avoid_: width bucket, bin, size variant
 
 **Vocab**:
@@ -37,7 +37,7 @@ Argmax per timestep (`18710`), skip `blank 0`, collapse repeats, `GAP_CHAR` hand
 _Avoid_: CTC decode, beam search
 
 **OcrEngine**:
-`app/src/main/java/com/holopengin/instantjpdict/OcrEngine.kt` facade — `detect` (LiteRT/ncnn) + `recognizeStreaming` (ORT/ncnn `4` buckets) + `computeCharBoxes`.
+`app/src/main/java/com/holopengin/instantjpdict/OcrEngine.kt` facade — `detect` (ncnn) + `recognizeStreaming` (dynamic-width ncnn rec) + `computeCharBoxes`.
 _Avoid_: OCR engine, recognizer, detector
 
 **JpDictRect**:

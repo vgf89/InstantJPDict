@@ -34,13 +34,8 @@ class OcrEngine(private val context: Context) {
 
     // PP-OCRv6 recognition models — ncnn only for #15 (onnxruntime removed)
     private var ppocrVocab: List<String> = emptyList()
-    // ncnn buckets w64/128/256/480 — map for O(1) bucket switch W/8→seq
-    private val recNcnnMap = mutableMapOf<Int, RecNcnn>()
-    // compat for #12 benchRecNcnnW64 reflection (maps to 64)
-    @Suppress("unused")
-    private var recNcnnW64: RecNcnn?
-        get() = recNcnnMap[64]
-        set(v) { if (v != null) recNcnnMap[64] = v else recNcnnMap.remove(64) }
+    // Single dynamic-width rec model (#23) — exact-width inference, no buckets.
+    private var recDynNcnn: RecNcnn? = null
 
     companion object {
         private const val TAG = "PPOCREngine"
@@ -153,19 +148,13 @@ class OcrEngine(private val context: Context) {
                 Log.e(TAG, "DetNcnn failed", e)
             }
 
-            // ── Load PP-OCRv6 recognition models — ncnn only (onnxruntime removed) ──
-            for (w in listOf(64, 128, 256, 480)) {
-                try {
-                    val ncnn = RecNcnn.create(context, w)
-                    if (ncnn != null) {
-                        recNcnnMap[w] = ncnn
-                        Log.d(TAG, "RecNcnn w$w loaded: $ncnn")
-                    }
-                } catch (e: Exception) {
-                    Log.e(TAG, "RecNcnn w$w failed", e)
-                }
+            // ── Load PP-OCRv6 recognition model — single dynamic-width ncnn (#23) ──
+            try {
+                recDynNcnn = RecNcnn.create(context)
+                Log.d(TAG, "RecNcnn dyn loaded: $recDynNcnn")
+            } catch (e: Exception) {
+                Log.e(TAG, "RecNcnn dyn failed", e)
             }
-            Log.d(TAG, "RecNcnn buckets loaded: ${recNcnnMap.keys}")
 
             // ── Load vocabulary — now from PP-OCRv6_small_ncnn (was PP-OCRv6_small_rec_onnx) ──
             val vocabJson = context.assets.open("PP-OCRv6_small_ncnn/vocab.json")
@@ -184,7 +173,7 @@ class OcrEngine(private val context: Context) {
     }
 
     fun isReady(): Boolean =
-        detNcnn != null && recNcnnMap.isNotEmpty() && ppocrVocab.isNotEmpty()
+        detNcnn != null && recDynNcnn != null && ppocrVocab.isNotEmpty()
 
     // ═════════════════════════════════════════════════════════════════════════
     //  PP-OCRv6 DETECTION (DB segmentation → contours → bounding boxes)
@@ -505,7 +494,7 @@ class OcrEngine(private val context: Context) {
     )
 
     /**
-     * Run PP-OCRv6 CTC recognition via ncnn buckets (no onnxruntime).
+     * Run PP-OCRv6 CTC recognition via dynamic-width ncnn (no onnxruntime).
      * Cooperative cancellation: checks coroutineContext.isActive.
      */
     private suspend fun recognizePpocrBatch(
@@ -514,10 +503,10 @@ class OcrEngine(private val context: Context) {
     ): List<PPOcrResult> {
         coroutineContext.ensureActive()
         val numCrops = crops.size
-        if (numCrops == 0 || ppocrVocab.isEmpty() || recNcnnMap.isEmpty()) return emptyList()
+        if (numCrops == 0 || ppocrVocab.isEmpty() || recDynNcnn == null) return emptyList()
 
         val targetH = REC_TARGET_H
-        val modelWidths = recNcnnMap.keys.sorted()
+        val recNcnn = recDynNcnn!!
 
         val ordered = arrayOfNulls<PPOcrResult>(numCrops)
         coroutineScope {
@@ -536,15 +525,15 @@ class OcrEngine(private val context: Context) {
             val rw = rotated.width; val rh = rotated.height
             // ——— Long-line split for >640px (rw*48/rh>640) — PP-OCR 48×480 crush fix ———
             // Very long lines (e.g. 976×39 → 1201→480, 1003×45→1070) crush timesteps.
-            // Split into overlapping w480 chunks (10% fallback overlap) via w480 bucket, then stitch.
+            // Split into overlapping exact-width chunks (10% fallback overlap), then stitch.
             // Threshold 640 to avoid over-splitting 675×58→558→480 while fixing 726×50→696.
             val isLongHoriz = rw >= rh * 3 / 2 && (rw.toFloat() * targetH / rh.toFloat() > 640)
             val isLongVert = rh >= rw * 3 / 2 && (rh.toFloat() * targetH / rw.toFloat() > 640)
             if (isLongHoriz || isLongVert) {
                 val stitched = if (isLongHoriz) {
-                    recognizeAndStitchLongHoriz(rotated, targetH, modelWidths)
+                    recognizeAndStitchLongHoriz(rotated, targetH)
                 } else {
-                    recognizeAndStitchLongVert(rotated, targetH, modelWidths)
+                    recognizeAndStitchLongVert(rotated, targetH)
                 }
                 if (stitched != null) {
                     if (rotated !== crop) rotated.recycle()
@@ -552,13 +541,15 @@ class OcrEngine(private val context: Context) {
                 }
                 Log.w(TAG, "long-line stitch failed rw=$rw rh=$rh — falling through to crush")
             }
-            val targetW = maxOf(4, minOf(modelWidths.last(),
+            // Dynamic width (#23): exact targetW (capped at 480 like the old w480 bucket),
+            // model width rounded up to a multiple of 8 with zero padding (≤7px waste).
+            val targetW = maxOf(4, minOf(480,
                 (rw.toFloat() * targetH / rh.toFloat()).roundToInt()
             ))
             val resized = Bitmap.createScaledBitmap(rotated, targetW, targetH, true)
             if (rotated !== crop) rotated.recycle()
 
-            val modelW = modelWidths.first { it >= targetW }
+            val modelW = ((targetW + 7) / 8) * 8
 
             val pixels = IntArray(targetW * targetH)
             resized.getPixels(pixels, 0, targetW, 0, 0, targetW, targetH)
@@ -577,14 +568,9 @@ class OcrEngine(private val context: Context) {
             }
 
             val seqLen = modelW / 8
-            val recNcnn = recNcnnMap[modelW]
-            if (recNcnn == null) {
-                Log.e(TAG, "recNcnn w$modelW missing — skip crop")
-                return@async null
-            }
             val flatOutput: FloatArray = recNcnn.infer(inputFloats, modelW, targetH)
                 ?: run {
-                    Log.e(TAG, "recNcnn w$modelW infer failed — skip crop")
+                    Log.e(TAG, "recDynNcnn w$modelW infer failed — skip crop")
                     return@async null
                 }
             if (flatOutput.size != seqLen * REC_NUM_CLASSES) {
@@ -636,7 +622,7 @@ class OcrEngine(private val context: Context) {
 
     // ——— Long-line split helpers — PP-OCR 48×960 crush fix ———
     // Very long horizontal >960px (976×39 → 1201) and vertical >960px crush timesteps.
-    // Split into overlapping w480 chunks (10% fallback overlap) via largest fitting bucket, then stitch.
+    // Split into overlapping exact-width chunks (10% fallback overlap), then stitch.
     // Port of meiki b3babc7^ OcrEngine.kt 709: REC_WIDTH 960/32, maxChunkWidth 960/scale,
     // anchor second-to-last char localXLeft/nextX 0.8 + stitchHorizontalChunks centerX distance 30
     // + predictionScore 0.4 + interleaveAlternatives, scaled to PP-OCR 48×480 correctly.
@@ -653,9 +639,10 @@ class OcrEngine(private val context: Context) {
     )
 
     private suspend fun recognizeAndStitchLongHoriz(
-        rotated: Bitmap, targetH: Int, modelWidths: List<Int>
+        rotated: Bitmap, targetH: Int
     ): PPOcrResult? {
         coroutineContext.ensureActive()
+        val recNcnn = recDynNcnn ?: return null
         val rw = rotated.width; val rh = rotated.height
         val scale = targetH.toFloat() / rh.toFloat()
         val maxChunkW = (480 / scale).toInt().coerceAtLeast(64)
@@ -673,7 +660,7 @@ class OcrEngine(private val context: Context) {
             val cw = chunkBmp.width; val ch = chunkBmp.height
             // preserve aspect w → targetW via cw*48/rh, not stretch; cap at 480, dynamic width
             val targetW = minOf(480, (cw.toFloat() * targetH / ch.toFloat()).roundToInt().coerceAtLeast(4))
-            val modelW = modelWidths.firstOrNull { it >= targetW } ?: modelWidths.last()
+            val modelW = ((targetW + 7) / 8) * 8
             val resized = Bitmap.createScaledBitmap(chunkBmp, targetW, targetH, true)
             val pixels = IntArray(targetW * targetH)
             resized.getPixels(pixels, 0, targetW, 0, 0, targetW, targetH)
@@ -690,7 +677,6 @@ class OcrEngine(private val context: Context) {
                 }
             }
             val seqLen = modelW / 8
-            val recNcnn = recNcnnMap[modelW] ?: run { Log.e(TAG, "recNcnn $modelW missing"); return null }
             val flatOutput = recNcnn.infer(inputFloats, modelW, targetH) ?: run { Log.e(TAG, "recNcnn $modelW infer null"); return null }
             val actualSeqLen = maxOf(1, ceil(targetW / REC_STRIDE.toFloat()).toInt())
             val cropLogits: Array<*>? = Array<Any>(actualSeqLen) { t -> FloatArray(REC_NUM_CLASSES) { c -> flatOutput[t * REC_NUM_CLASSES + c] } } as Array<*>
@@ -845,9 +831,10 @@ class OcrEngine(private val context: Context) {
     }
 
     private suspend fun recognizeAndStitchLongVert(
-        rotated: Bitmap, targetH: Int, modelWidths: List<Int>
+        rotated: Bitmap, targetH: Int
     ): PPOcrResult? {
         coroutineContext.ensureActive()
+        val recNcnn = recDynNcnn ?: return null
         val rw = rotated.width; val rh = rotated.height
         val scale = targetH.toFloat() / rw.toFloat()
         val maxChunkH = (480 / scale).toInt().coerceAtLeast(64)
@@ -862,7 +849,7 @@ class OcrEngine(private val context: Context) {
             val chunkBmp = Bitmap.createBitmap(rotated, 0, y, rw, h)
             val cw = chunkBmp.width; val ch = chunkBmp.height
             val targetW = minOf(480, (cw.toFloat() * targetH / ch.toFloat()).roundToInt().coerceAtLeast(4))
-            val modelW = modelWidths.firstOrNull { it >= targetW } ?: modelWidths.last()
+            val modelW = ((targetW + 7) / 8) * 8
             val resized = Bitmap.createScaledBitmap(chunkBmp, targetW, targetH, true)
             val pixels = IntArray(targetW * targetH)
             resized.getPixels(pixels, 0, targetW, 0, 0, targetW, targetH)
@@ -873,7 +860,6 @@ class OcrEngine(private val context: Context) {
                 inputFloats[cOff + yy * modelW + xx] = gray / 127.5f - 1f
             }}
             val seqLen = modelW/8
-            val recNcnn = recNcnnMap[modelW] ?: run { Log.e(TAG, "recNcnn $modelW missing"); return null }
             val flatOutput = recNcnn.infer(inputFloats, modelW, targetH) ?: run { Log.e(TAG, "recNcnn $modelW infer null"); return null }
             val actualSeqLen = maxOf(1, ceil(targetW/REC_STRIDE.toFloat()).toInt())
             val cropLogits: Array<*>? = Array<Any>(actualSeqLen){ t-> FloatArray(REC_NUM_CLASSES){ c-> flatOutput[t*REC_NUM_CLASSES+c] } } as Array<*>
@@ -1273,7 +1259,7 @@ fun computeCharBoxes(
         onLinesRecognized: (List<Pair<Int, LineResult>>) -> Unit
     ) = coroutineScope {
         val startTime = System.currentTimeMillis()
-        if (recNcnnMap.isEmpty() || ppocrVocab.isEmpty()) return@coroutineScope
+        if (recDynNcnn == null || ppocrVocab.isEmpty()) return@coroutineScope
 
         // Build job queue — no Bitmap yet, create per batch to avoid 65× pin (rank 6)
         data class Job(val idx: Int, val bbox: JpDictRect, val isVertical: Boolean)
@@ -1286,25 +1272,24 @@ fun computeCharBoxes(
 
         Log.d(TAG, "Processing ${jobs.size} boxes in batches of $BATCH_SIZE")
 
-        // Sort by model size needed (largest first: w480 → w64) so heavy lines
-        // start early and each batch sticks to one rec bucket; within a bucket
-        // keep reading order — vertical lines right-to-left, then horizontal
-        // lines top-to-bottom (same comparators as sortDetectedBoxes). #21
-        val modelWidths = recNcnnMap.keys.sorted()
-        fun bucketFor(job: Job): Int {
+        // Sort by exact model width needed (largest first) so heavy lines start early
+        // and same-width lines batch together; within a width keep reading order —
+        // vertical lines right-to-left, then horizontal lines top-to-bottom
+        // (same comparators as sortDetectedBoxes). #21, dynamic widths #23.
+        fun widthFor(job: Job): Int {
             val cw = job.bbox.width(); val ch = job.bbox.height()
-            // Mirror recognizePpocrBatch: 270° rotation swaps dims, long lines go w480.
+            // Mirror recognizePpocrBatch: 270° rotation swaps dims, long lines go max width.
             val rw = if (ch >= cw * 3 / 2) ch else cw
             val rh = if (ch >= cw * 3 / 2) cw else ch
             val isLong = (rw >= rh * 3 / 2 && rw.toFloat() * REC_TARGET_H / rh.toFloat() > 640) ||
                     (rh >= rw * 3 / 2 && rh.toFloat() * REC_TARGET_H / rw.toFloat() > 640)
-            if (isLong) return modelWidths.last()
-            val targetW = maxOf(4, minOf(modelWidths.last(),
+            if (isLong) return 480
+            val targetW = maxOf(4, minOf(480,
                 (rw.toFloat() * REC_TARGET_H / rh.toFloat()).roundToInt()))
-            return modelWidths.first { it >= targetW }
+            return ((targetW + 7) / 8) * 8
         }
         val sortedJobs = jobs.sortedWith(
-            compareByDescending { job: Job -> bucketFor(job) }
+            compareByDescending { job: Job -> widthFor(job) }
                 .thenBy { if (it.isVertical) 0 else 1 }
                 .thenByDescending { if (it.isVertical) it.bbox.right else Int.MIN_VALUE }
                 .thenBy { it.bbox.top }
@@ -1418,7 +1403,7 @@ fun computeCharBoxes(
         oldLine: LineResult,
         crop: Bitmap,
     ): LineResult {
-        if (recNcnnMap.isEmpty()) return oldLine
+        if (recDynNcnn == null) return oldLine
         try {
             val ppocrResults = recognizePpocrBatch(listOf(crop))
             if (ppocrResults.isEmpty()) return oldLine
@@ -1552,7 +1537,7 @@ fun computeCharBoxes(
 
     fun close() {
         try { detNcnn?.close() } catch (_: Exception) {}
-        recNcnnMap.values.forEach { try { it.close() } catch (_: Exception) {} }
+        try { recDynNcnn?.close() } catch (_: Exception) {}
     }
 }
 

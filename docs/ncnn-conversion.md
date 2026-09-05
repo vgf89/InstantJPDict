@@ -134,5 +134,12 @@ Do not re-add `*.onnx`/`*.pdiparams`/`*.tflite` to `app/src/main/assets/PP-OCRv6
 - **Tried, no recovery**: int8 thresh sweep `0.3→0.05` (IoU flat/down); mixed build with 8 FPN-tail layers FP16 (`convrelu_15/122/124/16/126/17/127/18` rows deleted — backbone noise dominates, mask-agree unchanged `98.397%` vs `98.386%`); screenshots-only recalibration (13×`960x544`, strictly worse: IoU `0.45`). Deconvolution head layers are never quantized by `ncnn2int8` (not in table) — the damage is distributed backbone noise amplified by sigmoid thresholding, unlike CTC-argmax rec which tolerates it.
 - **Verdict**: keep det FP16 (`4.8 MB`). Principled follow-up is per-layer sensitivity → targeted exclusions, not global KL. Device A/B + APK delta not run (nothing shippable to bench).
 
+### Dynamic rec width — buckets deleted (#23, shipped)
+
+- **What**: one model `rec_dyn.param/.bin` (renamed `rec_w480` INT8 bin + 16-line param surgery: `flatten_138 0=-1`, gemms drop `7=M`, reshape seq slots → `-1`; Reshape/Gemm resolve runtime shapes from the input blob). `rec_w{64,128,256}` deleted — assets dir `26 → 10 MB`.
+- **Parity** (host): bit-exact at native w480; vs FP16 — w64 70%/0.310, w128 80%/0.106, w256 90%/0.023, w480 93.3%/0.007 — ties-or-beats the per-bucket bins at every width. Off-bucket W=200 runs crash-free, correct 25-step geometry.
+- **Speed** (Pixel 7a, interleaved same-session): per-bucket min+median identical static-vs-dynamic (10/10, 19/19, 37/38, 70/71ms) — zero cost.
+- **Runtime**: exact targetW (cap 480 as before), modelW rounded up to mult-of-8 (≤7px pad vs ≤380px bucket waste); single `RecNcnn` handle; JNI output sized from actual input `w/8` (was create-time `seqLen`); sort key is exact model width (longest-first + same-width batches); chunk path unchanged (640px crush is model capacity, not buckets).
+
 ---
 *penned by opencode2 + muse-spark-1.3-contributor*
