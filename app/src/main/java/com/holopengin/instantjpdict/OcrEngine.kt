@@ -1238,11 +1238,30 @@ fun computeCharBoxes(
 
         Log.d(TAG, "Processing ${jobs.size} boxes in batches of $BATCH_SIZE")
 
-        // Sort by effective width so similar-sized lines batch together,
-        // minimising padding waste in the recognition model.
-        val sortedJobs = jobs.sortedBy { job ->
-            if (job.isVertical) job.bbox.height() else job.bbox.width()
+        // Sort by model size needed (largest first: w480 → w64) so heavy lines
+        // start early and each batch sticks to one rec bucket; within a bucket
+        // keep reading order — vertical lines right-to-left, then horizontal
+        // lines top-to-bottom (same comparators as sortDetectedBoxes). #21
+        val modelWidths = recNcnnMap.keys.sorted()
+        fun bucketFor(job: Job): Int {
+            val cw = job.bbox.width(); val ch = job.bbox.height()
+            // Mirror recognizePpocrBatch: 270° rotation swaps dims, long lines go w480.
+            val rw = if (ch >= cw * 3 / 2) ch else cw
+            val rh = if (ch >= cw * 3 / 2) cw else ch
+            val isLong = (rw >= rh * 3 / 2 && rw.toFloat() * REC_TARGET_H / rh.toFloat() > 640) ||
+                    (rh >= rw * 3 / 2 && rh.toFloat() * REC_TARGET_H / rw.toFloat() > 640)
+            if (isLong) return modelWidths.last()
+            val targetW = maxOf(4, minOf(modelWidths.last(),
+                (rw.toFloat() * REC_TARGET_H / rh.toFloat()).roundToInt()))
+            return modelWidths.first { it >= targetW }
         }
+        val sortedJobs = jobs.sortedWith(
+            compareByDescending { job: Job -> bucketFor(job) }
+                .thenBy { if (it.isVertical) 0 else 1 }
+                .thenByDescending { if (it.isVertical) it.bbox.right else Int.MIN_VALUE }
+                .thenBy { it.bbox.top }
+                .thenBy { if (it.isVertical) 0 else it.bbox.left }
+        )
 
         val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
