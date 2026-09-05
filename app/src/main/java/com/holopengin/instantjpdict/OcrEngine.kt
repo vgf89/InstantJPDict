@@ -84,6 +84,33 @@ class OcrEngine(private val context: Context) {
         private const val BATCH_SIZE = 4
         private const val REC_STRIDE = 8
 	const val GAP_CHAR = '\u25CC'
+
+        // Precomputed pixel math — bit-identical to the replaced float expressions
+        // (verified over 2M random pixels in float32: same mults, same add order). #20
+        // GRAY_LUT: per-channel 0.299/0.587/0.114 contributions; gray = R+G+B slots.
+        private val GRAY_LUT: FloatArray = FloatArray(768) { i ->
+            val v = (i % 256).toFloat()
+            when (i / 256) { 0 -> v * 0.299f; 1 -> v * 0.587f; else -> v * 0.114f }
+        }
+        // DET_NORM_LUT: per-channel ImageNet (v/255-mean)/std for det NCHW input.
+        private val DET_NORM_LUT: FloatArray = FloatArray(768) { i ->
+            val v = (i % 256).toFloat() / 255f
+            when (i / 256) {
+                0 -> (v - 0.485f) / 0.229f
+                1 -> (v - 0.456f) / 0.224f
+                else -> (v - 0.406f) / 0.225f
+            }
+        }
+
+        /** Gray contribution sum for one pixel — replaces R*0.299+G*0.587+B*0.114. #20 */
+        private fun grayLUT(r: Int, g: Int, b: Int): Float = GRAY_LUT[r] + GRAY_LUT[256 + g] + GRAY_LUT[512 + b]
+
+        // Pooled det buffers — same ThreadLocal pattern as RecNcnn.tlBuffer. detect()
+        // repaints the letterbox fully (opaque gray drawColor) and overwrites both
+        // arrays end-to-end every call, so reuse is stale-safe. modelSize is fixed 960. #20
+        private val tlDetImgData = ThreadLocal<FloatArray>()
+        private val tlDetPixels = ThreadLocal<IntArray>()
+        private val tlDetLetterbox = ThreadLocal<android.graphics.Bitmap>()
     }
 
     // ——— Tunable getters (live SharedPreferences, defaults from companion) ———
@@ -178,8 +205,11 @@ class OcrEngine(private val context: Context) {
 
         val resized = Bitmap.createScaledBitmap(bitmap, resizeW, resizeH, true)
 
-        // Letterbox to modelSize × modelSize (gray padding)
-        val letterbox = Bitmap.createBitmap(modelSize, modelSize, Bitmap.Config.ARGB_8888)
+        // Letterbox to modelSize × modelSize (pooled — fully repainted below, never recycled) #20
+        val letterbox = tlDetLetterbox.get()
+            ?.takeIf { !it.isRecycled && it.width == modelSize && it.height == modelSize }
+            ?: android.graphics.Bitmap.createBitmap(modelSize, modelSize, android.graphics.Bitmap.Config.ARGB_8888)
+                .also { tlDetLetterbox.set(it) }
         val canvas = android.graphics.Canvas(letterbox)
         canvas.drawColor(Color.rgb(128, 128, 128))
         canvas.drawBitmap(resized, (modelSize - resizeW) / 2f, (modelSize - resizeH) / 2f, null)
@@ -187,25 +217,27 @@ class OcrEngine(private val context: Context) {
         resized.recycle()
 
         // 2. Build NCHW input with ImageNet normalisation for ncnn [3,960,960] — bulk getPixels (was 921k getPixel JNI)
-        val mean = floatArrayOf(0.485f, 0.456f, 0.406f)
-        val std = floatArrayOf(0.229f, 0.224f, 0.225f)
-        val imgData = FloatArray(3 * modelSize * modelSize)
-        val pixels = IntArray(modelSize * modelSize)
+        // Buffers pooled ThreadLocal (same pattern as RecNcnn.tlBuffer); fully overwritten below. #20
+        val needFloats = 3 * modelSize * modelSize
+        val imgData: FloatArray = tlDetImgData.get()?.takeIf { it.size >= needFloats }
+            ?: FloatArray(needFloats).also { tlDetImgData.set(it) }
+        val needInts = modelSize * modelSize
+        val pixels: IntArray = tlDetPixels.get()?.takeIf { it.size >= needInts }
+            ?: IntArray(needInts).also { tlDetPixels.set(it) }
         letterbox.getPixels(pixels, 0, modelSize, 0, 0, modelSize, modelSize)
         // Single-pass NCHW write — 1 getPixels + 1 loop vs 921k getPixel
         for (y in 0 until modelSize) {
             for (x in 0 until modelSize) {
                 val px = pixels[y * modelSize + x]
-                val r = ((px shr 16 and 0xFF) / 255f - mean[0]) / std[0]
-                val g = ((px shr 8 and 0xFF) / 255f - mean[1]) / std[1]
-                val b = ((px and 0xFF) / 255f - mean[2]) / std[2]
+                val r = DET_NORM_LUT[px shr 16 and 0xFF]
+                val g = DET_NORM_LUT[256 + (px shr 8 and 0xFF)]
+                val b = DET_NORM_LUT[512 + (px and 0xFF)]
                 val base = y * modelSize + x
                 imgData[base] = r
                 imgData[modelSize * modelSize + base] = g
                 imgData[2 * modelSize * modelSize + base] = b
             }
         }
-        letterbox.recycle()
 
         // 3. Run detection via ncnn — no LiteRT fallback
         val probArr = det.infer(imgData, modelSize, modelSize) ?: return emptyList()
@@ -535,9 +567,7 @@ class OcrEngine(private val context: Context) {
                 for (y in 0 until targetH) {
                     for (x in 0 until targetW) {
                         val px = pixels[y * targetW + x]
-                        val gray = ((px shr 16 and 0xFF) * 0.299f +
-                                    (px shr 8 and 0xFF) * 0.587f +
-                                    (px and 0xFF) * 0.114f)
+                        val gray = grayLUT(px shr 16 and 0xFF, px shr 8 and 0xFF, px and 0xFF)
                         inputFloats[cOff + y * modelW + x] = gray / 127.5f - 1f
                     }
                 }
@@ -636,7 +666,7 @@ class OcrEngine(private val context: Context) {
                 val cOff = c * targetH * modelW
                 for (y in 0 until targetH) for (xx in 0 until targetW) {
                     val px = pixels[y * targetW + xx]
-                    val gray = ((px shr 16 and 0xFF) * 0.299f + (px shr 8 and 0xFF) * 0.587f + (px and 0xFF) * 0.114f)
+                    val gray = grayLUT(px shr 16 and 0xFF, px shr 8 and 0xFF, px and 0xFF)
                     // PP-OCR official: (img/255 -0.5)/0.5 = img/127.5 -1
                     inputFloats[cOff + y * modelW + xx] = gray / 127.5f - 1f
                 }
@@ -821,7 +851,7 @@ class OcrEngine(private val context: Context) {
             resized.recycle(); chunkBmp.recycle()
             val inputFloats = FloatArray(1 * 3 * targetH * modelW)
             for (c in 0 until 3) { val cOff = c * targetH * modelW; for (yy in 0 until targetH) for (xx in 0 until targetW) {
-                val px = pixels[yy * targetW + xx]; val gray = ((px shr 16 and 0xFF)*0.299f + (px shr 8 and 0xFF)*0.587f + (px and 0xFF)*0.114f)
+                val px = pixels[yy * targetW + xx]; val gray = grayLUT(px shr 16 and 0xFF, px shr 8 and 0xFF, px and 0xFF)
                 inputFloats[cOff + yy * modelW + xx] = gray / 127.5f - 1f
             }}
             val seqLen = modelW/8

@@ -1076,9 +1076,37 @@ class OcrAccessibilityService : AccessibilityService() {
         return outerContainer
     }
 
+    /** Swap a crop bitmap into an ImageView, recycling the previous crop. All three
+     * preview sites below only ever hold crops created here — never screenshotBitmap —
+     * so the outgoing drawable is always safe to recycle. #20 */
+    private fun setCropBitmap(view: android.widget.ImageView, crop: android.graphics.Bitmap?) {
+        val old = (view.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap
+        if (old === crop) return
+        view.setImageBitmap(crop)
+        if (old != null && !old.isRecycled) {
+            try { old.recycle() } catch (_: Exception) {}
+        }
+    }
+
+    /** Recycle crop bitmaps held by ImageViews under [root] (panel dismiss paths). #20 */
+    private fun recycleCropBitmaps(root: android.view.View) {
+        if (root is android.widget.ImageView) {
+            val b = (root.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap
+            root.setImageDrawable(null)
+            if (b != null && !b.isRecycled) {
+                try { b.recycle() } catch (_: Exception) {}
+            }
+            return
+        }
+        if (root is android.view.ViewGroup) {
+            for (i in 0 until root.childCount) recycleCropBitmaps(root.getChildAt(i))
+        }
+    }
+
     private fun toggleAlternativesPanel(rootLayout: FrameLayout, lIdx: Int, cIdx: Int, isLandscape: Boolean) {
         val container = rootLayout.findViewWithTag<FrameLayout>("alternatives_container") ?: return
         if (container.childCount > 0) { 
+            recycleCropBitmaps(container)
             container.removeAllViews()
             controller.isAlternativesVisible = false
             return 
@@ -1100,7 +1128,7 @@ class OcrAccessibilityService : AccessibilityService() {
                 val padding = (box.height() * 0.2).toInt() // Tightened
                 val cropRect = Rect((box.left - padding).coerceAtLeast(0), (box.top - padding).coerceAtLeast(0), (box.right + padding).coerceAtMost(bitmap.width), (box.bottom + padding).coerceAtMost(bitmap.height))
                 val cropped = Bitmap.createBitmap(bitmap, cropRect.left, cropRect.top, cropRect.width(), cropRect.height())
-                setImageBitmap(cropped)
+                setCropBitmap(this, cropped)
             }
             layoutParams = LinearLayout.LayoutParams(itemSize, itemSize).apply { gravity = Gravity.CENTER; setMargins(2, 2, 2, 2) }
             scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
@@ -1217,7 +1245,7 @@ class OcrAccessibilityService : AccessibilityService() {
             val padding = (box.height() * 0.2).toInt()
             val cropRect = Rect((box.left - padding).coerceAtLeast(0), (box.top - padding).coerceAtLeast(0), (box.right + padding).coerceAtMost(bitmap.width), (box.bottom + padding).coerceAtMost(bitmap.height))
             val cropped = Bitmap.createBitmap(bitmap, cropRect.left, cropRect.top, cropRect.width(), cropRect.height())
-            previewView.setImageBitmap(cropped)
+            setCropBitmap(previewView, cropped)
         }
         
         // Update manual input stub too
@@ -1277,7 +1305,7 @@ class OcrAccessibilityService : AccessibilityService() {
         val cropped = Bitmap.createBitmap(bitmap, cropRect.left, cropRect.top, cropRect.width(), cropRect.height())
         val blocker = FrameLayout(this).apply { tag = "manual_input_blocker"; setBackgroundColor(android.graphics.Color.argb(180, 0, 0, 0)); setOnClickListener { closeManualInput(rootLayout) }; elevation = 200f }
         val panel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(android.graphics.Color.argb(255, 35, 35, 35)); setPadding(60, 60, 60, 60); gravity = Gravity.CENTER_HORIZONTAL; elevation = 201f; setOnClickListener { } }
-        panel.addView(android.widget.ImageView(this).apply { setImageBitmap(cropped); val size = (resources.displayMetrics.density * 120).toInt(); layoutParams = LinearLayout.LayoutParams(size, size); scaleType = android.widget.ImageView.ScaleType.FIT_CENTER })
+        panel.addView(android.widget.ImageView(this).apply { setCropBitmap(this, cropped); val size = (resources.displayMetrics.density * 120).toInt(); layoutParams = LinearLayout.LayoutParams(size, size); scaleType = android.widget.ImageView.ScaleType.FIT_CENTER })
         panel.addView(TextView(this).apply { text = "Enter character manually"; setTextColor(android.graphics.Color.GRAY); textSize = 14f; setPadding(0, 30, 0, 10) })
         val editText = EditText(this).apply { setTextColor(android.graphics.Color.WHITE); textSize = 36f; gravity = Gravity.CENTER; maxLines = 1; imeOptions = EditorInfo.IME_ACTION_DONE; inputType = android.text.InputType.TYPE_CLASS_TEXT; background.setTint(android.graphics.Color.CYAN) }
         panel.addView(editText, LinearLayout.LayoutParams(250, LinearLayout.LayoutParams.WRAP_CONTENT))
@@ -1295,6 +1323,7 @@ class OcrAccessibilityService : AccessibilityService() {
     private fun closeManualInput(rootLayout: FrameLayout) {
         val blocker = rootLayout.findViewWithTag<View>("manual_input_blocker") ?: return
         controller.lastManualInputCloseTime = System.currentTimeMillis()
+        recycleCropBitmaps(blocker)
         rootLayout.removeView(blocker)
         (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(rootLayout.windowToken, 0)
     }

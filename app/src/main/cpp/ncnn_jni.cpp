@@ -28,7 +28,9 @@ Java_com_holopengin_instantjpdict_RecNcnn_create(JNIEnv *env, jclass, jstring pa
     rec->seqLen = targetW / 8;
 
     ncnn::Option opt;
-    opt.num_threads = 4;
+    // Small buckets are memory-bound on Pixel 7a big.LITTLE — 2 threads match 4-thread
+    // speed at lower power; w256/w480 stay on 4. Benchmark via benchRecNcnnAllBuckets. #20
+    opt.num_threads = (targetW <= 128) ? 2 : 4;
     opt.use_fp16_packed = false;
     opt.use_fp16_storage = false;
     opt.use_fp16_arithmetic = false;
@@ -56,10 +58,11 @@ Java_com_holopengin_instantjpdict_RecNcnn_create(JNIEnv *env, jclass, jstring pa
         return 0;
     }
 
+    LOGI("RecNcnn created W=%d seq=%d threads=%d param=%s", targetW, rec->seqLen, opt.num_threads, paramPath);
+
     env->ReleaseStringUTFChars(paramPath_, paramPath);
     env->ReleaseStringUTFChars(binPath_, binPath);
 
-    LOGI("RecNcnn created W=%d seq=%d param=%s", targetW, rec->seqLen, paramPath);
     return (jlong) rec;
 }
 
