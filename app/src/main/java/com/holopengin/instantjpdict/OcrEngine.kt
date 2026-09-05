@@ -81,6 +81,9 @@ class OcrEngine(private val context: Context) {
         // Furigana filter thresholds (#28) — conservative: better to recognize ruby
         // than to drop real small text.
         private const val FURIGANA_SIZE_RATIO = 0.3f    // small long-side < 30% of large long-side
+        private const val FURIGANA_WIDTH_RATIO = 0.65f  // small short-side < 65% of large short-side:
+                                                       // ruby glyphs run smaller; full-width short
+                                                       // lines (か？」) and short columns survive this
         private const val FURIGANA_GAP_RATIO = 0.5f     // gap <= 50% of large short-side
         private const val FURIGANA_OVERLAP_RATIO = 0.5f // overlap >= 50% of small long-side
         private const val VERTICAL_MIN_ASPECT = 1.25f   // h >= 1.25w → vertical; squarer → horizontal
@@ -540,6 +543,7 @@ class OcrEngine(private val context: Context) {
     ): Boolean {
         if (sRaw.height() >= bRaw.height() * FURIGANA_SIZE_RATIO) return false
         if (sRaw.height() >= imgH * FURIGANA_MAX_FRAC) return false
+        if (sUn.width() >= bUn.width() * FURIGANA_WIDTH_RATIO) return false
         val cx = (sRaw.left + sRaw.right) / 2
         if (cx >= bRaw.left && cx <= bRaw.right) return false
         if (gapLen(sUn.left, sUn.right, bUn.left, bUn.right) > bUn.width() * FURIGANA_GAP_RATIO) return false
@@ -553,6 +557,7 @@ class OcrEngine(private val context: Context) {
     ): Boolean {
         if (sRaw.width() >= bRaw.width() * FURIGANA_SIZE_RATIO) return false
         if (sRaw.width() >= imgW * FURIGANA_MAX_FRAC) return false
+        if (sUn.height() >= bUn.height() * FURIGANA_WIDTH_RATIO) return false
         if (sUn.bottom > bUn.top + 2) return false
         if (bUn.top - sUn.bottom > bUn.height() * FURIGANA_GAP_RATIO) return false
         if (overlapLen(sRaw.left, sRaw.right, bRaw.left, bRaw.right) < sRaw.width() * FURIGANA_OVERLAP_RATIO) return false
