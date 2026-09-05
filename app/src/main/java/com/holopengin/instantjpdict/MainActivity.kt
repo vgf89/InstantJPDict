@@ -164,8 +164,9 @@ class MainActivity : AppCompatActivity() {
             val longSide = OcrEngine.DEF_DET_LONG_SIDE
             val xOver = prefs.getFloat(OcrEngine.PREF_X_OVERLAP, OcrEngine.DEF_X_OVERLAP)
             val recConf = prefs.getFloat(OcrEngine.PREF_REC_CONF, OcrEngine.DEF_REC_CONF)
+            val squish = prefs.getFloat(OcrEngine.PREF_REC_SQUISH, OcrEngine.DEF_REC_SQUISH)
             val backend = prefs.getString(OcrEngine.PREF_BACKEND, "onnx") ?: "onnx"
-            val line = "live: backend=$backend detThresh=${String.format("%.2f", thresh)} unclip=${String.format("%.2f", unclip)} longSide=$longSide xOver=${String.format("%.2f", xOver)} recConf=${String.format("%.2f", recConf)}"
+            val line = "live: backend=$backend detThresh=${String.format("%.2f", thresh)} unclip=${String.format("%.2f", unclip)} longSide=$longSide xOver=${String.format("%.2f", xOver)} recConf=${String.format("%.2f", recConf)} squish=${String.format("%.1f", squish)}"
             liveSummary.text = line
         }
         refreshLiveSummary()
@@ -344,6 +345,7 @@ class MainActivity : AppCompatActivity() {
         addTunable("PPOCR_DET_UNCLIP_RATIO", OcrEngine.PREF_DET_UNCLIP, OcrEngine.DEF_DET_UNCLIP, 0.5f, 3.0f, 0.01f, false)
         addTunable("X_OVERLAP_THRESHOLD", OcrEngine.PREF_X_OVERLAP, OcrEngine.DEF_X_OVERLAP, 0.0f, 1.0f, 0.01f, false)
         addTunable("REC_CONFIDENCE_THRESHOLD", OcrEngine.PREF_REC_CONF, OcrEngine.DEF_REC_CONF, 0.0f, 0.50f, 0.01f, false)
+        addTunable("REC_SQUISH_FACTOR", OcrEngine.PREF_REC_SQUISH, OcrEngine.DEF_REC_SQUISH, 0.2f, 1.0f, 0.1f, false)
 
         addButton(tuningContainer, "Reset all tuning to defaults") {
             prefs.edit()
@@ -352,6 +354,7 @@ class MainActivity : AppCompatActivity() {
                 .putInt(OcrEngine.PREF_DET_LONG_SIDE, OcrEngine.DEF_DET_LONG_SIDE)
                 .putFloat(OcrEngine.PREF_X_OVERLAP, OcrEngine.DEF_X_OVERLAP)
                 .putFloat(OcrEngine.PREF_REC_CONF, OcrEngine.DEF_REC_CONF)
+                .putFloat(OcrEngine.PREF_REC_SQUISH, OcrEngine.DEF_REC_SQUISH)
                 .apply()
             Toast.makeText(this, "All tuning reset to defaults — reopen screen to refresh", Toast.LENGTH_LONG).show()
             Log.i("MainActivity", "all tuning reset to defaults")

@@ -48,6 +48,7 @@ class OcrEngine(private val context: Context) {
         const val PREF_DET_LONG_SIDE = "ppocr_det_long_side"
         const val PREF_X_OVERLAP = "x_overlap_thresh"
         const val PREF_REC_CONF = "rec_confidence_thresh"
+        const val PREF_REC_SQUISH = "rec_squish_factor"
 
         // Defaults (previous hard constants)
         const val DEF_DET_LONG_SIDE = 960
@@ -55,6 +56,7 @@ class OcrEngine(private val context: Context) {
         const val DEF_DET_UNCLIP = 1.50f
         const val DEF_X_OVERLAP = 0.40f
         const val DEF_REC_CONF = 0.1f
+        const val DEF_REC_SQUISH = 0.5f
 
         // Legacy aliases — keep source compatibility for old const refs
         const val PPOCR_DET_LONG_SIDE = DEF_DET_LONG_SIDE
@@ -73,16 +75,17 @@ class OcrEngine(private val context: Context) {
             ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getFloat(PREF_X_OVERLAP, DEF_X_OVERLAP)
         fun getRecConf(ctx: Context): Float =
             ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getFloat(PREF_REC_CONF, DEF_REC_CONF)
+        fun getRecSquish(ctx: Context): Float =
+            ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getFloat(PREF_REC_SQUISH, DEF_REC_SQUISH)
 
         // Recognition constants (not tunable)
         private const val REC_TARGET_H = 48
         private const val REC_NUM_CLASSES = 18710  // 0=blank, 1..18708=chars, 18709=space
         private const val BATCH_SIZE = 4
         private const val REC_STRIDE = 8
-        // Lengthwise squish (#24): resample the length axis to 0.5 before inference.
-        // CTC tolerates it — JP prose holds to 0.5 (knee at 0.33), narrow Latin glyphs
-        // are the first casualty (accepted: JP is the target). Halves timesteps.
-        private const val REC_SQUISH = 0.5f
+        // Lengthwise squish (#24): resample the length axis before inference (debug slider
+        // 0.2–1.0, default 0.5). CTC tolerates it — JP prose holds to 0.5 (knee at 0.33),
+        // narrow Latin glyphs are the first casualty (accepted: JP is the target).
 	const val GAP_CHAR = '\u25CC'
 
         // Precomputed pixel math — bit-identical to the replaced float expressions
@@ -102,10 +105,10 @@ class OcrEngine(private val context: Context) {
             }
         }
 
-        /** Squished content width for a target width: 0.5× length, min 8.
+        /** Squished content width for a target width: factor× length, min 8.
          * Model width snaps up to mult-of-8 with zero padding (existing pattern). #24 */
-        private fun squishTarget(targetW: Int): Int =
-            maxOf(8, (targetW * REC_SQUISH).roundToInt())
+        private fun squishTarget(targetW: Int, factor: Float): Int =
+            maxOf(8, (targetW * factor).roundToInt())
 
         /** Gray contribution sum for one pixel — replaces R*0.299+G*0.587+B*0.114. #20 */
         private fun grayLUT(r: Int, g: Int, b: Int): Float = GRAY_LUT[r] + GRAY_LUT[256 + g] + GRAY_LUT[512 + b]
@@ -131,6 +134,9 @@ class OcrEngine(private val context: Context) {
         get() = prefs.getFloat(PREF_X_OVERLAP, DEF_X_OVERLAP)
     val recConfThresh: Float
         get() = prefs.getFloat(PREF_REC_CONF, DEF_REC_CONF)
+    /** Live squish factor from debug slider (0.2–1.0, default 0.5). #24 */
+    val recSquish: Float
+        get() = prefs.getFloat(PREF_REC_SQUISH, DEF_REC_SQUISH).coerceIn(0.2f, 1.0f)
 
     init {
         try {
@@ -556,7 +562,7 @@ class OcrEngine(private val context: Context) {
             val targetW = maxOf(4, minOf(2000,
                 (rw.toFloat() * targetH / rh.toFloat()).roundToInt()
             ))
-            val sqTarget = squishTarget(targetW)
+            val sqTarget = squishTarget(targetW, recSquish)
             val resized = Bitmap.createScaledBitmap(rotated, sqTarget, targetH, true)
             if (rotated !== crop) rotated.recycle()
 
