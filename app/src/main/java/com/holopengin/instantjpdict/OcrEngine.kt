@@ -8,11 +8,12 @@ import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import java.io.File
 import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.selects.select
 import kotlin.coroutines.coroutineContext
 import kotlin.math.abs
 import kotlin.math.ceil
@@ -509,6 +510,7 @@ class OcrEngine(private val context: Context) {
      */
     private suspend fun recognizePpocrBatch(
         crops: List<Bitmap>,
+        onEach: ((index: Int, result: PPOcrResult) -> Unit)? = null,
     ): List<PPOcrResult> {
         coroutineContext.ensureActive()
         val numCrops = crops.size
@@ -517,8 +519,9 @@ class OcrEngine(private val context: Context) {
         val targetH = REC_TARGET_H
         val modelWidths = recNcnnMap.keys.sorted()
 
-        val results = coroutineScope {
-            (0 until numCrops).map { ci ->
+        val ordered = arrayOfNulls<PPOcrResult>(numCrops)
+        coroutineScope {
+            val deferreds = (0 until numCrops).map { ci ->
                 async(Dispatchers.Default) {
                     coroutineContext.ensureActive()
                     val crop = crops[ci]
@@ -611,9 +614,24 @@ class OcrEngine(private val context: Context) {
             val result = ctcDecode(cropLogits, actualSeqLen, REC_NUM_CLASSES, 0f, actualSeqLen)
                     return@async result.copy(rawAlternatives = rawAlts)
                 }
-            }.awaitAll()
-        }.map { it ?: PPOcrResult("", emptyList(), floatArrayOf(), 0) }
-        return results
+            }
+            // Await in completion order so callers can stream per-line results; the
+            // returned list stays index-aligned. onEach fires on the selecting worker. #21
+            val pending = deferreds.mapIndexed { ci, d -> d to ci }.toMap().toMutableMap()
+            while (pending.isNotEmpty()) {
+                coroutineContext.ensureActive()
+                val (done, res) = select<Pair<Deferred<PPOcrResult?>, PPOcrResult?>> {
+                    pending.keys.forEach { d -> d.onAwait { d to it } }
+                }
+                val ci = pending.remove(done) ?: continue
+                val final = res ?: PPOcrResult("", emptyList(), floatArrayOf(), 0)
+                ordered[ci] = final
+                if (res != null) {
+                    try { onEach?.invoke(ci, res) } catch (_: Exception) {}
+                }
+            }
+        }
+        return ordered.map { it ?: PPOcrResult("", emptyList(), floatArrayOf(), 0) }
     }
 
     // ——— Long-line split helpers — PP-OCR 48×960 crush fix ———
@@ -1324,12 +1342,13 @@ fun computeCharBoxes(
                     crops.forEach { try { it.recycle() } catch (_: Exception) {} }
                     break
                 }
-                val ppocrResults = recognizePpocrBatch(crops)
-
-                val batchResults = mutableListOf<Pair<Int, LineResult>>()
-                for ((index, job) in batchJobs.withIndex()) {
-                    val result = ppocrResults.getOrNull(index) ?: continue
-                    if (result.text.isEmpty()) continue
+                // Stream per line as each infer completes (completion order, not batch
+                // order) — same 4-concurrent throughput, faster first result. Results stay
+                // keyed by job idx so overlay placement is unaffected. #21
+                var doneLines = 0
+                recognizePpocrBatch(crops) { index, result ->
+                    val job = batchJobs.getOrNull(index) ?: return@recognizePpocrBatch
+                    if (result.text.isEmpty()) return@recognizePpocrBatch
 
                     val charBoxes = computeCharBoxes(
                         result.text, result.charCols, result.seqLenTotal,
@@ -1362,13 +1381,11 @@ fun computeCharBoxes(
                         cropX = job.bbox.left,
                         cropY = job.bbox.top,
                     )
-                    batchResults.add(job.idx to lineResult)
+                    doneLines++
+                    mainHandler.post { onLinesRecognized(listOf(job.idx to lineResult)) }
                 }
-                if (batchResults.isNotEmpty()) {
-                    val elapsed = (System.nanoTime() - tBatch) / 1_000_000
-                    Log.d(TAG, "Batch $batchIdx ${batchJobs.size} jobs → ${batchResults.size} lines in ${elapsed}ms")
-                    mainHandler.post { onLinesRecognized(batchResults) }
-                }
+                val elapsed = (System.nanoTime() - tBatch) / 1_000_000
+                Log.d(TAG, "Batch $batchIdx ${batchJobs.size} jobs → $doneLines lines in ${elapsed}ms")
                 // Per-batch recycle — was 65× pin to end (13MB), now 4× at a time
                 crops.forEach { try { it.recycle() } catch (_: Exception) {} }
             } catch (e: Exception) {
