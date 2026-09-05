@@ -523,12 +523,13 @@ class OcrEngine(private val context: Context) {
             } else crop
 
             val rw = rotated.width; val rh = rotated.height
-            // ——— Long-line split for >640px (rw*48/rh>640) — PP-OCR 48×480 crush fix ———
-            // Very long lines (e.g. 976×39 → 1201→480, 1003×45→1070) crush timesteps.
+            // ——— Long-line split for extreme aspects (rw*48/rh>2000) — PP-OCR crush fix ———
+            // Exact-width inference validated to aspect ~1992 on tategaki ebook lines (#24);
+            // cap + gate rounded up to an 8-divisible 2000. Very long lines crush timesteps.
             // Split into overlapping exact-width chunks (10% fallback overlap), then stitch.
-            // Threshold 640 to avoid over-splitting 675×58→558→480 while fixing 726×50→696.
-            val isLongHoriz = rw >= rh * 3 / 2 && (rw.toFloat() * targetH / rh.toFloat() > 640)
-            val isLongVert = rh >= rw * 3 / 2 && (rh.toFloat() * targetH / rw.toFloat() > 640)
+            // Threshold 2000 to avoid over-splitting normal lines while fixing extremes.
+            val isLongHoriz = rw >= rh * 3 / 2 && (rw.toFloat() * targetH / rh.toFloat() > 2000)
+            val isLongVert = rh >= rw * 3 / 2 && (rh.toFloat() * targetH / rw.toFloat() > 2000)
             if (isLongHoriz || isLongVert) {
                 val stitched = if (isLongHoriz) {
                     recognizeAndStitchLongHoriz(rotated, targetH)
@@ -541,9 +542,9 @@ class OcrEngine(private val context: Context) {
                 }
                 Log.w(TAG, "long-line stitch failed rw=$rw rh=$rh — falling through to crush")
             }
-            // Dynamic width (#23): exact targetW (capped at 480 like the old w480 bucket),
+            // Dynamic width (#23): exact targetW (capped at 2000, validated #24),
             // model width rounded up to a multiple of 8 with zero padding (≤7px waste).
-            val targetW = maxOf(4, minOf(480,
+            val targetW = maxOf(4, minOf(2000,
                 (rw.toFloat() * targetH / rh.toFloat()).roundToInt()
             ))
             val resized = Bitmap.createScaledBitmap(rotated, targetW, targetH, true)
@@ -1281,10 +1282,10 @@ fun computeCharBoxes(
             // Mirror recognizePpocrBatch: 270° rotation swaps dims, long lines go max width.
             val rw = if (ch >= cw * 3 / 2) ch else cw
             val rh = if (ch >= cw * 3 / 2) cw else ch
-            val isLong = (rw >= rh * 3 / 2 && rw.toFloat() * REC_TARGET_H / rh.toFloat() > 640) ||
-                    (rh >= rw * 3 / 2 && rh.toFloat() * REC_TARGET_H / rw.toFloat() > 640)
-            if (isLong) return 480
-            val targetW = maxOf(4, minOf(480,
+            val isLong = (rw >= rh * 3 / 2 && rw.toFloat() * REC_TARGET_H / rh.toFloat() > 2000) ||
+                    (rh >= rw * 3 / 2 && rh.toFloat() * REC_TARGET_H / rw.toFloat() > 2000)
+            if (isLong) return 2000
+            val targetW = maxOf(4, minOf(2000,
                 (rw.toFloat() * REC_TARGET_H / rh.toFloat()).roundToInt()))
             return ((targetW + 7) / 8) * 8
         }
