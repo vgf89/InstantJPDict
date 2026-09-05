@@ -28,9 +28,11 @@ Java_com_holopengin_instantjpdict_RecNcnn_create(JNIEnv *env, jclass, jstring pa
     rec->seqLen = targetW / 8;
 
     ncnn::Option opt;
-    // Small buckets are memory-bound on Pixel 7a big.LITTLE — 2 threads match 4-thread
-    // speed at lower power; w256/w480 stay on 4. Benchmark via benchRecNcnnAllBuckets. #20
-    opt.num_threads = (targetW <= 128) ? 2 : 4;
+    // Single thread wins on every bucket (Pixel 7a, same-session bracketed micro-bench):
+    // w64 10 vs 65ms, w128 19 vs 99ms, w256 39 vs 129ms, w480 72 vs 235ms.
+    // These narrow seq models are sync-overhead-dominated — extra threads only add
+    // barrier cost (and heat: multi-thread runs drifted up in-session, 1-thread flat). #20
+    opt.num_threads = 1;
     opt.use_fp16_packed = false;
     opt.use_fp16_storage = false;
     opt.use_fp16_arithmetic = false;
