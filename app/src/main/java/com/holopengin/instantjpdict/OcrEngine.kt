@@ -81,6 +81,12 @@ class OcrEngine(private val context: Context) {
         // Furigana filter thresholds (#28) — conservative: better to recognize ruby
         // than to drop real small text.
         private const val FURIGANA_SIZE_RATIO = 0.3f    // small long-side < 30% of large long-side
+        private const val FURIGANA_THIN_RATIO = 0.75f   // horizontal ruby runs long but thin;
+                                                       // measured ~0.65-0.70 of main height here
+                                                       // (vertical ruby stays short-only)
+        private const val FURIGANA_HSHORT_RATIO = 0.85f // horizontal short-side ceiling: thin ruby here
+                                                       // runs ~0.7 of main height; full-height short
+                                                       // lines (≈1.0) must survive
         private const val FURIGANA_WIDTH_RATIO = 0.65f  // small short-side < 65% of large short-side:
                                                        // ruby glyphs run smaller; full-width short
                                                        // lines (か？」) and short columns survive this
@@ -90,6 +96,9 @@ class OcrEngine(private val context: Context) {
         // Absolute ceiling: real short columns (e.g. 458px) dwarf ruby runs even when the
         // ratio matches — ruby longer than 12% of the image side is not ruby. #28
         private const val FURIGANA_MAX_FRAC = 0.12f
+        // Absolute floor on the ANNOTATED box: ruby hugs full-size body text, not compact
+        // blocks (logo boxes, badges). Catches caption strips above logo blocks. #28
+        private const val FURIGANA_BIG_MIN_FRAC = 0.2f
 
         // Recognition constants (not tunable)
         private const val REC_TARGET_H = 48
@@ -541,6 +550,7 @@ class OcrEngine(private val context: Context) {
     private fun isRubyVertical(
         sRaw: JpDictRect, bRaw: JpDictRect, sUn: JpDictRect, bUn: JpDictRect, imgH: Int,
     ): Boolean {
+        if (bRaw.height() < imgH * FURIGANA_BIG_MIN_FRAC) return false
         if (sRaw.height() >= bRaw.height() * FURIGANA_SIZE_RATIO) return false
         if (sRaw.height() >= imgH * FURIGANA_MAX_FRAC) return false
         if (sUn.width() >= bUn.width() * FURIGANA_WIDTH_RATIO) return false
@@ -551,14 +561,20 @@ class OcrEngine(private val context: Context) {
         return true
     }
 
-    /** Tiny horizontal box right above a much larger horizontal box. #28 (same split). */
+    /** Tiny horizontal box right above a much larger horizontal box. #28 (same split).
+     * Either short (width ratio) or thin (full-width ruby readings run long). */
     private fun isRubyHorizontal(
-        sRaw: JpDictRect, bRaw: JpDictRect, sUn: JpDictRect, bUn: JpDictRect, imgW: Int,
+        sRaw: JpDictRect, bRaw: JpDictRect, sUn: JpDictRect, bUn: JpDictRect, imgW: Int, imgH: Int,
     ): Boolean {
-        if (sRaw.width() >= bRaw.width() * FURIGANA_SIZE_RATIO) return false
-        if (sRaw.width() >= imgW * FURIGANA_MAX_FRAC) return false
-        if (sUn.height() >= bUn.height() * FURIGANA_WIDTH_RATIO) return false
-        if (sUn.bottom > bUn.top + 2) return false
+        if (bRaw.width() < imgW * FURIGANA_BIG_MIN_FRAC) return false
+        val shortRun = sRaw.width() < bRaw.width() * FURIGANA_SIZE_RATIO
+        val thinRun = sRaw.height() < bRaw.height() * FURIGANA_THIN_RATIO
+        if (!shortRun && !thinRun) return false
+        if (sRaw.height() >= imgH * FURIGANA_MAX_FRAC) return false
+        if (sUn.height() >= bUn.height() * FURIGANA_HSHORT_RATIO) return false
+        // Above-ness on RAW geometry: unclip grows both boxes toward each other (~18px
+        // mutual encroachment here), flipping genuinely-above ruby to overlapping. #28
+        if (sRaw.bottom > bRaw.top + 2) return false
         if (bUn.top - sUn.bottom > bUn.height() * FURIGANA_GAP_RATIO) return false
         if (overlapLen(sRaw.left, sRaw.right, bRaw.left, bRaw.right) < sRaw.width() * FURIGANA_OVERLAP_RATIO) return false
         return true
@@ -575,7 +591,7 @@ class OcrEngine(private val context: Context) {
             !(raw.indices.any { j ->
                 j != i && (
                     (checkVert && isVerticalBox(raw[j]) && isRubyVertical(raw[i], raw[j], uncl[i], uncl[j], imgH)) ||
-                    (checkHoriz && !isVerticalBox(raw[j]) && isRubyHorizontal(raw[i], raw[j], uncl[i], uncl[j], imgW))
+                    (checkHoriz && !isVerticalBox(raw[j]) && isRubyHorizontal(raw[i], raw[j], uncl[i], uncl[j], imgW, imgH))
                 )
             })
         }
