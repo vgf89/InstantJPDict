@@ -79,6 +79,10 @@ class OcrEngine(private val context: Context) {
         private const val REC_NUM_CLASSES = 18710  // 0=blank, 1..18708=chars, 18709=space
         private const val BATCH_SIZE = 4
         private const val REC_STRIDE = 8
+        // Lengthwise squish (#24): resample the length axis to 0.5 before inference.
+        // CTC tolerates it — JP prose holds to 0.5 (knee at 0.33), narrow Latin glyphs
+        // are the first casualty (accepted: JP is the target). Halves timesteps.
+        private const val REC_SQUISH = 0.5f
 	const val GAP_CHAR = '\u25CC'
 
         // Precomputed pixel math — bit-identical to the replaced float expressions
@@ -97,6 +101,11 @@ class OcrEngine(private val context: Context) {
                 else -> (v - 0.406f) / 0.225f
             }
         }
+
+        /** Squished content width for a target width: 0.5× length, min 8.
+         * Model width snaps up to mult-of-8 with zero padding (existing pattern). #24 */
+        private fun squishTarget(targetW: Int): Int =
+            maxOf(8, (targetW * REC_SQUISH).roundToInt())
 
         /** Gray contribution sum for one pixel — replaces R*0.299+G*0.587+B*0.114. #20 */
         private fun grayLUT(r: Int, g: Int, b: Int): Float = GRAY_LUT[r] + GRAY_LUT[256 + g] + GRAY_LUT[512 + b]
@@ -543,25 +552,26 @@ class OcrEngine(private val context: Context) {
                 Log.w(TAG, "long-line stitch failed rw=$rw rh=$rh — falling through to crush")
             }
             // Dynamic width (#23): exact targetW (capped at 2000, validated #24),
-            // model width rounded up to a multiple of 8 with zero padding (≤7px waste).
+            // then 0.5× squish (#24, JP holds to 0.5); model width snaps to mult-of-8 (≤7px pad).
             val targetW = maxOf(4, minOf(2000,
                 (rw.toFloat() * targetH / rh.toFloat()).roundToInt()
             ))
-            val resized = Bitmap.createScaledBitmap(rotated, targetW, targetH, true)
+            val sqTarget = squishTarget(targetW)
+            val resized = Bitmap.createScaledBitmap(rotated, sqTarget, targetH, true)
             if (rotated !== crop) rotated.recycle()
 
-            val modelW = ((targetW + 7) / 8) * 8
+            val modelW = ((sqTarget + 7) / 8) * 8
 
-            val pixels = IntArray(targetW * targetH)
-            resized.getPixels(pixels, 0, targetW, 0, 0, targetW, targetH)
+            val pixels = IntArray(sqTarget * targetH)
+            resized.getPixels(pixels, 0, sqTarget, 0, 0, sqTarget, targetH)
             resized.recycle()
 
             val inputFloats = FloatArray(1 * 3 * targetH * modelW)
             for (c in 0 until 3) {
                 val cOff = c * targetH * modelW
                 for (y in 0 until targetH) {
-                    for (x in 0 until targetW) {
-                        val px = pixels[y * targetW + x]
+                    for (x in 0 until sqTarget) {
+                        val px = pixels[y * sqTarget + x]
                         val gray = grayLUT(px shr 16 and 0xFF, px shr 8 and 0xFF, px and 0xFF)
                         inputFloats[cOff + y * modelW + x] = gray / 127.5f - 1f
                     }
@@ -580,7 +590,7 @@ class OcrEngine(private val context: Context) {
             }
             Log.d(TAG, "ncnn w$modelW infer ok seq=$seqLen")
 
-            val actualSeqLen = maxOf(1, ceil(targetW / REC_STRIDE.toFloat()).toInt())
+            val actualSeqLen = maxOf(1, ceil(sqTarget / REC_STRIDE.toFloat()).toInt())
             val cropLogits: Array<*>? = Array<Any>(actualSeqLen) { t ->
                 FloatArray(REC_NUM_CLASSES) { c -> flatOutput[t * REC_NUM_CLASSES + c] }
             } as Array<*>
@@ -639,6 +649,8 @@ class OcrEngine(private val context: Context) {
         val offsetY: Int,
     )
 
+    // Stitch chunks stay UNSQUISHED at full resolution: anchor/stitch geometry
+    // (localXLeft, offsetGeomT, totalSeqLen) is all full-res timesteps. #24
     private suspend fun recognizeAndStitchLongHoriz(
         rotated: Bitmap, targetH: Int
     ): PPOcrResult? {
