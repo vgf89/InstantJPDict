@@ -60,8 +60,14 @@ def main():
     assert not re.search(r"=60(\s|$)", text), "postcondition: =60 remains"
     assert re.search(r"flatten_138\s+1 1 \d+ \d+ 0=-1 1=120", text), \
         "postcondition: flatten_138 0=-1 missing"
-    assert n_reshape >= 16, f"postcondition: only {n_reshape} Reshape edits (< 16)"
-    print(f"Reshape edits: {n_reshape}, Gemm 7= drops: {n_gemm}")
+    # 17 dynamic seq slots total (16 Reshape + flatten_138). Older pnnx baked
+    # all 17 as =60 (16 edits here); newer pnnx already emits 103..107 as -1,
+    # leaving 12 edits. Either way the total must be 17.
+    n_dyn = sum(1 for ln in out
+                if ln.split()[:1] == ["Reshape"] and "-1" in ln)
+    assert n_dyn == 17, f"postcondition: {n_dyn} dynamic reshapes (!= 17)"
+    print(f"Reshape edits: {n_reshape} (pre-dynamic: {n_dyn - n_reshape}), "
+          f"Gemm 7= drops: {n_gemm}")
 
     import os
     os.makedirs(args.out_dir, exist_ok=True)
