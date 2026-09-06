@@ -1,0 +1,233 @@
+From 8d190be8c28993725c8cac21d278faec3bc8a130 Mon Sep 17 00:00:00 2001
+From: vgf89 <hardy.kevin.c@gmail.com>
+Date: Thu, 3 Sep 2026 22:37:42 +0900
+Subject: [PATCH 1/2] fix ConvolutionDepthWise int8 load for scale terms
+ 201/202
+
+load_model only handled 1/101 and 2/102, but ncnn2int8 can fuse
+requantize twice for split-fanout consumers, emitting 201/202.
+Unhandled terms left weight scales empty and crashed in
+quantize_to_int8 at load. Handle by residue, mirroring
+Convolution::load_model.
+---
+ src/layer/convolutiondepthwise.cpp | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/src/layer/convolutiondepthwise.cpp b/src/layer/convolutiondepthwise.cpp
+index 66e45f01..1d3e764b 100644
+--- a/src/layer/convolutiondepthwise.cpp
++++ b/src/layer/convolutiondepthwise.cpp
+@@ -79,7 +79,9 @@ int ConvolutionDepthWise::load_model(const ModelBin& mb)
+     }
+ 
+ #if NCNN_INT8
+-    if (int8_scale_term == 1 || int8_scale_term == 101)
++    // NOTE ncnn2int8 may fuse requantize multiple times for split-fanout
++    // consumers, producing 201/202 in addition to 101/102. Handle by residue.
++    if (int8_scale_term % 100 == 1)
+     {
+         weight_data_int8_scales = mb.load(group, 1);
+         bottom_blob_int8_scales = mb.load(1, 1);
+@@ -88,7 +90,7 @@ int ConvolutionDepthWise::load_model(const ModelBin& mb)
+         bottom_blob_int8_scales = Mat(group);
+         bottom_blob_int8_scales.fill(bottom_blob_int8_scale);
+     }
+-    else if (int8_scale_term == 2 || int8_scale_term == 102)
++    else if (int8_scale_term % 100 == 2)
+     {
+         weight_data_int8_scales = mb.load(1, 1);
+         bottom_blob_int8_scales = mb.load(1, 1);
+-- 
+2.55.0
+
+
+From 0c9625b0eab8afc171b8376d26c2921277c0540d Mon Sep 17 00:00:00 2001
+From: vgf89 <hardy.kevin.c@gmail.com>
+Date: Fri, 4 Sep 2026 08:05:18 +0900
+Subject: [PATCH 2/2] fix int8 1x1 conv on flattened 1D blobs (SE branches)
+
+forward_int8 lacks the float path's 1D-compatibility detour: a packed
+1D blob (e.g. 12 groups from a squeeze branch) was misread as 12
+spatial positions, producing wrong output shapes that cascaded into
+downstream crashes. Mirror the float reshape-to-3D-and-recurse logic
+in x86/arm/base forward_int8 so layouts match the float path exactly.
+---
+ src/layer/arm/convolution_arm.cpp | 46 +++++++++++++++++++++++++++++++
+ src/layer/convolution.cpp         | 46 +++++++++++++++++++++++++++++++
+ src/layer/x86/convolution_x86.cpp | 46 +++++++++++++++++++++++++++++++
+ 3 files changed, 138 insertions(+)
+
+diff --git a/src/layer/arm/convolution_arm.cpp b/src/layer/arm/convolution_arm.cpp
+index 5841832c..87653c75 100644
+--- a/src/layer/arm/convolution_arm.cpp
++++ b/src/layer/arm/convolution_arm.cpp
+@@ -1318,6 +1318,52 @@ int Convolution_arm::forward_int8_arm(const Mat& bottom_blob, Mat& top_blob, con
+             return -100;
+     }
+ 
++    // flattened 1D blob (e.g. SE squeeze branches): reshape to 3D and recurse,
++    // mirroring the float 1D-compatibility path in forward(). Without this, pack
++    // groups are misread as spatial width (wrong output shape).
++    if (bottom_blob_int8.dims == 1 && kernel_w == 1 && kernel_h == 1)
++    {
++        Mat bottom_blob_3d;
++        if (bottom_blob_int8.elemsize % 16 == 0)
++        {
++            bottom_blob_3d = bottom_blob_int8;
++            bottom_blob_3d.dims = 3;
++            bottom_blob_3d.w = 1;
++            bottom_blob_3d.h = 1;
++            bottom_blob_3d.c = bottom_blob_int8.w;
++            bottom_blob_3d.cstep = 1;
++        }
++        else
++        {
++            bottom_blob_3d = bottom_blob_int8.reshape(1, 1, bottom_blob_int8.w, opt.workspace_allocator);
++            if (bottom_blob_3d.empty())
++                return -100;
++        }
++
++        Mat top_blob_3d;
++        int ret = forward_int8_arm(bottom_blob_3d, top_blob_3d, opt);
++        if (ret != 0)
++            return ret;
++
++        if (top_blob_3d.elemsize % 16 == 0)
++        {
++            top_blob = top_blob_3d;
++            top_blob.dims = 1;
++            top_blob.w = top_blob_3d.c;
++            top_blob.h = 1;
++            top_blob.c = 1;
++            top_blob.cstep = top_blob_3d.c;
++        }
++        else
++        {
++            top_blob = top_blob_3d.reshape(top_blob_3d.c, opt.blob_allocator);
++            if (top_blob.empty())
++                return -100;
++        }
++
++        return 0;
++    }
++
+     //     NCNN_LOGE("Convolution_arm input %d x %d  ksize=%d %d  stride=%d %d", w, h, kernel_w, kernel_h, stride_w, stride_h);
+ 
+     Mat bottom_blob_bordered;
+diff --git a/src/layer/convolution.cpp b/src/layer/convolution.cpp
+index 4bc02bbe..8e2509e6 100644
+--- a/src/layer/convolution.cpp
++++ b/src/layer/convolution.cpp
+@@ -403,6 +403,52 @@ int Convolution::forward_int8(const Mat& bottom_blob, Mat& top_blob, const Optio
+             return -100;
+     }
+ 
++    // flattened 1D blob (e.g. SE squeeze branches): reshape to 3D and recurse,
++    // mirroring the float 1D-compatibility path in forward(). Without this, pack
++    // groups are misread as spatial width (wrong output shape).
++    if (bottom_blob_unbordered.dims == 1 && kernel_w == 1 && kernel_h == 1)
++    {
++        Mat bottom_blob_3d;
++        if (bottom_blob_unbordered.elemsize % 16 == 0)
++        {
++            bottom_blob_3d = bottom_blob_unbordered;
++            bottom_blob_3d.dims = 3;
++            bottom_blob_3d.w = 1;
++            bottom_blob_3d.h = 1;
++            bottom_blob_3d.c = bottom_blob_unbordered.w;
++            bottom_blob_3d.cstep = 1;
++        }
++        else
++        {
++            bottom_blob_3d = bottom_blob_unbordered.reshape(1, 1, bottom_blob_unbordered.w, opt.workspace_allocator);
++            if (bottom_blob_3d.empty())
++                return -100;
++        }
++
++        Mat top_blob_3d;
++        int ret = forward_int8(bottom_blob_3d, top_blob_3d, opt);
++        if (ret != 0)
++            return ret;
++
++        if (top_blob_3d.elemsize % 16 == 0)
++        {
++            top_blob = top_blob_3d;
++            top_blob.dims = 1;
++            top_blob.w = top_blob_3d.c;
++            top_blob.h = 1;
++            top_blob.c = 1;
++            top_blob.cstep = top_blob_3d.c;
++        }
++        else
++        {
++            top_blob = top_blob_3d.reshape(top_blob_3d.c, opt.blob_allocator);
++            if (top_blob.empty())
++                return -100;
++        }
++
++        return 0;
++    }
++
+     Mat bottom_blob_bordered;
+     make_padding(bottom_blob_unbordered, bottom_blob_bordered, opt);
+     if (bottom_blob_bordered.empty())
+diff --git a/src/layer/x86/convolution_x86.cpp b/src/layer/x86/convolution_x86.cpp
+index 3e38eb39..d0a6cc3b 100644
+--- a/src/layer/x86/convolution_x86.cpp
++++ b/src/layer/x86/convolution_x86.cpp
+@@ -1006,6 +1006,52 @@ int Convolution_x86::forward_int8_x86(const Mat& bottom_blob, Mat& top_blob, con
+             return -100;
+     }
+ 
++    // flattened 1D blob (e.g. SE squeeze branches): reshape to 3D and recurse,
++    // mirroring the float 1D-compatibility path below. Without this, pack groups
++    // are misread as spatial width (wrong output shape).
++    if (bottom_blob_int8.dims == 1 && kernel_w == 1 && kernel_h == 1)
++    {
++        Mat bottom_blob_3d;
++        if (bottom_blob_int8.elemsize % 16 == 0)
++        {
++            bottom_blob_3d = bottom_blob_int8;
++            bottom_blob_3d.dims = 3;
++            bottom_blob_3d.w = 1;
++            bottom_blob_3d.h = 1;
++            bottom_blob_3d.c = bottom_blob_int8.w;
++            bottom_blob_3d.cstep = 1;
++        }
++        else
++        {
++            bottom_blob_3d = bottom_blob_int8.reshape(1, 1, bottom_blob_int8.w, opt.workspace_allocator);
++            if (bottom_blob_3d.empty())
++                return -100;
++        }
++
++        Mat top_blob_3d;
++        int ret = forward_int8_x86(bottom_blob_3d, top_blob_3d, opt);
++        if (ret != 0)
++            return ret;
++
++        if (top_blob_3d.elemsize % 16 == 0)
++        {
++            top_blob = top_blob_3d;
++            top_blob.dims = 1;
++            top_blob.w = top_blob_3d.c;
++            top_blob.h = 1;
++            top_blob.c = 1;
++            top_blob.cstep = top_blob_3d.c;
++        }
++        else
++        {
++            top_blob = top_blob_3d.reshape(top_blob_3d.c, opt.blob_allocator);
++            if (top_blob.empty())
++                return -100;
++        }
++
++        return 0;
++    }
++
+     //     NCNN_LOGE("Convolution_x86 input %d x %d  ksize=%d %d  stride=%d %d", w, h, kernel_w, kernel_h, stride_w, stride_h);
+ 
+     Mat bottom_blob_bordered;
+-- 
+2.55.0
+

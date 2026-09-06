@@ -16,7 +16,10 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        
+
+        // Pinned: AGP resolved 28.2.13676358 for the JNI build (#29 Track 1).
+        // Keep in sync with nav_graph_core/build_nav_graph.sh fallback.
+        ndkVersion = "28.2.13676358"
         ndk {
             abiFilters.add("arm64-v8a")
         }

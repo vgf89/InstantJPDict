@@ -7,17 +7,30 @@ CARGO_DIR="$SCRIPT_DIR"
 JNILIBS_DIR="$PROJECT_DIR/app/src/main/jniLibs/arm64-v8a"
 JAVA_SRC_DIR="$PROJECT_DIR/app/src/main/java"
 
-# 1. Determine Android NDK path
+# 1. Determine Android NDK path (pinned 28.2.13676358 per app/build.gradle.kts ndkVersion).
+PINNED_NDK="28.2.13676358"
 if [ -z "${ANDROID_NDK_HOME:-}" ]; then
-    # Try common locations
-    if [ -d "$HOME/Android/Sdk/ndk" ]; then
-        ANDROID_NDK_HOME=$(ls -d "$HOME/Android/Sdk/ndk/"*/ 2>/dev/null | head -1)
+    # Try common locations: pinned version first, else newest installed (never oldest).
+    for base in "$HOME/Android/Sdk/ndk" "$HOME/.local/share/android-sdk/ndk" "/opt/android-sdk/ndk"; do
+        if [ -d "$base/$PINNED_NDK" ]; then
+            ANDROID_NDK_HOME="$base/$PINNED_NDK"
+            break
+        fi
+    done
+    if [ -z "${ANDROID_NDK_HOME:-}" ]; then
+        for base in "$HOME/Android/Sdk/ndk" "$HOME/.local/share/android-sdk/ndk" "/opt/android-sdk/ndk"; do
+            if [ -d "$base" ]; then
+                newest=$(ls "$base" 2>/dev/null | sort -V | tail -1)
+                [ -n "$newest" ] && ANDROID_NDK_HOME="$base/$newest" && break
+            fi
+        done
     fi
 fi
 if [ -z "${ANDROID_NDK_HOME:-}" ]; then
     echo "ERROR: ANDROID_NDK_HOME not set. Install Android NDK via Android Studio SDK Manager."
     exit 1
 fi
+echo "NDK: $ANDROID_NDK_HOME"
 
 # 2. Set up cargo config for the NDK toolchain
 TOOLCHAIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64"
