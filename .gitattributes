@@ -6,3 +6,4 @@ models/archive/**/*.onnx filter=lfs diff=lfs merge=lfs -text
 models/archive/**/*.pdiparams filter=lfs diff=lfs merge=lfs -text
 models/archive/**/*.safetensors filter=lfs diff=lfs merge=lfs -text
 models/archive/**/*.bin filter=lfs diff=lfs merge=lfs -text
+cal-images.tar.gz filter=lfs diff=lfs merge=lfs -text

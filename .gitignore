@@ -13,6 +13,4 @@
 .externalNativeBuild
 .cxx
 local.properties
-
-# local benchmark fixtures (game screenshots, not for distribution)
 misc/
