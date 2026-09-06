@@ -44,6 +44,9 @@ git -C "$SRC" fetch --quiet origin "$BASE" 2>/dev/null || true
 git -C "$SRC" checkout --quiet "$BASE"
 # Idempotent: reset any previous patch application, then apply.
 git -C "$SRC" reset --quiet --hard "$BASE"
+# Hermetic identity for `git am` (fresh containers have none configured).
+git -C "$SRC" config user.email "repro@instantjpdict.local"
+git -C "$SRC" config user.name "InstantJPDict repro"
 git -C "$SRC" apply --check "$MBOX"
 git -C "$SRC" am --quiet "$MBOX"
 echo "tree: $(git -C "$SRC" log --oneline -1)"
