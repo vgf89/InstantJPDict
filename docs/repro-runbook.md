@@ -189,6 +189,8 @@ exempting `meiki*` from the filter (owner decision, touches representation).
    FP16 step needed.
 3. First full `tools/build_ncnn.sh` compile -- **done** 2026-09-06 in the
    Arch container (host tools + android arm64 libncnn.a, `NCNN_VULKAN=OFF`).
-4. Commit `table_w{W}.txt` KL tables or bless regen-every-time (gate decides).
+4. KL tables: **regen every build, do not commit** (decided 2026-09-06) --
+   rebuilding `table_w480.txt` takes ~2s and is byte-identical across runs,
+   so a committed copy would only risk going stale.
 5. The nuke-and-pave itself: clean checkout, this runbook only, ending with a
    byte-sane APK + passing parity gate.
