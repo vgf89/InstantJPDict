@@ -21,7 +21,7 @@
 #   w64/w128: report only (sliced fragments + mid-char cuts pollute these).
 set -euo pipefail
 
-NCNN_SRC=""; NCNN_BUILD=""; REF=""; INT8D=""; CALIB=""; VOCAB=""
+NCNN_SRC=""; NCNN_BUILD=""; REF=""; INT8D=""; CALIB=""; VOCAB=""; WIDTHS="480"
 while [ $# -gt 0 ]; do
   case "$1" in
     --ncnn-src) NCNN_SRC="$2"; shift 2;;
@@ -30,6 +30,10 @@ while [ $# -gt 0 ]; do
     --int8-dir) INT8D="$2"; shift 2;;
     --calib) CALIB="$2"; shift 2;;
     --vocab) VOCAB="$2"; shift 2;;
+    # Gate defaults to w480 (the only width that ships, via rec_dyn).
+    # Pass --widths 256 (or 64,128,256,480) for extra canaries; w64/w128
+    # stay report-only (sliced-fragment pollution).
+    --widths) WIDTHS="$2"; shift 2;;
     *) echo "unknown arg: $1" >&2; exit 1;;
   esac
 done
@@ -52,7 +56,7 @@ check() { # bucket exact cer min_exact max_cer
   python3 -c "import sys; sys.exit(0 if $exact >= $mine and $cer <= $maxc else 1)" || ok=0
   [ "$ok" = 1 ] || { echo "GATE FAIL w$W"; FAIL=1; }
 }
-for W in 64 128 256 480; do
+for W in $(echo "$WIDTHS" | tr ',' ' '); do
   OUT=$(/tmp/rec_textcmp "$REF/rec_w${W}.param" "$REF/rec_w${W}.bin" \
     "$INT8D/rec_w${W}.param" "$INT8D/rec_w${W}.bin" \
     "$VOCAB" "$CALIB/filelist_w${W}.txt" "$W" 48 2>/dev/null | tail -1)

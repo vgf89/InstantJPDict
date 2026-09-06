@@ -19,13 +19,16 @@
 # Any |scale| > 1e6 fails the run before ncnn2int8.
 set -euo pipefail
 
-FP32=""; CALIB=""; TOOLS=""; OUT=""
+FP32=""; CALIB=""; TOOLS=""; OUT=""; WIDTHS="480"
 while [ $# -gt 0 ]; do
   case "$1" in
     --fp32-dir) FP32="$2"; shift 2;;
     --calib) CALIB="$2"; shift 2;;
     --tools) TOOLS="$2"; shift 2;;
     --out) OUT="$2"; shift 2;;
+    # Only w480 ships (rec_dyn derives from it, #23). Other widths quantize
+    # on request (e.g. w256 as a parity canary), comma-separated.
+    --widths) WIDTHS="$2"; shift 2;;
     *) echo "unknown arg: $1" >&2; exit 1;;
   esac
 done
@@ -38,7 +41,7 @@ INT8="$TOOLS/ncnn2int8"
 [ -x "$INT8" ] || { echo "missing $INT8" >&2; exit 1; }
 mkdir -p "$OUT"
 
-for W in 64 128 256 480; do
+for W in $(echo "$WIDTHS" | tr ',' ' '); do
   P="$FP32/rec_w${W}.param"; B="$FP32/rec_w${W}.bin"; F="$CALIB/filelist_w${W}.txt"
   [ -f "$P" ] && [ -f "$B" ] && [ -f "$F" ] \
     || { echo "missing input for w$W" >&2; exit 1; }

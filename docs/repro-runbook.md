@@ -115,11 +115,12 @@ remains available in the `build_ncnn.sh` tree if a future flow wants it.
 Note: the pnnx `fp16=1` flag emits same-size bins, i.e. it does NOT produce
 the historical FP16-storage form -- do not use it for this purpose.
 
-## 5. Quantize rec to INT8
+## 5. Quantize rec to INT8 (w480 only -- the width that ships via rec_dyn)
 
 ```bash
 tools/quantize_rec_int8.sh --fp32-dir /tmp/fp32_models --calib /tmp/rec_calib \
   --tools /tmp/ncnn_build/host/bin --out /tmp/int8_models
+# --widths 256 adds the w256 parity canary; w64/w128 never ship, skip them
 ```
 
 Runs `ncnn2table` (KL, `shape=[W,48,3]`, `type=1` npy) + the scale sanity gate
