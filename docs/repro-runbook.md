@@ -93,7 +93,8 @@ pnnx /tmp/pt_models/rec_w{W}.pt inputshape=[1,3,48,{W}]
 # -> rec_w{W}.pnnx.param/.bin, zero hand-edits
 pnnx models/archive/PP-OCRv6_small_det_onnx/inference.onnx \
   inputshape=[1,3,960,960] inputshape2=[1,3,960,960]
-# pnnx is the separate Tencent/pnnx project (20260526: release binary or pip);
+# pnnx is the separate Tencent/pnnx project, pinned 20260526 via pip
+# (`uv pip install "pnnx==20260526"` -- no release binaries on GitHub);
 # the same binary converts pnnx format -> ncnn format:
 pnnx rec_w{W}.pnnx.param rec_w{W}.pnnx.bin rec_w{W}.param rec_w{W}.bin
 ```
@@ -170,6 +171,16 @@ cp /tmp/rec_dyn/rec_dyn.param /tmp/rec_dyn/rec_dyn.bin \
 
 Acceptance: APK installs, bench sample texts match the #16/#23 record,
 `smokeDetOnly` passes the <15s gate.
+
+## Known wart: legacy meiki blobs vs LFS rule
+
+`models/archive/meiki.text.{detect,rec,rec.vertical}*.onnx` are committed as
+raw git blobs (14-18 MB) even though `.gitattributes` routes
+`models/archive/**/*.onnx` through LFS. Every fresh checkout prints
+`Encountered 3 files that should have been pointers, but weren't` and leaves
+them `M` in `git status`. They are pre-PP-OCRv6 legacy baselines, unused by
+this runbook -- ignore the noise, or repair by committing proper pointers /
+exempting `meiki*` from the filter (owner decision, touches representation).
 
 ## Open holes for the first nuke-and-pave run
 

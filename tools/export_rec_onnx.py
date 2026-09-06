@@ -26,7 +26,7 @@ match whatever the original did by checking parity, not by guessing.
 Usage:
   python3 tools/export_rec_onnx.py \
     --ckpt models/archive/PP-OCRv6_small_rec_safetensors \
-    --widths 64,128,256,480 --out /tmp/pt_models [--logit logits]
+    --widths 64,128,256,480 --out /tmp/pt_models
 """
 import argparse
 import os
@@ -38,8 +38,6 @@ def main():
     ap.add_argument("--ckpt", required=True)
     ap.add_argument("--widths", default="64,128,256,480")
     ap.add_argument("--out", required=True)
-    ap.add_argument("--logit", default="logits",
-                    help="output attribute holding [1,seq,18710] logits")
     ap.add_argument("--height", type=int, default=48)
     args = ap.parse_args()
 
@@ -57,23 +55,19 @@ def main():
         args.ckpt, dtype=torch.float32)
     model.eval()
 
-    # Probe once, eagerly: show what the model returns so --logit stays honest.
+    # Probe once, eagerly. The full forward already applies the head
+    # (SVTR encoder + Linear 120->18710 + softmax dim=2): last_hidden_state
+    # IS the (1, T, 18710) class distribution. Verified against
+    # transformers 5.16.1 modeling_pp_ocrv6_small_rec.py: ForTextRecognition
+    # forward = model(pixel_values) -> head(...) -> last_hidden_state.
+    # Softmax-in-graph matches the shipped net and is argmax-neutral for CTC.
     with torch.no_grad():
         probe = model(torch.zeros(1, 3, args.height, widths[0]))
-    print(f"probe type: {type(probe)}")
-    if hasattr(probe, "keys"):
-        print(f"probe keys: {list(probe.keys())}")
-    out0 = getattr(probe, args.logit, None)
-    if out0 is None and isinstance(probe, (tuple, list)):
-        out0 = probe[0]
-    if out0 is None:
-        sys.exit(f"REFUSING: no {args.logit!r} on model output; "
-                 f"inspect probe above and pass --logit <attr>")
-    print(f"probe {args.logit} shape @w{widths[0]}: {tuple(out0.shape)} "
+    out0 = probe.last_hidden_state
+    print(f"probe last_hidden_state shape @w{widths[0]}: {tuple(out0.shape)} "
           f"(expect (1, {widths[0] // 8}, 18710))")
-    assert out0.shape[-1] == 18710, f"last dim {out0.shape[-1]} != 18710 classes"
-
-    logit_name = args.logit
+    assert tuple(out0.shape) == (1, widths[0] // 8, 18710), \
+        f"unexpected probe shape {tuple(out0.shape)}"
 
     class Wrapper(torch.nn.Module):
         def __init__(self, m):
@@ -81,9 +75,7 @@ def main():
             self.m = m
 
         def forward(self, x):
-            o = self.m(x)
-            l = getattr(o, logit_name, None)
-            return l if l is not None else o[0]
+            return self.m(x).last_hidden_state
 
     wrapped = Wrapper(model).eval()
     os.makedirs(args.out, exist_ok=True)
