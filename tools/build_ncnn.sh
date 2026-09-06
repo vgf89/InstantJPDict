@@ -66,7 +66,7 @@ if [ "$SKIP_HOST" -eq 0 ]; then
   mkdir -p "$OUT/host/bin"
   cp "$OUT/build-host/tools/quantize/ncnn2table" "$OUT/host/bin/"
   cp "$OUT/build-host/tools/quantize/ncnn2int8" "$OUT/host/bin/"
-  cp "$OUT/build-host/tools/quantize/ncnnoptimize" "$OUT/host/bin/"
+  cp "$OUT/build-host/tools/ncnnoptimize" "$OUT/host/bin/"
   echo "host tools -> $OUT/host/bin"
 fi
 
