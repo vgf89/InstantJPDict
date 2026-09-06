@@ -11,6 +11,7 @@ Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all o
 - **Apply / remove labels**: `gh issue edit <number> --add-label "..."` / `--remove-label "..."`
 - **Close**: `gh issue close <number> --comment "..."`
 - **Close with revisit conditions**: if the closing comment names conditions under which the work should be reconsidered (post-Vulkan, new data, a measured pool growing), also apply the `potential-revisit` label: `gh issue edit <number> --add-label "potential-revisit"`. Killed-by-measurement and parked-backburner closes must carry it; clean ships and verdicts must not.
+- **Close with a follow-up**: a `Proposing ticket: ...` line is open work owned by the ticket being closed. Either leave the current ticket open until the follow-up exists, or open the follow-up ticket in the same session (evidence-certain case) and link it from the resolution comment. Never close with a dangling proposal. If the follow-up cannot be opened yet, the ticket stays open and the maintainer signs off on closure.
 
 Infer the repo from `git remote -v`; `gh` does this automatically when run inside a clone.
 
