@@ -562,14 +562,14 @@ class OcrEngine(private val context: Context) {
     }
 
     /** Tiny horizontal box right above a much larger horizontal box. #28 (same split).
-     * Either short (width ratio) or thin (full-width ruby readings run long). */
+     * Judged by THINNESS alone, not length: horizontal ruby runs long or short, but its
+     * glyphs are always smaller. (Vertical keeps an additional shortness gate — narrow
+     * full-height columns exist; horizontal has no such case.) */
     private fun isRubyHorizontal(
         sRaw: JpDictRect, bRaw: JpDictRect, sUn: JpDictRect, bUn: JpDictRect, imgW: Int, imgH: Int,
     ): Boolean {
         if (bRaw.width() < imgW * FURIGANA_BIG_MIN_FRAC) return false
-        val shortRun = sRaw.width() < bRaw.width() * FURIGANA_SIZE_RATIO
-        val thinRun = sRaw.height() < bRaw.height() * FURIGANA_THIN_RATIO
-        if (!shortRun && !thinRun) return false
+        if (sRaw.height() >= bRaw.height() * FURIGANA_THIN_RATIO) return false
         if (sRaw.height() >= imgH * FURIGANA_MAX_FRAC) return false
         if (sUn.height() >= bUn.height() * FURIGANA_HSHORT_RATIO) return false
         // Above-ness on RAW geometry: unclip grows both boxes toward each other (~18px
