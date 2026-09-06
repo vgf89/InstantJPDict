@@ -36,6 +36,7 @@ class OcrEngine(private val context: Context) {
     // Detection model (DB 960×960) + vocabulary + single dynamic-width rec model (#23).
     private var detNcnn: DetNcnn? = null
     private var ppocrVocab: List<String> = emptyList()
+    private var classRemap: IntArray = IntArray(0) // pruned-out -> orig class id (#39)
     private var recDynNcnn: RecNcnn? = null
 
     companion object {
@@ -95,7 +96,9 @@ class OcrEngine(private val context: Context) {
 
         // Recognition constants (not tunable)
         private const val REC_TARGET_H = 48
-        private const val REC_NUM_CLASSES = 18710  // 0=blank, 1..18708=chars, 18709=space
+        private const val REC_NUM_CLASSES = 18710  // 0=blank, 1..18708=chars, 18709=space (orig id space)
+        // Pruned CTC-head width (#39): gemm_8 emits 13193 outs; CLASS_REMAP[new] = orig id.
+        private const val REC_NUM_OUTPUTS = 13193
         private const val BATCH_SIZE = 4
         private const val REC_STRIDE = 8
         /** Alternative-list cap everywhere (per-timestep top-K, per-char alts, stitch merges). */
@@ -213,13 +216,21 @@ class OcrEngine(private val context: Context) {
             ppocrVocab = Gson().fromJson(vocabJson, listType)
             Log.d(TAG, "Vocabulary loaded: ${ppocrVocab.size} entries")
 
+            // ── CTC-head remap: pruned-out id -> orig class id (#39) ──
+            val remapTxt = context.assets.open("PP-OCRv6_small_ncnn/rec_remap.txt")
+                .bufferedReader().use { it.readText() }
+            classRemap = remapTxt.lineSequence()
+                .mapNotNull { it.trim().takeIf(String::isNotEmpty)?.toIntOrNull() }
+                .toList().toIntArray()
+            Log.d(TAG, "Class remap loaded: ${classRemap.size} entries")
+
         } catch (e: Exception) {
             Log.e(TAG, "Failed to load models", e)
         }
     }
 
     fun isReady(): Boolean =
-        detNcnn != null && recDynNcnn != null && ppocrVocab.isNotEmpty()
+        detNcnn != null && recDynNcnn != null && ppocrVocab.isNotEmpty() && classRemap.size == REC_NUM_OUTPUTS
 
     // ═════════════════════════════════════════════════════════════════════════
     //  Detect — DB segmentation → contours → boxes (#28 furigana, unclip)
@@ -633,8 +644,11 @@ class OcrEngine(private val context: Context) {
     private fun top15Alternatives(slice: FloatArray): List<Pair<Char, Float>> {
         val pq = java.util.PriorityQueue<Int>(TOP_K + 1, compareBy { slice[it] })
         for (k in slice.indices) { pq.add(k); if (pq.size > TOP_K) pq.poll() }
-        return pq.toList().sortedByDescending { slice[it] }.map { decodeChar(it) to slice[it] }
+        return pq.toList().sortedByDescending { slice[it] }.map { decodeChar(remapClass(it)) to slice[it] }
     }
+
+    /** Pruned-out id -> orig class id (#39); identity fallback if remap failed to load. */
+    private fun remapClass(prunedIdx: Int): Int = classRemap.getOrElse(prunedIdx) { prunedIdx }
 
     /** Resize [src] to `targetW×targetH`, run dynamic-width rec, CTC-decode.
      *
@@ -658,16 +672,16 @@ class OcrEngine(private val context: Context) {
             Log.e(TAG, "recNcnn w$modelW infer null")
             return null
         }
-        if (flatOutput.size != seqLen * REC_NUM_CLASSES) {
-            Log.e(TAG, "recNcnn w$modelW bad output ${flatOutput.size} vs ${seqLen * REC_NUM_CLASSES}")
+        if (flatOutput.size != seqLen * REC_NUM_OUTPUTS) {
+            Log.e(TAG, "recNcnn w$modelW bad output ${flatOutput.size} vs ${seqLen * REC_NUM_OUTPUTS}")
             return null
         }
         val actualSeqLen = maxOf(1, ceil(targetW / REC_STRIDE.toFloat()).toInt())
         val cropLogits = Array(actualSeqLen) { t ->
-            FloatArray(REC_NUM_CLASSES) { c -> flatOutput[t * REC_NUM_CLASSES + c] }
+            FloatArray(REC_NUM_OUTPUTS) { c -> flatOutput[t * REC_NUM_OUTPUTS + c] }
         }
         val rawAlts = (0 until actualSeqLen).map { t -> top15Alternatives(cropLogits[t]) }
-        val decoded = ctcDecode(cropLogits, actualSeqLen, REC_NUM_CLASSES, 0f, actualSeqLen)
+        val decoded = ctcDecode(cropLogits, actualSeqLen, REC_NUM_OUTPUTS, 0f, actualSeqLen)
         return decoded.copy(rawAlternatives = rawAlts)
     }
 
@@ -1189,7 +1203,7 @@ class OcrEngine(private val context: Context) {
                 if (slice[k] > maxVal) { maxVal = slice[k]; maxIdx = k }
             }
 
-            val classIdx = maxIdx
+            val classIdx = remapClass(maxIdx)
 
             // Top-15 alternatives (shared helper).
             val indexed = top15Alternatives(slice).toMutableList()

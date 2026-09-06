@@ -108,7 +108,7 @@ class OcrBenchmarkTest {
         }
 
         /** Decode top-1 text from flat logits for quick top-1 check (CTC greedy without blank handling). */
-        private fun decodeTop1Flat(logits: FloatArray, seqLen: Int, numClasses: Int, vocab: List<String>): String {
+        private fun decodeTop1Flat(logits: FloatArray, seqLen: Int, numClasses: Int, vocab: List<String>, remap: IntArray = IntArray(0)): String {
             val sb = StringBuilder()
             var prev = -1
             for (t in 0 until seqLen) {
@@ -118,6 +118,7 @@ class OcrBenchmarkTest {
                     val v = logits[base + c]
                     if (v > bestV) { bestV = v; best = c }
                 }
+                best = remap.getOrElse(best) { best } // pruned-out -> orig id (#39)
                 if (best == 0) { prev = 0; continue }
                 if (best == prev) continue
                 val ch = when {
@@ -332,7 +333,7 @@ class OcrBenchmarkTest {
 
         // ── 1. Dynamic-width ncnn smoke gate — single rec_dyn model (#23), incl. off-bucket 200 ──
         val h = 48
-        val numClasses = 18710
+        val numClasses = 13193 // pruned head (#39)
         val recDynField = engine.javaClass.getDeclaredField("recDynNcnn").apply { isAccessible = true }
         var recNcnn = recDynField.get(engine) as RecNcnn?
         if (recNcnn == null) {
@@ -346,6 +347,11 @@ class OcrBenchmarkTest {
             @Suppress("UNCHECKED_CAST")
             vocab = vField.get(engine) as List<String>
         } catch (_: Exception) {}
+        var classRemap = IntArray(0)
+        try {
+            val rField = engine.javaClass.getDeclaredField("classRemap").apply { isAccessible = true }
+            classRemap = rField.get(engine) as IntArray
+        } catch (_: Exception) {}
 
         val bucketResults = mutableListOf<String>()
         for (w in listOf(64, 200, 480)) {
@@ -354,7 +360,7 @@ class OcrBenchmarkTest {
             val ncnnOut = recNcnn!!.infer(inputFloats, w, h)
             assertNotNull("ncnn w$w infer returned null", ncnnOut)
             assertEquals("ncnn outSize w$w", seqLen * numClasses, ncnnOut!!.size)
-            val top1NcnnText = if (vocab.isNotEmpty()) decodeTop1Flat(ncnnOut, seqLen, numClasses, vocab) else "?"
+            val top1NcnnText = if (vocab.isNotEmpty()) decodeTop1Flat(ncnnOut, seqLen, numClasses, vocab, classRemap) else "?"
             val line = "gate w$w seq$seqLen ncnn=\"$top1NcnnText\" size=${ncnnOut.size}"
             Log.i(TAG, line)
             bucketResults.add(line)
@@ -436,7 +442,7 @@ class OcrBenchmarkTest {
             val ncnnP50 = ncnnTimes[ncnnTimes.size / 2]
             Log.i(TAG, "benchRecNcnnDynWidths ncnn w$w p50=${ncnnP50}ms times=$ncnnTimes outSize=$ncnnOutSize")
             bundleOut.add("w$w ${ncnnP50}ms")
-            assertTrue("ncnn output size should be ${w / 8}*18710", ncnnOutSize == (w / 8) * 18710)
+            assertTrue("ncnn output size should be ${w / 8}*13193", ncnnOutSize == (w / 8) * 13193)
         }
 
         val instr = InstrumentationRegistry.getInstrumentation()
@@ -473,7 +479,7 @@ class OcrBenchmarkTest {
             ncnnTimes.sort()
             val ncnnP50 = ncnnTimes[ncnnTimes.size / 2]
             Log.i(TAG, "benchRecNcnnAllBuckets w$w seq$seqLen ncnn p50=${ncnnP50}ms $ncnnTimes outSize=$ncnnOutSize")
-            assertTrue("ncnn outSize w$w", ncnnOutSize == seqLen * 18710)
+            assertTrue("ncnn outSize w$w", ncnnOutSize == seqLen * 13193)
         }
 
         // Now 3-crop bench with the ncnn engine.

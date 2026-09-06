@@ -116,32 +116,30 @@ Java_com_holopengin_instantjpdict_RecNcnn_inferNative(JNIEnv *env, jclass, jlong
     // Skip softmax_30: extract gemm_8 logits directly (blob 204, see rec_dyn.param:180-181).
     // Argmax/top-15 order is identical (softmax monotonic); scores become logits, which no
     // consumer reads absolutely (blankThreshold path is relative, default 0 = pure greedy).
-    // Lazy eval never runs softmax — saves ~4% (its exp/sum over 18710×seq). #25
+    // Lazy eval never runs softmax — saves ~4% (its exp/sum over 13193×seq post-prune). #25
     int ret = ex.extract(204, out);
     if (ret != 0) {
         LOGE("extract out0 failed %d", ret);
         return nullptr;
     }
 
-    // out shape: [18710, seqLen, 1] or [seqLen, 18710]? Check dims
-    // From param tail: Gemm 8 -> Softmax out0 with dims seqLen x 18710?
-    // pnnx validation says output [1, W/8, 18710] -> seqLen=8 for w64, 18710 classes
-    // ncnn Mat for that would be w=18710, h=seqLen, c=1 or w=seqLen, h=18710?
+    // out shape: [13193, seqLen] (pruned head #39); pnnx validation said [1, W/8, 18710] pre-prune.
+    // ncnn Mat for that would be w=13193, h=seqLen, c=1 or w=seqLen, h=13193?
     // Need to handle both. Log dims.
     LOGI("ncnn out dims=%d w=%d h=%d c=%d total=%d", out.dims, out.w, out.h, out.c, (int)out.total());
     // Dynamic width (#23): sequence length comes from the ACTUAL input width, not the
     // create-time targetW. Kotlin always passes a multiple of 8 (zero-padded exact width).
     int seqLen = w / 8;
-    int numClasses = 18710;
+    int numClasses = 13193; // pruned CTC head (#39); orig id space stays 18710 via Kotlin remap
     // Allocate output float array
     jfloatArray jout = env->NewFloatArray(seqLen * numClasses);
     if (!jout) return nullptr;
 
     // Copy data - need to handle layout
-    // If out is 2D (w=18710, h=seqLen), data is row-major h * w
+    // If out is 2D (w=13193, h=seqLen), data is row-major h * w
     // If out is 3D, handle accordingly
     float *outData = (float *) out.data;
-    // out.total() should be seqLen * 18710
+    // out.total() should be seqLen * numClasses
     if ((int)out.total() != seqLen * numClasses) {
         LOGE("out total mismatch %d vs %d", (int)out.total(), seqLen * numClasses);
         // Still try to copy min
@@ -151,7 +149,7 @@ Java_com_holopengin_instantjpdict_RecNcnn_inferNative(JNIEnv *env, jclass, jlong
     }
 
     // ncnn stores as c * h * w contiguous, with w innermost
-    // For dims=2, w=18710, h=8 -> data is [h][w]
+    // For dims=2, w=13193, h=8 -> data is [h][w]
     // For dims=3, check
     env->SetFloatArrayRegion(jout, 0, seqLen * numClasses, outData);
     return jout;
