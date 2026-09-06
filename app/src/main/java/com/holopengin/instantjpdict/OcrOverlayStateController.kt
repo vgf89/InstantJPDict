@@ -4,8 +4,6 @@ import com.holopengin.instantjpdict.util.JapaneseUtil
 import com.holopengin.instantjpdict.util.Deinflector
 import com.holopengin.instantjpdict.data.DictionaryEntry
 import com.google.gson.Gson
-import android.content.Context
-import android.graphics.Bitmap
 import uniffi.nav_graph_core.*
 
 data class LineResult(
@@ -100,19 +98,11 @@ class OcrOverlayStateController {
     var currentTransX = 0f
     var currentTransY = 0f
     var currentWordLength = 0
-    var recConfidenceThreshold = 0.1f
 
-    /** #14: read prefs live — mirrors OcrEngine PREFS_NAME + keys */
-    fun loadFromPrefs(context: Context) {
-        val prefs = context.getSharedPreferences(OcrEngine.PREFS_NAME, Context.MODE_PRIVATE)
-        recConfidenceThreshold = prefs.getFloat(OcrEngine.PREF_REC_CONF, OcrEngine.DEF_REC_CONF)
-    }
-    fun preferredBackend(context: Context): String =
-        context.getSharedPreferences(OcrEngine.PREFS_NAME, Context.MODE_PRIVATE)
-            .getString(OcrEngine.PREF_BACKEND, "onnx") ?: "onnx"
-    fun isNcnnPreferred(context: Context): Boolean = preferredBackend(context) == "ncnn"
-
-    fun refreshLinesWithThreshold(ocrEngine: OcrEngine, screenshotBitmap: Bitmap?, blankThreshold: Float = 0f) {
+    /** Re-decode all lines with a new [blankThreshold] from cached per-timestep
+     * alternatives — no model re-run (see `OcrEngine.reDecodeLineResult`).
+     * Keeps the tapped character anchored by position, then rebuilds lookup data. */
+    fun refreshLinesWithThreshold(ocrEngine: OcrEngine, blankThreshold: Float = 0f) {
         val oldTappedBoxCenter = if (currentTappedLineIdx != -1 && currentTappedCharIdxInLine != -1) {
             activeLineResults.getOrNull(currentTappedLineIdx)?.charBoxes?.getOrNull(currentTappedCharIdxInLine)?.let {
                 Pair(it.centerX(), it.centerY())
@@ -228,7 +218,6 @@ class OcrOverlayStateController {
         currentTappedIdx = -1
         currentTappedLineIdx = -1
         currentTappedCharIdxInLine = -1
-        // recConfidenceThreshold preserved — MainActivity Settings is the source of truth via loadFromPrefs
         activeLineResults.clear()
         activeLineBoxes = emptyList()
         isControllerNavigation = false

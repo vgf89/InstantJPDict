@@ -22,32 +22,30 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
-// ─────────────────────────────────────────────────────────────────────────────
-// PP-OCRv6 data types
-// ─────────────────────────────────────────────────────────────────────────────
-// PP-OCRv6 OcrEngine — replaces meiki DETR with PP-OCR segmentation + CTC
-// ─────────────────────────────────────────────────────────────────────────────
+/** PP-OCRv6 [OcrEngine] — ncnn detect (DB 960×960) + dynamic-width rec (48×W) + CTC.
+ *
+ * Seams (single file by decision, #29): Detect §§ (detect + unclip + furigana +
+ * merge/split/sort) → Rec batch/stream §§ (recognizePpocrBatch + recognizeStreaming,
+ * completion-order select emit) → Stitch §§ (long-line horiz/vert chunk + anchor
+ * stitch) → CTC + CharBox §§ (ctcDecode, computeCharBoxes, vertical glyphs) →
+ * Tunables + init §§ (SharedPreferences, vocab). Stitch chunks run unsquished
+ * full-res; only the single-pass batch path applies [recSquish] (#24).
+ */
 
 class OcrEngine(private val context: Context) {
-    // PP-OCRv6 detection model — ncnn only for #15 (LiteRT removed)
+    // Detection model (DB 960×960) + vocabulary + single dynamic-width rec model (#23).
     private var detNcnn: DetNcnn? = null
-
-    // PP-OCRv6 recognition models — ncnn only for #15 (onnxruntime removed)
     private var ppocrVocab: List<String> = emptyList()
-    // Single dynamic-width rec model (#23) — exact-width inference, no buckets.
     private var recDynNcnn: RecNcnn? = null
 
     companion object {
         private const val TAG = "PPOCREngine"
 
-        // SharedPreferences keys for tunables — #14
+        // SharedPreferences keys for tunables — #14 (ncnn-only; no backend switch)
         const val PREFS_NAME = "instant_jp_dict_prefs"
-        const val PREF_BACKEND = "ocr_backend"
         const val PREF_DET_THRESH = "ppocr_det_thresh"
         const val PREF_DET_UNCLIP = "ppocr_det_unclip_ratio"
-        const val PREF_DET_LONG_SIDE = "ppocr_det_long_side"
         const val PREF_X_OVERLAP = "x_overlap_thresh"
-        const val PREF_REC_CONF = "rec_confidence_thresh"
         const val PREF_REC_SQUISH = "rec_squish_factor"
 
         // Defaults (previous hard constants)
@@ -55,15 +53,7 @@ class OcrEngine(private val context: Context) {
         const val DEF_DET_THRESH = 0.3f
         const val DEF_DET_UNCLIP = 1.50f
         const val DEF_X_OVERLAP = 0.40f
-        const val DEF_REC_CONF = 0.1f
         const val DEF_REC_SQUISH = 0.5f
-
-        // Legacy aliases — keep source compatibility for old const refs
-        const val PPOCR_DET_LONG_SIDE = DEF_DET_LONG_SIDE
-        const val PPOCR_DET_THRESH = DEF_DET_THRESH
-        const val PPOCR_DET_UNCLIP_RATIO = DEF_DET_UNCLIP
-        const val X_OVERLAP_THRESHOLD = DEF_X_OVERLAP
-        const val REC_CONFIDENCE_THRESHOLD = DEF_REC_CONF
 
         // Helpers for static access (no engine instance needed)
         fun getDetThresh(ctx: Context): Float =
@@ -73,13 +63,16 @@ class OcrEngine(private val context: Context) {
         fun getDetLongSide(ctx: Context): Int = DEF_DET_LONG_SIDE
         fun getXOverlap(ctx: Context): Float =
             ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getFloat(PREF_X_OVERLAP, DEF_X_OVERLAP)
-        fun getRecConf(ctx: Context): Float =
-            ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getFloat(PREF_REC_CONF, DEF_REC_CONF)
         fun getRecSquish(ctx: Context): Float =
             ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getFloat(PREF_REC_SQUISH, DEF_REC_SQUISH)
 
-        // Furigana filter thresholds (#28) — conservative: better to recognize ruby
-        // than to drop real small text.
+        /** Furigana (ruby) filter thresholds (#28) — conservative: better to
+         * recognize ruby than to drop real small text. Matching runs on RAW
+         * contour geometry (pre-unclip: unclip padding fabricates overlap for
+         * stacked fragments); only the gap test uses UNCLIPPED boxes (raw gutters
+         * are real pixels, unclip closes them to ruby distance). Vertical ruby
+         * additionally requires the small-box center to lie OUTSIDE the big box
+         * x-range, so stacked column tails are never dropped. */
         private const val FURIGANA_SIZE_RATIO = 0.3f    // small long-side < 30% of large long-side
         private const val FURIGANA_THIN_RATIO = 0.75f   // horizontal ruby runs long but thin;
                                                        // measured ~0.65-0.70 of main height here
@@ -105,6 +98,19 @@ class OcrEngine(private val context: Context) {
         private const val REC_NUM_CLASSES = 18710  // 0=blank, 1..18708=chars, 18709=space
         private const val BATCH_SIZE = 4
         private const val REC_STRIDE = 8
+        /** Alternative-list cap everywhere (per-timestep top-K, per-char alts, stitch merges). */
+        private const val TOP_K = 15
+        /** Single-pass targetW cap and stitch entry gate (targetW = rw*48/rh). #24 */
+        private const val LONG_LINE_GATE = 2000
+        /** Per-chunk targetW cap in the stitch paths. */
+        private const val CHUNK_TARGET_MAX = 480
+        /** Stitch best-pair window (last N stitched × first N current). */
+        private const val STITCH_WINDOW = 10
+        /** Stitch best-pair gates: center distance and prediction overlap. */
+        private const val STITCH_MAX_DIST_PX = 30f
+        private const val STITCH_MIN_PRED = 0.4f
+        /** Stitch append rule: chars past last center + this gap start a new tail. */
+        private const val STITCH_APPEND_GAP_PX = 10f
         // Lengthwise squish (#24): resample the length axis before inference (debug slider
         // 0.2–1.0, default 0.5). CTC tolerates it — JP prose holds to 0.5 (knee at 0.33),
         // narrow Latin glyphs are the first casualty (accepted: JP is the target).
@@ -135,6 +141,24 @@ class OcrEngine(private val context: Context) {
         /** Gray contribution sum for one pixel — replaces R*0.299+G*0.587+B*0.114. #20 */
         private fun grayLUT(r: Int, g: Int, b: Int): Float = GRAY_LUT[r] + GRAY_LUT[256 + g] + GRAY_LUT[512 + b]
 
+        /** Pack gray pixels into 3-channel rec input with PP-OCR normalize
+         * `(gray/127.5-1)`. Shared by the single-pass batch path and both stitch
+         * chunk paths (was 3 copies, #29). Zero-pads columns `[contentW, modelW)`. */
+        private fun buildRecInput(pixels: IntArray, contentW: Int, targetH: Int, modelW: Int): FloatArray {
+            val inputFloats = FloatArray(1 * 3 * targetH * modelW)
+            for (c in 0 until 3) {
+                val cOff = c * targetH * modelW
+                for (y in 0 until targetH) {
+                    for (x in 0 until contentW) {
+                        val px = pixels[y * contentW + x]
+                        val gray = grayLUT(px shr 16 and 0xFF, px shr 8 and 0xFF, px and 0xFF)
+                        inputFloats[cOff + y * modelW + x] = gray / 127.5f - 1f
+                    }
+                }
+            }
+            return inputFloats
+        }
+
         // Pooled det buffers — same ThreadLocal pattern as RecNcnn.tlBuffer. detect()
         // repaints the letterbox fully (opaque gray drawColor) and overwrites both
         // arrays end-to-end every call, so reuse is stale-safe. modelSize is fixed 960. #20
@@ -146,6 +170,7 @@ class OcrEngine(private val context: Context) {
     // ——— Tunable getters (live SharedPreferences, defaults from companion) ———
     private val prefs
         get() = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    /** Fixed 960: det long side is not tunable (model input is 960×960). */
     private val detLongSide: Int
         get() = DEF_DET_LONG_SIDE
     private val detThresh: Float
@@ -154,8 +179,6 @@ class OcrEngine(private val context: Context) {
         get() = prefs.getFloat(PREF_DET_UNCLIP, DEF_DET_UNCLIP)
     private val xOverlapThresh: Float
         get() = prefs.getFloat(PREF_X_OVERLAP, DEF_X_OVERLAP)
-    val recConfThresh: Float
-        get() = prefs.getFloat(PREF_REC_CONF, DEF_REC_CONF)
     /** Live squish factor from debug slider (0.2–1.0, default 0.5). #24 */
     val recSquish: Float
         get() = prefs.getFloat(PREF_REC_SQUISH, DEF_REC_SQUISH).coerceIn(0.2f, 1.0f)
@@ -167,17 +190,7 @@ class OcrEngine(private val context: Context) {
             // Clear stale cached models so asset updates take effect
             cacheDir.listFiles()?.forEach { it.delete() }
 
-            // Helper: copy asset to cache file
-            fun copyAsset(assetPath: String): String {
-                val out = File(cacheDir, assetPath.replace('/', '_'))
-                context.assets.open(assetPath).use { src ->
-                    out.outputStream().use { dst -> src.copyTo(dst) }
-                }
-                return out.absolutePath
-            }
-
-            // ── Load PP-OCRv6 detection model — ncnn only for #15 ──
-            // LiteRT removed, DetNcnn is the only det path (960×960 DB)
+            // ── Load PP-OCRv6 detection model (ncnn 960×960 DB) ──
             try {
                 detNcnn = DetNcnn.create(context)
                 Log.d(TAG, "DetNcnn loaded: $detNcnn")
@@ -185,7 +198,7 @@ class OcrEngine(private val context: Context) {
                 Log.e(TAG, "DetNcnn failed", e)
             }
 
-            // ── Load PP-OCRv6 recognition model — single dynamic-width ncnn (#23) ──
+            // ── Load PP-OCRv6 recognition model (single dynamic-width ncnn, #23) ──
             try {
                 recDynNcnn = RecNcnn.create(context)
                 Log.d(TAG, "RecNcnn dyn loaded: $recDynNcnn")
@@ -193,7 +206,7 @@ class OcrEngine(private val context: Context) {
                 Log.e(TAG, "RecNcnn dyn failed", e)
             }
 
-            // ── Load vocabulary — now from PP-OCRv6_small_ncnn (was PP-OCRv6_small_rec_onnx) ──
+            // ── Load vocabulary ──
             val vocabJson = context.assets.open("PP-OCRv6_small_ncnn/vocab.json")
                 .bufferedReader().use { it.readText() }
             val listType = object : TypeToken<List<String>>() {}.type
@@ -205,15 +218,11 @@ class OcrEngine(private val context: Context) {
         }
     }
 
-    private fun loadModelBytes(path: String): ByteArray {
-        return context.assets.open(path).readBytes()
-    }
-
     fun isReady(): Boolean =
         detNcnn != null && recDynNcnn != null && ppocrVocab.isNotEmpty()
 
     // ═════════════════════════════════════════════════════════════════════════
-    //  PP-OCRv6 DETECTION (DB segmentation → contours → bounding boxes)
+    //  Detect — DB segmentation → contours → boxes (#28 furigana, unclip)
     // ═════════════════════════════════════════════════════════════════════════
 
     fun detect(bitmap: Bitmap): List<JpDictRect> {
@@ -221,8 +230,7 @@ class OcrEngine(private val context: Context) {
         val origW = bitmap.width.toFloat()
         val origH = bitmap.height.toFloat()
 
-        // 1. Resize keeping longest side = detLongSide (fixed 960), pad to modelSize×modelSize square
-        // modelSize is fixed ncnn input (960); detLongSide fixed to avoid clipping/short boxes
+        // 1. Resize keeping longest side = 960, pad to 960×960 letterbox.
         val targetLong = detLongSide
         val modelSize = 960
         Log.d(TAG, "detect tunables thresh=$detThresh unclip=$detUnclip longSide=$targetLong xOverlap=$xOverlapThresh modelSize=$modelSize")
@@ -243,8 +251,8 @@ class OcrEngine(private val context: Context) {
         canvas.setBitmap(null)
         resized.recycle()
 
-        // 2. Build NCHW input with ImageNet normalisation for ncnn [3,960,960] — bulk getPixels (was 921k getPixel JNI)
-        // Buffers pooled ThreadLocal (same pattern as RecNcnn.tlBuffer); fully overwritten below. #20
+        // 2. Build NCHW input with ImageNet normalisation [3,960,960].
+        // Buffers pooled ThreadLocal; fully overwritten below. #20
         val needFloats = 3 * modelSize * modelSize
         val imgData: FloatArray = tlDetImgData.get()?.takeIf { it.size >= needFloats }
             ?: FloatArray(needFloats).also { tlDetImgData.set(it) }
@@ -252,7 +260,7 @@ class OcrEngine(private val context: Context) {
         val pixels: IntArray = tlDetPixels.get()?.takeIf { it.size >= needInts }
             ?: IntArray(needInts).also { tlDetPixels.set(it) }
         letterbox.getPixels(pixels, 0, modelSize, 0, 0, modelSize, modelSize)
-        // Single-pass NCHW write — 1 getPixels + 1 loop vs 921k getPixel
+        // Single-pass NCHW write.
         for (y in 0 until modelSize) {
             for (x in 0 until modelSize) {
                 val px = pixels[y * modelSize + x]
@@ -266,10 +274,10 @@ class OcrEngine(private val context: Context) {
             }
         }
 
-        // 3. Run detection via ncnn — no LiteRT fallback
+        // 3. Run detection via ncnn.
         val probArr = det.infer(imgData, modelSize, modelSize) ?: return emptyList()
-        // probArr should be modelSize*modelSize (960*960) float prob map
-        // Handle possible downsampled output (e.g., 240*240) by upsampling via nearest
+        // probArr should be 960×960 float prob map; upsample a downsampled
+        // square output (e.g. 240×240) via nearest.
         val outH: Int
         val outW: Int
         val probArrNorm: FloatArray
@@ -278,7 +286,6 @@ class OcrEngine(private val context: Context) {
             outW = modelSize
             probArrNorm = probArr
         } else {
-            // Try to infer square size from total
             val dim = kotlin.math.sqrt(probArr.size.toDouble()).toInt()
             if (dim * dim == probArr.size && dim <= modelSize) {
                 // Upsample small prob map to modelSize via nearest for postprocess
@@ -308,7 +315,7 @@ class OcrEngine(private val context: Context) {
 
         val probArrFinal = probArrNorm
 
-        // Debug: prob map stats — flat probArrFinal, no 2D Array (was 960 FloatArray allocs)
+        // Prob map stats.
         var pMin = Float.MAX_VALUE
         var pMax = Float.MIN_VALUE
         var pSum = 0f
@@ -326,20 +333,20 @@ class OcrEngine(private val context: Context) {
         val scaleWOut = origW / (modelSize.toFloat())
         val scaleHOut = origH / (modelSize.toFloat())
 
-        // 6. Find connected components (contours) via flat flood-fill — no Pair boxing, no 2D Array
+        // 6. Connected components (contours) via flat flood-fill.
         val visited = ByteArray(outH * outW)
         val rawBoxes = mutableListOf<JpDictRect>()
         // Pre-unclip contour boxes, parallel to rawBoxes — furigana matching runs on these
         // because unclip padding fabricates overlap for stacked fragments. #28
         val rawPreBoxes = mutableListOf<JpDictRect>()
-        // Reuse single Int queue to avoid per-component ArrayDeque alloc
+        // Reused Int queue (no per-component alloc).
         val q = IntArray(outH * outW)
         for (y in 0 until outH) {
             for (x in 0 until outW) {
                 val idx = y * outW + x
                 if (visited[idx].toInt() != 0 || probArrFinal[idx] <= detThresh) continue
 
-                // Flood-fill via Int queue (y*W+x), no Pair
+                // Flood-fill via Int queue (y*W+x).
                 var qHead = 0
                 var qTail = 0
                 q[qTail++] = idx
@@ -387,7 +394,10 @@ class OcrEngine(private val context: Context) {
                 val by2 = ((maxY + 1 - imgTop) * resScaleH).roundToInt()
                     .coerceAtMost(origH.roundToInt())
 
-                // Unclip: expand box using proper PP-OCR formula
+                /** Unclip (PP-OCR DB): dilate the contour box outward by
+                 * `expand = area × unclipRatio / perimeter`. E.g. a 100×20 box
+                 * (area 2000, perimeter 240) at ratio 1.5 expands by 12.5px per
+                 * side. Clamped to the image; boxes < 4px after expansion drop. */
                 val bw = (bx2 - bx).toFloat()
                 val bh = (by2 - by).toFloat()
                 val area = bw * bh
@@ -472,7 +482,7 @@ class OcrEngine(private val context: Context) {
     }
 
     // ═════════════════════════════════════════════════════════════════════════
-    //  Box merging & sorting (same logic as accessibility_daemon)
+    //  Box merging & sorting
     // ═════════════════════════════════════════════════════════════════════════
 
     private fun mergeOverlappingBoxes(boxes: List<JpDictRect>): List<JpDictRect> {
@@ -606,7 +616,7 @@ class OcrEngine(private val context: Context) {
     }
 
     // ═════════════════════════════════════════════════════════════════════════
-    //  PP-OCRv6 RECOGNITION — CTC decoding + char box computation
+    //  Rec — single-pass batch + streaming + CTC + char boxes
     // ═════════════════════════════════════════════════════════════════════════
 
     data class PPOcrResult(
@@ -618,9 +628,57 @@ class OcrEngine(private val context: Context) {
         val rawAlternatives: List<List<Pair<Char, Float>>> = emptyList(),
     )
 
+    /** Top-15 char alternatives for one CTC timestep, descending by logit. Shared
+     * by the batch path, both stitch chunk paths, and [ctcDecode] (was 4 copies). */
+    private fun top15Alternatives(slice: FloatArray): List<Pair<Char, Float>> {
+        val pq = java.util.PriorityQueue<Int>(TOP_K + 1, compareBy { slice[it] })
+        for (k in slice.indices) { pq.add(k); if (pq.size > TOP_K) pq.poll() }
+        return pq.toList().sortedByDescending { slice[it] }.map { decodeChar(it) to slice[it] }
+    }
+
+    /** Resize [src] to `targetW×targetH`, run dynamic-width rec, CTC-decode.
+     *
+     * Shared single-crop inference for the batch path and both stitch chunk
+     * paths (was 3 copies). Model width snaps up to mult-of-8 with zero padding;
+     * `actualSeqLen = ceil(targetW/8)` trims the padding timesteps. Returns null
+     * when inference fails (callers fall back: batch emits empty, stitch falls
+     * through to crush). Does NOT recycle [src] — callers own their bitmaps.
+     * Cooperative cancellation via `coroutineContext.ensureActive()`. */
+    private suspend fun inferResizedRec(src: Bitmap, targetW: Int, targetH: Int): PPOcrResult? {
+        coroutineContext.ensureActive()
+        val recNcnn = recDynNcnn ?: return null
+        val modelW = ((targetW + 7) / 8) * 8
+        val resized = Bitmap.createScaledBitmap(src, targetW, targetH, true)
+        val pixels = IntArray(targetW * targetH)
+        resized.getPixels(pixels, 0, targetW, 0, 0, targetW, targetH)
+        resized.recycle()
+        val inputFloats = buildRecInput(pixels, targetW, targetH, modelW)
+        val seqLen = modelW / REC_STRIDE
+        val flatOutput = recNcnn.infer(inputFloats, modelW, targetH) ?: run {
+            Log.e(TAG, "recNcnn w$modelW infer null")
+            return null
+        }
+        if (flatOutput.size != seqLen * REC_NUM_CLASSES) {
+            Log.e(TAG, "recNcnn w$modelW bad output ${flatOutput.size} vs ${seqLen * REC_NUM_CLASSES}")
+            return null
+        }
+        val actualSeqLen = maxOf(1, ceil(targetW / REC_STRIDE.toFloat()).toInt())
+        val cropLogits = Array(actualSeqLen) { t ->
+            FloatArray(REC_NUM_CLASSES) { c -> flatOutput[t * REC_NUM_CLASSES + c] }
+        }
+        val rawAlts = (0 until actualSeqLen).map { t -> top15Alternatives(cropLogits[t]) }
+        val decoded = ctcDecode(cropLogits, actualSeqLen, REC_NUM_CLASSES, 0f, actualSeqLen)
+        return decoded.copy(rawAlternatives = rawAlts)
+    }
+
     /**
-     * Run PP-OCRv6 CTC recognition via dynamic-width ncnn (no onnxruntime).
-     * Cooperative cancellation: checks coroutineContext.isActive.
+     * Run CTC recognition over dynamic-width ncnn rec.
+     *
+     * Portrait crops rotate 270° so the model always sees horizontal text.
+     * Lines wider than 2000 (at 48px height) go through the stitch paths;
+     * everything else takes the single-pass path below with live [recSquish]
+     * applied pre-inference (#24). Cooperative cancellation: checks
+     * coroutineContext.isActive.
      */
     private suspend fun recognizePpocrBatch(
         crops: List<Bitmap>,
@@ -631,7 +689,6 @@ class OcrEngine(private val context: Context) {
         if (numCrops == 0 || ppocrVocab.isEmpty() || recDynNcnn == null) return emptyList()
 
         val targetH = REC_TARGET_H
-        val recNcnn = recDynNcnn!!
 
         val ordered = arrayOfNulls<PPOcrResult>(numCrops)
         coroutineScope {
@@ -653,8 +710,8 @@ class OcrEngine(private val context: Context) {
             // cap + gate rounded up to an 8-divisible 2000. Very long lines crush timesteps.
             // Split into overlapping exact-width chunks (10% fallback overlap), then stitch.
             // Threshold 2000 to avoid over-splitting normal lines while fixing extremes.
-            val isLongHoriz = rw >= rh * 3 / 2 && (rw.toFloat() * targetH / rh.toFloat() > 2000)
-            val isLongVert = rh >= rw * 3 / 2 && (rh.toFloat() * targetH / rw.toFloat() > 2000)
+            val isLongHoriz = rw >= rh * 3 / 2 && (rw.toFloat() * targetH / rh.toFloat() > LONG_LINE_GATE)
+            val isLongVert = rh >= rw * 3 / 2 && (rh.toFloat() * targetH / rw.toFloat() > LONG_LINE_GATE)
             if (isLongHoriz || isLongVert) {
                 val stitched = if (isLongHoriz) {
                     recognizeAndStitchLongHoriz(rotated, targetH)
@@ -667,69 +724,25 @@ class OcrEngine(private val context: Context) {
                 }
                 Log.w(TAG, "long-line stitch failed rw=$rw rh=$rh — falling through to crush")
             }
-            // Dynamic width (#23): exact targetW (capped at 2000, validated #24),
-            // then 0.5× squish (#24, JP holds to 0.5); model width snaps to mult-of-8 (≤7px pad).
-            val targetW = maxOf(4, minOf(2000,
+            // Dynamic width (#23): exact targetW capped at LONG_LINE_GATE (validated #24),
+            // then squish (#24) applied pre-inference; stitch paths skip squish.
+            // Model width snaps to mult-of-8 (≤7px pad).
+            val targetW = maxOf(4, minOf(LONG_LINE_GATE,
                 (rw.toFloat() * targetH / rh.toFloat()).roundToInt()
             ))
             val sqTarget = squishTarget(targetW, recSquish)
-            val resized = Bitmap.createScaledBitmap(rotated, sqTarget, targetH, true)
+            val result = inferResizedRec(rotated, sqTarget, targetH)
             if (rotated !== crop) rotated.recycle()
-
-            val modelW = ((sqTarget + 7) / 8) * 8
-
-            val pixels = IntArray(sqTarget * targetH)
-            resized.getPixels(pixels, 0, sqTarget, 0, 0, sqTarget, targetH)
-            resized.recycle()
-
-            val inputFloats = FloatArray(1 * 3 * targetH * modelW)
-            for (c in 0 until 3) {
-                val cOff = c * targetH * modelW
-                for (y in 0 until targetH) {
-                    for (x in 0 until sqTarget) {
-                        val px = pixels[y * sqTarget + x]
-                        val gray = grayLUT(px shr 16 and 0xFF, px shr 8 and 0xFF, px and 0xFF)
-                        inputFloats[cOff + y * modelW + x] = gray / 127.5f - 1f
-                    }
-                }
-            }
-
-            val seqLen = modelW / 8
-            val flatOutput: FloatArray = recNcnn.infer(inputFloats, modelW, targetH)
-                ?: run {
-                    Log.e(TAG, "recDynNcnn w$modelW infer failed — skip crop")
-                    return@async null
-                }
-            if (flatOutput.size != seqLen * REC_NUM_CLASSES) {
-                Log.e(TAG, "recNcnn w$modelW bad output ${flatOutput.size} vs ${seqLen * REC_NUM_CLASSES}")
+            if (result == null) {
+                Log.e(TAG, "recDynNcnn w$sqTarget infer failed — skip crop")
                 return@async null
             }
-            Log.d(TAG, "ncnn w$modelW infer ok seq=$seqLen")
-
-            val actualSeqLen = maxOf(1, ceil(sqTarget / REC_STRIDE.toFloat()).toInt())
-            val cropLogits: Array<*>? = Array<Any>(actualSeqLen) { t ->
-                FloatArray(REC_NUM_CLASSES) { c -> flatOutput[t * REC_NUM_CLASSES + c] }
-            } as Array<*>
-
-            val rawAlts = mutableListOf<List<Pair<Char, Float>>>()
-            for (t in 0 until actualSeqLen) {
-                val slice = cropLogits?.getOrNull(t) as? FloatArray
-                if (slice == null || slice.size < REC_NUM_CLASSES) {
-                    rawAlts.add(emptyList())
-                    continue
-                }
-                val pq = java.util.PriorityQueue<Int>(16, compareBy { slice[it] })
-                for (k in slice.indices) { pq.add(k); if (pq.size > 15) pq.poll() }
-                rawAlts.add(pq.toList().sortedByDescending { slice[it] }
-                    .map { decodeChar(it) to slice[it] })
-            }
-
-            val result = ctcDecode(cropLogits, actualSeqLen, REC_NUM_CLASSES, 0f, actualSeqLen)
-                    return@async result.copy(rawAlternatives = rawAlts)
+                    return@async result
                 }
             }
-            // Await in completion order so callers can stream per-line results; the
-            // returned list stays index-aligned. onEach fires on the selecting worker. #21
+            // Await in completion order so callers can stream per-line results (#21, §D5):
+            // the returned list stays index-aligned; onEach fires on the selecting
+            // worker and recognizeStreaming re-posts to the main thread.
             val pending = deferreds.mapIndexed { ci, d -> d to ci }.toMap().toMutableMap()
             while (pending.isNotEmpty()) {
                 coroutineContext.ensureActive()
@@ -747,12 +760,13 @@ class OcrEngine(private val context: Context) {
         return ordered.map { it ?: PPOcrResult("", emptyList(), floatArrayOf(), 0) }
     }
 
-    // ——— Long-line split helpers — PP-OCR 48×960 crush fix ———
-    // Very long horizontal >960px (976×39 → 1201) and vertical >960px crush timesteps.
-    // Split into overlapping exact-width chunks (10% fallback overlap), then stitch.
-    // Port of meiki b3babc7^ OcrEngine.kt 709: REC_WIDTH 960/32, maxChunkWidth 960/scale,
-    // anchor second-to-last char localXLeft/nextX 0.8 + stitchHorizontalChunks centerX distance 30
-    // + predictionScore 0.4 + interleaveAlternatives, scaled to PP-OCR 48×480 correctly.
+    // ——— Long-line stitch (lines wider than 2000 @48px; CTC crush fix) ———
+    // Split into overlapping exact-width chunks (≤480 targetW each), infer each
+    // via inferResizedRec UNSQUISHED, then stitch (Phase 2). Chunks overlap by
+    // anchor (below) with a 10% fallback step.
+    /** One inferred chunk: decoded text plus the geometry to place it globally.
+     * `chunkW`/`offsetX`/`offsetY` are full-res source pixels; `charCols` are
+     * chunk-local timesteps; `actualSeqLen` trims mult-of-8 padding. */
     private data class ChunkInfo(
         val text: String,
         val charCols: FloatArray,
@@ -766,19 +780,36 @@ class OcrEngine(private val context: Context) {
     )
 
     // Stitch chunks stay UNSQUISHED at full resolution: anchor/stitch geometry
-    // (localXLeft, offsetGeomT, totalSeqLen) is all full-res timesteps. #24
+    // (localXLeft, offsetGeomT, totalSeqLen) is all full-res timesteps, while the
+    // single-pass batch path applies recSquish pre-inference. CTC tolerates the
+    // squish for JP prose (holds to 0.5, knee at 0.33); narrow Latin glyphs go
+    // first (accepted: JP is the target). #24
+    /** Stitch a long horizontal line (rw*48/rh > 2000).
+     *
+     * Phase 1 chunks left→right: each chunk's next start anchors on its
+     * second-to-last decoded char center (`localXLeft = (t+0.5)/seqLen*cw`),
+     * minus a 10%-of-height margin; degenerate anchors fall back to a 90% step.
+     * Phase 2 aligns chunks by identical timestep size (`rh/6` px): for each new
+     * Phase 2 aligns chunks by identical timestep size (`rh/6` px): for each new
+     * chunk, the best pair in the [STITCH_WINDOW] overlap window with center
+     * distance ≤ [STITCH_MAX_DIST_PX] and prediction overlap ≥ [STITCH_MIN_PRED]
+     * wins (`score = 0.3·(1-dist/30) + 0.7·pred`); the winner's alternatives merge
+     * via [interleaveAlternatives] and later chars re-base onto it. No winner →
+     * append chars past the last global center (+10px), or single-char chunks
+     * unconditionally; total stall → +1-timestep fallback offset. Double spaces
+     * collapse at the end. `charCols` stay global timesteps scaled by
+     * `totalSeqLen = ceil(rw*48/rh/8)`. */
     private suspend fun recognizeAndStitchLongHoriz(
         rotated: Bitmap, targetH: Int
     ): PPOcrResult? {
         coroutineContext.ensureActive()
-        val recNcnn = recDynNcnn ?: return null
         val rw = rotated.width; val rh = rotated.height
         val scale = targetH.toFloat() / rh.toFloat()
         val maxChunkW = (480 / scale).toInt().coerceAtLeast(64)
         if (maxChunkW <= 0) return null
         val chunkMargin = (rh * 0.1f).toInt().coerceAtLeast(2)
 
-        // ——— Phase 1: chunk with anchor-driven nextX (meiki second-to-last char) ———
+        // ——— Phase 1: chunk with anchor-driven nextX (second-to-last char) ———
         val chunks = mutableListOf<ChunkInfo>()
         var x = 0
         while (x < rw) {
@@ -787,37 +818,17 @@ class OcrEngine(private val context: Context) {
             if (w < 16) break
             val chunkBmp = Bitmap.createBitmap(rotated, x, 0, w, rh)
             val cw = chunkBmp.width; val ch = chunkBmp.height
-            // preserve aspect w → targetW via cw*48/rh, not stretch; cap at 480, dynamic width
-            val targetW = minOf(480, (cw.toFloat() * targetH / ch.toFloat()).roundToInt().coerceAtLeast(4))
-            val modelW = ((targetW + 7) / 8) * 8
-            val resized = Bitmap.createScaledBitmap(chunkBmp, targetW, targetH, true)
-            val pixels = IntArray(targetW * targetH)
-            resized.getPixels(pixels, 0, targetW, 0, 0, targetW, targetH)
-            resized.recycle()
+            // Preserve aspect w → targetW via cw*48/ch (not stretch); cap at CHUNK_TARGET_MAX.
+            val targetW = minOf(CHUNK_TARGET_MAX, (cw.toFloat() * targetH / ch.toFloat()).roundToInt().coerceAtLeast(4))
+            val decoded = inferResizedRec(chunkBmp, targetW, targetH)
             chunkBmp.recycle()
-            val inputFloats = FloatArray(1 * 3 * targetH * modelW)
-            for (c in 0 until 3) {
-                val cOff = c * targetH * modelW
-                for (y in 0 until targetH) for (xx in 0 until targetW) {
-                    val px = pixels[y * targetW + xx]
-                    val gray = grayLUT(px shr 16 and 0xFF, px shr 8 and 0xFF, px and 0xFF)
-                    // PP-OCR official: (img/255 -0.5)/0.5 = img/127.5 -1
-                    inputFloats[cOff + y * modelW + xx] = gray / 127.5f - 1f
-                }
-            }
-            val seqLen = modelW / 8
-            val flatOutput = recNcnn.infer(inputFloats, modelW, targetH) ?: run { Log.e(TAG, "recNcnn $modelW infer null"); return null }
-            val actualSeqLen = maxOf(1, ceil(targetW / REC_STRIDE.toFloat()).toInt())
-            val cropLogits: Array<*>? = Array<Any>(actualSeqLen) { t -> FloatArray(REC_NUM_CLASSES) { c -> flatOutput[t * REC_NUM_CLASSES + c] } } as Array<*>
-            val rawAlts = (0 until actualSeqLen).map { t ->
-                val slice = cropLogits?.getOrNull(t) as? FloatArray ?: return@map emptyList<Pair<Char,Float>>()
-                val pq = java.util.PriorityQueue<Int>(16, compareBy { slice[it] }); for (k in slice.indices) { pq.add(k); if(pq.size>15) pq.poll() }
-                pq.toList().sortedByDescending { slice[it] }.map { decodeChar(it) to slice[it] }
-            }
-            val decoded = ctcDecode(cropLogits, actualSeqLen, REC_NUM_CLASSES, 0f, actualSeqLen)
+            if (decoded == null) { Log.e(TAG, "recNcnn chunk w$targetW infer null"); return null }
+            val actualSeqLen = decoded.seqLenTotal
+            val rawAlts = decoded.rawAlternatives
             chunks.add(ChunkInfo(decoded.text, decoded.charCols, decoded.alternatives, rawAlts, actualSeqLen, targetW, cw, x, 0))
             if (x + w >= rw) break
-            // anchor second-to-last char localXLeft/nextX 0.8 (meiki)
+            // Anchor on the second-to-last char: it is fully observed, the last
+            // char may be cut by the chunk edge.
             val txt = decoded.text
             if (txt.isNotEmpty() && decoded.charCols.isNotEmpty()) {
                 val anchorIdx = if (txt.length >= 2) txt.length - 2 else 0
@@ -841,9 +852,10 @@ class OcrEngine(private val context: Context) {
             return PPOcrResult(c.text, c.altsPerChar, c.charCols, c.actualSeqLen, c.rawAltsPerTimestep)
         }
         // ——— Phase 2: stitch via anchor alignment with identical timestep size ———
-        // Each timestep is identical: rh/6 px original (48/8 stride). Both chunks share same size.
-        // Align second chunk's anchor perfectly over first's same anchor, then progress normally.
-        // Finally scale positions to fit bbox length via totalSeqLen = ceil(rw*48/rh/8).
+        // Each timestep is rh/6 px source (48px height / stride 8); both chunks
+        // share the size. The second chunk's anchor lands exactly over the
+        // first's, then positions progress normally; totalSeqLen rescales to the
+        // full line (ceil(rw*48/rh/8)).
         val timestepPx = rh.toFloat() / 6f
         val totalSeqLen = maxOf(1, ceil(rw.toFloat() * targetH.toFloat() / rh.toFloat() / REC_STRIDE.toFloat()).toInt())
         val chunkGlobalCenters = chunks.map { ci ->
@@ -864,7 +876,7 @@ class OcrEngine(private val context: Context) {
                 for (j in currAlts.indices) {
                     val candT = offsetGeomT + curr.charCols[j]
                     val candPx = currGlobal.getOrNull(j) ?: continue
-                    if (candPx > lastPx + 10f) {
+                    if (candPx > lastPx + STITCH_APPEND_GAP_PX) {
                         val ch = curr.text.getOrNull(j) ?: continue
                         if (stitchedText.isNotEmpty() && stitchedText.last() == ' ' && ch == ' ') continue
                         stitchedText.append(ch)
@@ -879,17 +891,17 @@ class OcrEngine(private val context: Context) {
             var bestPrevIdx = -1
             var bestCurrIdx = -1
             var bestScore = -1f
-            val pStart = maxOf(0, stitchedAlts.size - 10)
-            val cEnd = minOf(currAlts.size, 10)
+            val pStart = maxOf(0, stitchedAlts.size - STITCH_WINDOW)
+            val cEnd = minOf(currAlts.size, STITCH_WINDOW)
             for (pIdx in stitchedAlts.size - 1 downTo pStart) {
                 val pGC = stitchedGlobal[pIdx]
                 for (cIdx in 0 until cEnd) {
                     val cGX = currGlobal[cIdx]
                     val dist = abs(pGC - cGX)
-                    if (dist > 30) continue
+                    if (dist > STITCH_MAX_DIST_PX) continue
                     val pred = comparePredictionVectors(stitchedAlts[pIdx], currAlts[cIdx])
-                    if (pred < 0.4f) continue
-                    val score = (1f - dist / 30f) * 0.3f + pred * 0.7f
+                    if (pred < STITCH_MIN_PRED) continue
+                    val score = (1f - dist / STITCH_MAX_DIST_PX) * 0.3f + pred * 0.7f
                     if (score > bestScore) {
                         bestScore = score
                         bestPrevIdx = pIdx
@@ -923,7 +935,7 @@ class OcrEngine(private val context: Context) {
                 var appended = 0
                 for (j in currAlts.indices) {
                     val candPx = currGlobal[j]
-                    if (candPx > lastPx + 10f || (appended == 0 && currAlts.size == 1)) {
+                    if (candPx > lastPx + STITCH_APPEND_GAP_PX || (appended == 0 && currAlts.size == 1)) {
                         val ch = curr.text.getOrNull(j) ?: continue
                         if (stitchedText.isNotEmpty() && stitchedText.last() == ' ' && ch == ' ') continue
                         val candT = curr.offsetX.toFloat() * 6f / rh.toFloat() + curr.charCols[j]
@@ -959,11 +971,14 @@ class OcrEngine(private val context: Context) {
         return PPOcrResult(finalText, stitchedAlts, stitchedCols.toFloatArray(), totalSeqLen, stitchedRawAll)
     }
 
+    /** Stitch a long vertical line (rh*48/rw > 2000). Same algorithm as
+     * [recognizeAndStitchLongHoriz] rotated 90°: chunk top→bottom with a
+     * second-to-last-char anchor, then align by identical timestep size
+     * (`rw/6` px) with the same 30px / 0.4 / 0.3-0.7 best-pair rule. */
     private suspend fun recognizeAndStitchLongVert(
         rotated: Bitmap, targetH: Int
     ): PPOcrResult? {
         coroutineContext.ensureActive()
-        val recNcnn = recDynNcnn ?: return null
         val rw = rotated.width; val rh = rotated.height
         val scale = targetH.toFloat() / rw.toFloat()
         val maxChunkH = (480 / scale).toInt().coerceAtLeast(64)
@@ -977,27 +992,12 @@ class OcrEngine(private val context: Context) {
             if (h < 16) break
             val chunkBmp = Bitmap.createBitmap(rotated, 0, y, rw, h)
             val cw = chunkBmp.width; val ch = chunkBmp.height
-            val targetW = minOf(480, (cw.toFloat() * targetH / ch.toFloat()).roundToInt().coerceAtLeast(4))
-            val modelW = ((targetW + 7) / 8) * 8
-            val resized = Bitmap.createScaledBitmap(chunkBmp, targetW, targetH, true)
-            val pixels = IntArray(targetW * targetH)
-            resized.getPixels(pixels, 0, targetW, 0, 0, targetW, targetH)
-            resized.recycle(); chunkBmp.recycle()
-            val inputFloats = FloatArray(1 * 3 * targetH * modelW)
-            for (c in 0 until 3) { val cOff = c * targetH * modelW; for (yy in 0 until targetH) for (xx in 0 until targetW) {
-                val px = pixels[yy * targetW + xx]; val gray = grayLUT(px shr 16 and 0xFF, px shr 8 and 0xFF, px and 0xFF)
-                inputFloats[cOff + yy * modelW + xx] = gray / 127.5f - 1f
-            }}
-            val seqLen = modelW/8
-            val flatOutput = recNcnn.infer(inputFloats, modelW, targetH) ?: run { Log.e(TAG, "recNcnn $modelW infer null"); return null }
-            val actualSeqLen = maxOf(1, ceil(targetW/REC_STRIDE.toFloat()).toInt())
-            val cropLogits: Array<*>? = Array<Any>(actualSeqLen){ t-> FloatArray(REC_NUM_CLASSES){ c-> flatOutput[t*REC_NUM_CLASSES+c] } } as Array<*>
-            val rawAlts = (0 until actualSeqLen).map{ t->
-                val s=cropLogits?.getOrNull(t) as? FloatArray ?: return@map emptyList<Pair<Char,Float>>()
-                val pq=java.util.PriorityQueue<Int>(16, compareBy{ s[it] }); for(k in s.indices){ pq.add(k); if(pq.size>15) pq.poll() }
-                pq.toList().sortedByDescending{ s[it] }.map{ decodeChar(it) to s[it] }
-            }
-            val decoded = ctcDecode(cropLogits, actualSeqLen, REC_NUM_CLASSES, 0f, actualSeqLen)
+            val targetW = minOf(CHUNK_TARGET_MAX, (cw.toFloat() * targetH / ch.toFloat()).roundToInt().coerceAtLeast(4))
+            val decoded = inferResizedRec(chunkBmp, targetW, targetH)
+            chunkBmp.recycle()
+            if (decoded == null) { Log.e(TAG, "recNcnn chunk w$targetW infer null"); return null }
+            val actualSeqLen = decoded.seqLenTotal
+            val rawAlts = decoded.rawAlternatives
             chunks.add(ChunkInfo(decoded.text, decoded.charCols, decoded.alternatives, rawAlts, actualSeqLen, targetW, h, 0, y))
             if (y + h >= rh) break
             val txt = decoded.text
@@ -1042,7 +1042,7 @@ class OcrEngine(private val context: Context) {
                 for (j in currAlts.indices) {
                     val candT = offsetGeomT + curr.charCols[j]
                     val candPx = currGlobal.getOrNull(j) ?: continue
-                    if (candPx > lastPx + 10f) {
+                    if (candPx > lastPx + STITCH_APPEND_GAP_PX) {
                         val ch = curr.text.getOrNull(j) ?: continue
                         if (stitchedText.isNotEmpty() && stitchedText.last() == ' ' && ch == ' ') continue
                         stitchedText.append(ch)
@@ -1057,17 +1057,17 @@ class OcrEngine(private val context: Context) {
             var bestPrevIdx = -1
             var bestCurrIdx = -1
             var bestScore = -1f
-            val pStart = maxOf(0, stitchedAlts.size - 10)
-            val cEnd = minOf(currAlts.size, 10)
+            val pStart = maxOf(0, stitchedAlts.size - STITCH_WINDOW)
+            val cEnd = minOf(currAlts.size, STITCH_WINDOW)
             for (pIdx in stitchedAlts.size - 1 downTo pStart) {
                 val pGC = stitchedGlobal[pIdx]
                 for (cIdx in 0 until cEnd) {
                     val cGY = currGlobal[cIdx]
                     val dist = abs(pGC - cGY)
-                    if (dist > 30) continue
+                    if (dist > STITCH_MAX_DIST_PX) continue
                     val pred = comparePredictionVectors(stitchedAlts[pIdx], currAlts[cIdx])
-                    if (pred < 0.4f) continue
-                    val score = (1f - dist/30f)*0.3f + pred*0.7f
+                    if (pred < STITCH_MIN_PRED) continue
+                    val score = (1f - dist/STITCH_MAX_DIST_PX)*0.3f + pred*0.7f
                     if (score > bestScore) { bestScore = score; bestPrevIdx = pIdx; bestCurrIdx = cIdx }
                 }
             }
@@ -1097,7 +1097,7 @@ class OcrEngine(private val context: Context) {
                 var appended=0
                 for (j in currAlts.indices) {
                     val candPx = currGlobal[j]
-                    if (candPx > lastPx + 10f || (appended==0 && currAlts.size==1)) {
+                    if (candPx > lastPx + STITCH_APPEND_GAP_PX || (appended==0 && currAlts.size==1)) {
                         val ch = curr.text.getOrNull(j) ?: continue
                         if (stitchedText.isNotEmpty() && stitchedText.last()==' ' && ch==' ') continue
                         val candT = curr.offsetY.toFloat() * 6f / rw.toFloat() + curr.charCols[j]
@@ -1131,7 +1131,9 @@ class OcrEngine(private val context: Context) {
         return PPOcrResult(finalText, stitchedAlts, stitchedCols.toFloatArray(), totalSeqLen, stitchedRawAll)
     }
 
-    // helpers for stitch — ported from meiki
+    /** Prediction overlap 0–1 for a stitch candidate pair: 0.6–1.0 when top-1
+     * agrees (scaled by top-5 overlap), 0.5 when either top-1 appears in the
+     * other's top-3, else 0. Pairs below [STITCH_MIN_PRED] never stitch. */
     private fun comparePredictionVectors(alt1: List<Pair<Char,Float>>, alt2: List<Pair<Char,Float>>): Float {
         if (alt1.isEmpty()||alt2.isEmpty()) return 0f
         if (alt1[0].first==alt2[0].first) {
@@ -1143,6 +1145,8 @@ class OcrEngine(private val context: Context) {
         return 0f
     }
 
+    /** Merge two alternative lists at a stitch anchor: shared chars average up
+     * (×0.8), unique chars discount (×0.6), keep top 15 by score. */
     private fun interleaveAlternatives(alt1: List<Pair<Char, Float>>, alt2: List<Pair<Char, Float>>): List<Pair<Char, Float>> {
         val merged = mutableMapOf<Char, Float>()
         alt1.forEach { (ch, sc) -> merged[ch] = sc }
@@ -1150,17 +1154,20 @@ class OcrEngine(private val context: Context) {
             val ex = merged[ch] ?: 0f
             if (ex > 0f) merged[ch] = (ex + sc) * 0.8f else merged[ch] = sc * 0.6f
         }
-        return merged.toList().sortedByDescending { it.second }.take(15)
+        return merged.toList().sortedByDescending { it.second }.take(TOP_K)
     }
 
     /**
-     * CTC-decoded text + alternatives.  `blankThreshold` 0 means pure greedy
-     * (default PP-OCR behaviour); values >0 insert [GAP_CHAR] placeholders for
-     * blank timesteps where the top non-blank alternative score exceeds
-     * `blank_threshold * blank_score`.
+     * Greedy CTC decode: argmax per timestep, skip blank 0, collapse repeats,
+     * class 18709 → space. `blankThreshold` 0 means pure greedy (default PP-OCR
+     * behaviour); values >0 surface a non-blank char at blank timesteps whose
+     * best alternative scores within `blankThreshold` of blank, with [GAP_CHAR]
+     * kept as a selectable alternative. Emits per-char top-15 [alternatives]
+     * plus timestep columns; full per-timestep top-15 lives in
+     * [PPOcrResult.rawAlternatives] for cache re-decode.
      */
     private fun ctcDecode(
-        cropLogits: Array<*>?,
+        cropLogits: Array<FloatArray>?,
         seqLen: Int,
         numClasses: Int,
         blankThreshold: Float,
@@ -1184,17 +1191,8 @@ class OcrEngine(private val context: Context) {
 
             val classIdx = maxIdx
 
-            // Collect top-15 alternatives
-            val indexed = {
-                val pq = java.util.PriorityQueue<Int>(16, compareBy { slice[it] })
-                for (k in slice.indices) {
-                    pq.add(k)
-                    if (pq.size > 15) pq.poll()
-                }
-                pq.toList().sortedByDescending { slice[it] }
-                    .map { decodeChar(it) to slice[it] }
-                    .toMutableList()
-            }()
+            // Top-15 alternatives (shared helper).
+            val indexed = top15Alternatives(slice).toMutableList()
 
             // CTC: skip blank (0). Collapse repeats.
             when {
@@ -1255,17 +1253,19 @@ class OcrEngine(private val context: Context) {
     }
 
     // ═════════════════════════════════════════════════════════════════════════
-    //  Char box computation from CTC timestep positions
-    //  (mirrors accessibility_daemon/src/ocr_engine.rs logic exactly)
+    //  Char boxes from CTC columns
     // ═════════════════════════════════════════════════════════════════════════
 
-    /**
-     * Compute per-character bounding boxes from CTC timestep columns.
- * The logic matches accessibility_daemon exactly:
- *   - Horizontal: x-axis centers from (t+0.5)*avg_col_width, split overlaps evenly
- *   - Vertical:   y-axis centers, with punctuation squashing/expansion
- */
-fun computeCharBoxes(
+    /** Per-character boxes from CTC timestep columns.
+     *
+     * Horizontal: center each char at `(t+0.5)*avgColW` (`avgColW=cropW/seqLen`)
+     * with width `cropH`, then split overlaps evenly. Vertical: same on the
+     * y-axis with height `cropW` (`avgColW=cropH/seqLen`; trailing blank
+     * timesteps absorb at the bottom), except punctuation: closing marks shrink
+     * onto the next box's start and opening marks onto the previous box's end,
+     * then expand back to the mean non-punctuation height (bounded by the next
+     * non-punctuation edge). */
+    fun computeCharBoxes(
         text: String,
         charCols: FloatArray,
         seqLenTotal: Int,
@@ -1310,7 +1310,6 @@ fun computeCharBoxes(
             // final timestep (seqLen) aligns with bbox bottom.
             val avgColW = cropH.toFloat() / seqLenTotal.toFloat()
             val avgChH = maxOf(cropW.toFloat(), 3f)
-            Log.d(TAG, "vert char spacing: n=$n seqLenTotal=$seqLenTotal cropH=$cropH cropW=$cropW avgColW=$avgColW avgChH=$avgChH trailingNulls=${seqLenTotal - (charCols.lastOrNull()?.toInt()?.plus(1) ?: seqLenTotal)}")
 
             val cells = charCols.map { t ->
                 val c = (t + 0.5f) * avgColW
@@ -1371,17 +1370,21 @@ fun computeCharBoxes(
     }
 
     // ═════════════════════════════════════════════════════════════════════════
-    //  Streaming recognition — pool-based parallelism
+    //  Streaming rec — batches of 4, completion-order emit
     // ═════════════════════════════════════════════════════════════════════════
 
-    /**
-     * Recognize all detected line boxes using the PP-OCR recognition pool.
-     * Both horizontal and vertical lines use the SAME model (same session pool).
-     * The only difference is pre-processing (portrait rotation) and
-     * post-processing (char box computation in X vs Y axis).
+    /** Recognize all line boxes, streaming per-line results in completion order.
      *
-     * Workers pull jobs from a concurrent queue — matches accessibility_daemon.
-     */
+     * One dynamic-width model serves both orientations: portrait crops rotate
+     * 270° pre-inference, char boxes compute on the x- vs y-axis post-inference.
+     * Jobs sort into reading order (vertical right-to-left, then horizontal
+     * top-to-bottom; results stay keyed by job idx so only arrival order
+     * changes), run in batches of [BATCH_SIZE] with crops created per batch
+     * (4 bitmaps pinned at a time) and recycled after each batch. Within a
+     * batch, [recognizePpocrBatch] awaits via `select` over the deferreds so
+     * each line emits as its infer completes; the callback re-posts to the main
+     * thread. Cooperative cancellation (#18): overlay close cancels the job and
+     * each batch boundary checks `ensureActive()`. */
     suspend fun recognizeStreaming(
         bitmap: Bitmap,
         lineBoxes: List<JpDictRect>,
@@ -1390,7 +1393,7 @@ fun computeCharBoxes(
         val startTime = System.currentTimeMillis()
         if (recDynNcnn == null || ppocrVocab.isEmpty()) return@coroutineScope
 
-        // Build job queue — no Bitmap yet, create per batch to avoid 65× pin (rank 6)
+        // Build job queue — no Bitmaps yet; crops are created per batch below.
         data class Job(val idx: Int, val bbox: JpDictRect, val isVertical: Boolean)
 
         val jobs = lineBoxes.mapIndexedNotNull { i, box ->
@@ -1401,9 +1404,8 @@ fun computeCharBoxes(
 
         Log.d(TAG, "Processing ${jobs.size} boxes in batches of $BATCH_SIZE")
 
-        // Simple reading order (#24) — dynamic widths made size-sorting moot:
-        // vertical lines right-to-left first, then horizontal lines top-to-bottom
-        // (same per-group comparators as sortDetectedBoxes, groups flipped).
+        // Reading order: vertical lines right-to-left first, then horizontal
+        // lines top-to-bottom (same per-group comparators as sortDetectedBoxes).
         // Results stay keyed by job idx, so only arrival order changes.
         val verticals = jobs.filter { it.isVertical }
             .sortedWith(compareByDescending<Job> { it.bbox.right }.thenBy { it.bbox.top })
@@ -1417,7 +1419,7 @@ fun computeCharBoxes(
         for ((batchIdx, batch) in sortedJobs.chunked(BATCH_SIZE).withIndex()) {
             coroutineContext.ensureActive()
             val tBatch = System.nanoTime()
-            // Create crops per batch — was 65× pin to end, now 4× at a time
+            // Create crops per batch (4 bitmaps pinned at a time).
             val cropsWithJobs = batch.mapNotNull { job ->
                 val cropX = maxOf(job.bbox.left, 0)
                 val cropY = maxOf(job.bbox.top, 0)
@@ -1442,9 +1444,9 @@ fun computeCharBoxes(
                     crops.forEach { try { it.recycle() } catch (_: Exception) {} }
                     break
                 }
-                // Stream per line as each infer completes (completion order, not batch
-                // order) — same 4-concurrent throughput, faster first result. Results stay
-                // keyed by job idx so overlay placement is unaffected. #21
+                // Stream per line as each infer completes (completion order, not
+                // batch order) — same 4-concurrent throughput, faster first
+                // result. Results stay keyed by job idx. #21
                 var doneLines = 0
                 recognizePpocrBatch(crops) { index, result ->
                     val job = batchJobs.getOrNull(index) ?: return@recognizePpocrBatch
@@ -1486,7 +1488,7 @@ fun computeCharBoxes(
                 }
                 val elapsed = (System.nanoTime() - tBatch) / 1_000_000
                 Log.d(TAG, "Batch $batchIdx ${batchJobs.size} jobs → $doneLines lines in ${elapsed}ms")
-                // Per-batch recycle — was 65× pin to end (13MB), now 4× at a time
+                // Per-batch recycle.
                 crops.forEach { try { it.recycle() } catch (_: Exception) {} }
             } catch (e: Exception) {
                 Log.e(TAG, "Batch $batchIdx failed", e)
@@ -1502,79 +1504,14 @@ fun computeCharBoxes(
     }
 
     // ═════════════════════════════════════════════════════════════════════════
-    //  Re-processing with new threshold (re-CTC-decode only, no re-inference)
+    //  Re-decode from cache (no re-inference)
     // ═════════════════════════════════════════════════════════════════════════
 
-    /**
-     * Re-process a single line's recognition from cached raw data.
-     * Since PP-OCR CTC decoding is post-inference, we can adjust thresholds
-     * without re-running the model (the logits are discarded after first decode).
-     *
-     * For simplicity, this re-runs recognition. In the Rust version the raw
-     * logits are cached for threshold adjustment, but for Android it's fast
-     * enough to re-run.
-     */
-    suspend fun processLineFromRawChunks(
-        oldLine: LineResult,
-        crop: Bitmap,
-    ): LineResult {
-        if (recDynNcnn == null) return oldLine
-        try {
-            val ppocrResults = recognizePpocrBatch(listOf(crop))
-            if (ppocrResults.isEmpty()) return oldLine
-            val result = ppocrResults[0]
-            if (result.text.isEmpty()) return oldLine
-
-            // Use actual crop bitmap dimensions
-            val isVertical = oldLine.isVertical
-            val cropW = crop.width; val cropH = crop.height
-            val cropX = oldLine.charBoxes.firstOrNull()?.left ?: 0
-            val cropY = oldLine.charBoxes.firstOrNull()?.top ?: 0
-
-            val charBoxes = computeCharBoxes(
-                result.text, result.charCols, result.seqLenTotal,
-                cropX, cropY, cropW, cropH, isVertical,
-            )
-
-            val finalText = if (isVertical) {
-                result.text.map { toVerticalGlyph(it) }.joinToString("")
-            } else result.text
-            val finalAlts = if (isVertical) {
-                result.alternatives.map { alts ->
-                    alts.map { (ch, s) -> toVerticalGlyph(ch) to s }.toMutableList()
-                }
-            } else result.alternatives.map { it.toMutableList() }
-
-            val newLine = LineResult(
-                text = finalText,
-                charBoxes = charBoxes,
-                alternatives = finalAlts,
-                isVertical = isVertical,
-            )
-            // Apply overrides by char index to the new text
-            val textChars = newLine.text.toCharArray()
-            for ((charIdx, override) in oldLine.overrides) {
-                if (charIdx in textChars.indices) {
-                    textChars[charIdx] = override.first
-                }
-            }
-            newLine.text = String(textChars)
-            newLine.overrides.putAll(oldLine.overrides)
-            return newLine
-        } catch (e: Exception) {
-            Log.e(TAG, "processLineFromRawChunks failed", e)
-            return oldLine
-        }
-    }
-
-    // ═════════════════════════════════════════════════════════════════════════
-    //  Japanese text utilities
-    /**
-     * Re-decode a [LineResult] from its cached [rawAlternatives] without
-     * re-running recognition.  [blankThreshold] 0 = default (nothing shown
-     * for blanks); values > 0 insert [GAP_CHAR] placeholders for blank
-     * timesteps with a non-blank alternative exceeding `blank × blankThreshold`.
-     */
+    /** Re-decode a [LineResult] from its cached [rawAlternatives] without
+     * re-running recognition. [blankThreshold] mirrors [ctcDecode]: 0 is pure
+     * greedy; >0 surfaces non-blank chars at blank timesteps (with [GAP_CHAR]
+     * as a selectable alternative). Char boxes recompute when crop geometry
+     * is known; user [overrides][LineResult.overrides] carry over. */
     fun reDecodeLineResult(oldLine: LineResult, blankThreshold: Float): LineResult {
         val raw = oldLine.rawAlternatives
         if (raw.isEmpty()) return oldLine
@@ -1656,7 +1593,8 @@ fun computeCharBoxes(
     }
 }
 
-// Map horizontal glyphs to vertical equivalents (file-level for easy access)
+// Horizontal → vertical glyph equivalents (most CJK brackets are already upright
+// in the font; only chōonpu and ASCII-ish dashes need remapping).
 private val VERTICAL_GLYPH_MAP = mapOf(
     '「' to '「', '」' to '」', '『' to '『', '』' to '』',
     '（' to '（', '）' to '）', '［' to '［', '］' to '］',

@@ -131,7 +131,7 @@ class MainActivity : AppCompatActivity() {
             setOnCheckedChangeListener { _, checked ->
                 prefs.edit().putBoolean(debugPrefsKey, checked).apply()
                 tuningContainer.visibility = if (checked) LinearLayout.VISIBLE else LinearLayout.GONE
-                Log.i("MainActivity", "debug_settings_enabled=$checked")
+                Log.d("MainActivity", "debug_settings_enabled=$checked")
             }
         }
         layout.addView(debugToggle)
@@ -163,10 +163,8 @@ class MainActivity : AppCompatActivity() {
             val unclip = prefs.getFloat(OcrEngine.PREF_DET_UNCLIP, OcrEngine.DEF_DET_UNCLIP)
             val longSide = OcrEngine.DEF_DET_LONG_SIDE
             val xOver = prefs.getFloat(OcrEngine.PREF_X_OVERLAP, OcrEngine.DEF_X_OVERLAP)
-            val recConf = prefs.getFloat(OcrEngine.PREF_REC_CONF, OcrEngine.DEF_REC_CONF)
             val squish = prefs.getFloat(OcrEngine.PREF_REC_SQUISH, OcrEngine.DEF_REC_SQUISH)
-            val backend = prefs.getString(OcrEngine.PREF_BACKEND, "onnx") ?: "onnx"
-            val line = "live: backend=$backend detThresh=${String.format("%.2f", thresh)} unclip=${String.format("%.2f", unclip)} longSide=$longSide xOver=${String.format("%.2f", xOver)} recConf=${String.format("%.2f", recConf)} squish=${String.format("%.1f", squish)}"
+            val line = "live: detThresh=${String.format("%.2f", thresh)} unclip=${String.format("%.2f", unclip)} longSide=$longSide xOver=${String.format("%.2f", xOver)} squish=${String.format("%.1f", squish)}"
             liveSummary.text = line
         }
         refreshLiveSummary()
@@ -286,7 +284,7 @@ class MainActivity : AppCompatActivity() {
                     tvLive.text = "current: ${formatValue(v)}"
                     refreshLiveSummary()
                     Toast.makeText(this@MainActivity, "$label = ${formatValue(v)}", Toast.LENGTH_SHORT).show()
-                    Log.i("MainActivity", "tuning $prefKey = $v")
+                    Log.d("MainActivity", "tuning $prefKey = $v")
                     fromSeek = false
                 }
             })
@@ -311,7 +309,7 @@ class MainActivity : AppCompatActivity() {
                 tvLive.text = "current: ${formatValue(v)}"
                 refreshLiveSummary()
                 Toast.makeText(this, "$label = ${formatValue(v)}", Toast.LENGTH_SHORT).show()
-                Log.i("MainActivity", "tuning $prefKey = $v (via EditText)")
+                Log.d("MainActivity", "tuning $prefKey = $v (via EditText)")
             }
             btnReset.setOnClickListener {
                 if (isInt) prefs.edit().putInt(prefKey, default.roundToInt()).apply()
@@ -321,7 +319,7 @@ class MainActivity : AppCompatActivity() {
                 tvLive.text = "current: ${formatValue(default)}"
                 refreshLiveSummary()
                 Toast.makeText(this, "$label reset to ${formatValue(default)}", Toast.LENGTH_SHORT).show()
-                Log.i("MainActivity", "tuning $prefKey reset to $default")
+                Log.d("MainActivity", "tuning $prefKey reset to $default")
             }
 
             // live: if user types, update tvLive preview (don't commit)
@@ -344,20 +342,17 @@ class MainActivity : AppCompatActivity() {
         addTunable("PPOCR_DET_THRESH", OcrEngine.PREF_DET_THRESH, OcrEngine.DEF_DET_THRESH, 0.05f, 0.60f, 0.01f, false)
         addTunable("PPOCR_DET_UNCLIP_RATIO", OcrEngine.PREF_DET_UNCLIP, OcrEngine.DEF_DET_UNCLIP, 0.5f, 3.0f, 0.01f, false)
         addTunable("X_OVERLAP_THRESHOLD", OcrEngine.PREF_X_OVERLAP, OcrEngine.DEF_X_OVERLAP, 0.0f, 1.0f, 0.01f, false)
-        addTunable("REC_CONFIDENCE_THRESHOLD", OcrEngine.PREF_REC_CONF, OcrEngine.DEF_REC_CONF, 0.0f, 0.50f, 0.01f, false)
         addTunable("REC_SQUISH_FACTOR", OcrEngine.PREF_REC_SQUISH, OcrEngine.DEF_REC_SQUISH, 0.2f, 1.0f, 0.1f, false)
 
         addButton(tuningContainer, "Reset all tuning to defaults") {
             prefs.edit()
                 .putFloat(OcrEngine.PREF_DET_THRESH, OcrEngine.DEF_DET_THRESH)
                 .putFloat(OcrEngine.PREF_DET_UNCLIP, OcrEngine.DEF_DET_UNCLIP)
-                .putInt(OcrEngine.PREF_DET_LONG_SIDE, OcrEngine.DEF_DET_LONG_SIDE)
                 .putFloat(OcrEngine.PREF_X_OVERLAP, OcrEngine.DEF_X_OVERLAP)
-                .putFloat(OcrEngine.PREF_REC_CONF, OcrEngine.DEF_REC_CONF)
                 .putFloat(OcrEngine.PREF_REC_SQUISH, OcrEngine.DEF_REC_SQUISH)
                 .apply()
             Toast.makeText(this, "All tuning reset to defaults — reopen screen to refresh", Toast.LENGTH_LONG).show()
-            Log.i("MainActivity", "all tuning reset to defaults")
+            Log.d("MainActivity", "all tuning reset to defaults")
             // Recreate to refresh SeekBars
             recreate()
         }

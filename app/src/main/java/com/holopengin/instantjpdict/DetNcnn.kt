@@ -6,9 +6,8 @@ import java.io.File
 import java.nio.ByteBuffer
 
 /**
- * ncnn Det for #15 — loads det.param/bin (19KB/4.8MB, 217 layers) via JNI,
+ * ncnn Det — loads det.param/bin (19KB/4.8MB, 217 layers) via JNI,
  * runs DB segmentation 960×960, returns prob map [960*960] float.
- * No LiteRT fallback — ncnn is the only det path.
  */
 class DetNcnn private constructor(private val handle: Long) {
 
@@ -47,7 +46,7 @@ class DetNcnn private constructor(private val handle: Long) {
                 try {
                     System.loadLibrary("ncnn_jni")
                     loaded = true
-                    Log.i(TAG, "libncnn_jni loaded for Det")
+                    Log.d(TAG, "libncnn_jni loaded for Det")
                 } catch (e: UnsatisfiedLinkError) {
                     Log.e(TAG, "loadLibrary ncnn_jni failed for Det", e)
                 }
@@ -72,7 +71,7 @@ class DetNcnn private constructor(private val handle: Long) {
                 Log.e(TAG, "DetNcnn.create failed")
                 return null
             }
-            Log.i(TAG, "DetNcnn handle=$h")
+            Log.d(TAG, "DetNcnn handle=$h")
             return DetNcnn(h)
         }
 

@@ -7,7 +7,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 /**
- * ncnn Rec wrapper — single dynamic-width model rec_dyn (#23, was 4 buckets w64/128/256/480).
+ * ncnn Rec wrapper — single dynamic-width model rec_dyn (#23).
  * Loads 179-layer pnnx→ncnn 5.2 MB INT8 bin via JNI; exact-width inference (mult of 8).
  */
 class RecNcnn private constructor(private val handle: Long, val targetW: Int) {
@@ -45,7 +45,7 @@ class RecNcnn private constructor(private val handle: Long, val targetW: Int) {
                 try {
                     System.loadLibrary("ncnn_jni")
                     loaded = true
-                    Log.i(TAG, "libncnn_jni loaded")
+                    Log.d(TAG, "libncnn_jni loaded")
                 } catch (e: UnsatisfiedLinkError) {
                     Log.e(TAG, "loadLibrary ncnn_jni failed", e)
                 }
@@ -73,7 +73,7 @@ class RecNcnn private constructor(private val handle: Long, val targetW: Int) {
                 Log.e(TAG, "RecNcnn.create failed for W=$targetW")
                 return null
             }
-            Log.i(TAG, "RecNcnn W=$targetW handle=$h")
+            Log.d(TAG, "RecNcnn W=$targetW handle=$h")
             return RecNcnn(h, targetW)
         }
 

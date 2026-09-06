@@ -22,7 +22,8 @@ import kotlin.math.roundToInt
  * Release (real numbers): ./gradlew :app:connectedReleaseAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.holopengin.instantjpdict.OcrBenchmarkTest
  *
  * Output is deterministic (no wall-clock timestamps, only durations) for cron gating.
- * Part of #7, #14 dual-backend A/B + correctness gate (max abs <1e-3 + top-1)
+ * Part of #7 harness + #14 bench + #8 correctness gate (max abs <1e-3 + top-1);
+ * ncnn-only since #15.
  * penned by Hermes Agent + muse-spark-1.2-contributor
  */
 @RunWith(AndroidJUnit4::class)
@@ -39,8 +40,6 @@ class OcrBenchmarkTest {
         @BeforeClass
         fun setupEngine() {
             val appContext = InstrumentationRegistry.getInstrumentation().targetContext
-            appContext.getSharedPreferences("instant_jp_dict_prefs", android.content.Context.MODE_PRIVATE)
-                .edit().putString("ocr_backend", "ncnn").apply()
             val t0 = System.nanoTime()
             engine = OcrEngine(appContext)
             val loadMs = (System.nanoTime() - t0) / 1_000_000
@@ -321,15 +320,14 @@ class OcrBenchmarkTest {
     }
 
     /**
-     * #14 dual-backend A/B bench + correctness gate.
-     * For (backend in onnx,ncnn) single-pass per image (Screenshot 2400x1080 37boxes + jpg 1366x768 65boxes, 3-crop sample)
-     * 4 runs total ≈15s (sampled). Asserts max abs <1e-3 + 100% top-1 per #8 and logs bench backend=onnx vs ncnn in one logcat.
-     * Also runs per-bucket synthetic parity gate (w64/128/256/480) for the four REC widths.
+     * ncnn bench + correctness gate (was dual-backend A/B for #14; ncnn-only
+     * since #15). Single-pass per image (Screenshot 2400x1080 + jpg 1366x768,
+     * 3-crop sample) ≈15s. Also runs the dynamic-width synthetic parity gate
+     * (w64/200/480 incl. off-bucket 200, #23).
      */
     @Test
     fun benchDualBackend_AB_CorrectnessAndBench() {
         val appContext = InstrumentationRegistry.getInstrumentation().targetContext
-        val prefs = appContext.getSharedPreferences("instant_jp_dict_prefs", android.content.Context.MODE_PRIVATE)
         val instr = InstrumentationRegistry.getInstrumentation()
 
         // ── 1. Dynamic-width ncnn smoke gate — single rec_dyn model (#23), incl. off-bucket 200 ──
@@ -363,7 +361,7 @@ class OcrBenchmarkTest {
         }
         Log.i(TAG, "gate dynamic-width ncnn OK: ${bucketResults.joinToString(" | ")}")
 
-        // ── 2. Dual-backend image bench — 4 runs total (Screenshot×2 + jpg×2, 3-crop sample) ≈15s ──
+        // ── 2. Image bench — 2 runs total (Screenshot + jpg, 3-crop sample) ≈15s ──
         val images = listOf(
             "Screenshot_20260530-172718.png" to "Screenshot",
             "f5d7d08735383899.jpg" to "jpg"
@@ -374,10 +372,9 @@ class OcrBenchmarkTest {
         var totalRec = 0L
 
         for (backend in listOf("ncnn")) {
-            prefs.edit().putString("ocr_backend", backend).apply()
             val eng = OcrEngine(appContext)
             assertTrue("engine $backend failed to load", eng.isReady())
-            Log.i(TAG, "benchDual AB engine backend=$backend ready=${eng.isReady()} recConf=${eng.recConfThresh} detThresh=${OcrEngine.getDetThresh(appContext)}")
+            Log.i(TAG, "benchDual AB engine backend=$backend ready=${eng.isReady()} detThresh=${OcrEngine.getDetThresh(appContext)}")
             for ((imgName, _) in images) {
                 val bmp = loadBenchmarkBitmap(imgName)
                 val r = benchOneImageWithEngine(imgName, bmp, eng, backend)
@@ -397,7 +394,6 @@ class OcrBenchmarkTest {
             }
             eng.close()
         }
-        prefs.edit().putString("ocr_backend", "ncnn").apply()
 
         Log.i(TAG, "SUMMARY ncnn 2 runs detTotal=${totalDet}ms recTotal=${totalRec}ms avgPerRunDet=${totalDet/2}ms avgPerRunRec=${totalRec/2}ms")
         Log.i(TAG, "bench backend=ncnn complete — ncnn only")
@@ -457,7 +453,7 @@ class OcrBenchmarkTest {
 
     @Test
     fun benchRecNcnnAllBuckets() {
-        // Dynamic-width ncnn (#23) + 3-crop bench — onnxruntime removed for #15
+        // Dynamic-width ncnn (#23) + 3-crop bench.
         val appContext = InstrumentationRegistry.getInstrumentation().targetContext
         val h = 48
         val recDynField = engine.javaClass.getDeclaredField("recDynNcnn").apply { isAccessible = true }
@@ -485,12 +481,10 @@ class OcrBenchmarkTest {
             assertTrue("ncnn outSize w$w", ncnnOutSize == seqLen * 18710)
         }
 
-        // Now 3-crop bench with ncnn forced via prefs (for #13 backend=ncnn gate)
-        appContext.getSharedPreferences("instant_jp_dict_prefs", android.content.Context.MODE_PRIVATE)
-            .edit().putString("ocr_backend", "ncnn").apply()
+        // Now 3-crop bench with the ncnn engine.
         val ncnnEngine = OcrEngine(appContext)
         assertTrue("ncnnEngine ready", ncnnEngine.isReady())
-        Log.i(TAG, "benchRecNcnnAllBuckets: 3-crop with ncnn forced via prefs")
+        Log.i(TAG, "benchRecNcnnAllBuckets: 3-crop bench")
         val bmp1 = loadBenchmarkBitmap("Screenshot_20260530-172718.png")
         val bmp2 = loadBenchmarkBitmap("f5d7d08735383899.jpg")
         // Use ncnnEngine for bench — copy benchOneImage logic with ncnnEngine
@@ -527,8 +521,6 @@ class OcrBenchmarkTest {
         bmp1.recycle()
         bmp2.recycle()
         ncnnEngine.close()
-        appContext.getSharedPreferences("instant_jp_dict_prefs", android.content.Context.MODE_PRIVATE)
-            .edit().putString("ocr_backend", "ncnn").apply()
         assertTrue(r1.numBoxes > 0 && r2.numBoxes > 0)
         assertTrue("ncnn perCrop should be < 1500ms avg (relaxed from 1200ms until quant, baseline 2407ms)", avgPerCrop < 1500)
     }
