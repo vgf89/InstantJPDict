@@ -51,10 +51,13 @@ git -C "$SRC" apply --check "$MBOX"
 git -C "$SRC" am --quiet "$MBOX"
 echo "tree: $(git -C "$SRC" log --oneline -1)"
 # am rewrites committer identity, so SHAs differ from the fork; check subjects instead.
+# (Compared as variables, not `git log | grep -q`: grep -q can SIGPIPE git
+# and trip `pipefail` nondeterministically.)
 EXPECT1="fix int8 1x1 conv on flattened 1D blobs (SE branches)"
 EXPECT2="fix ConvolutionDepthWise int8 load for scale terms 201/202"
-git -C "$SRC" log --format=%s -2 | grep -qxF "$EXPECT1" \
-  && git -C "$SRC" log --format=%s -2 | grep -qxF "$EXPECT2" \
+SUBJECTS=$(git -C "$SRC" log --format=%s -2)
+echo "$SUBJECTS" | grep -qxF "$EXPECT1" \
+  && echo "$SUBJECTS" | grep -qxF "$EXPECT2" \
   && echo "patches applied (subjects verified)" \
   || { echo "ERROR: applied subjects do not match" >&2; exit 1; }
 
