@@ -9,14 +9,18 @@ Two param-only graph edits on rec_dyn.param (or rec_w480.param):
                 bare `GELU` lines default to fast_gelu=0 (erf). erf-vs-tanh
                 differ by <=4.8e-4 (numpy, full range), so this variant is
                 expected to pass CER parity while cutting erfcf cost.
+                (Shipped in 1b2aca0, refs #27.)
 
   --mode fuse : fold each Conv(1x1,int8,8=2) -> GELU -> Conv pattern into the
                 producer by setting 9=<activation> on the producer, deleting
                 the GELU layer, rewiring the consumer to the producer output
-                blob, and renumbering all downstream blob ids. Requires a
-                vendored-tree fused-GELU type first (activation_ss ends at 6
-                today); until then the output param will NOT load (unknown
-                activation). Default --activation 7.
+                blob, and renumbering all downstream blob ids. Requires the
+                vendored-tree fused-GELU type (activation_ss 7, refs #40);
+                until the tree carries it the output param will NOT load
+                (unknown activation). Default --activation 7. Accepts bare
+                GELU (erf) or 0=1 (tanh) — fused type 7 is always the tanh
+                approximation, so fusing a bare GELU changes numerics
+                accordingly (verify with parity gate).
 
 Blob renumbering: each fusion removes exactly one blob (the GELU output).
 Old blob ids map to new sequential ids; GELU outputs alias their inputs.
@@ -124,7 +128,8 @@ def main():
         if n_in != 1 or n_out != 1:
             sys.exit(f"refusing: {name} is not 1->1")
         if params:
-            sys.exit(f"refusing: {name} carries params {params}, expected bare GELU")
+            if set(params) != {0} or params.get(0) != '1':
+                sys.exit(f"refusing: {name} carries params {params}, expected bare GELU or 0=1")
         gin, gout = blobs
         prod = cons = None
         for j, q in enumerate(parsed):

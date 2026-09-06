@@ -1,0 +1,319 @@
+From 98909cf1b06571fbade5a67c21a3a66a5b7833b0 Mon Sep 17 00:00:00 2001
+From: "hardy.kevin.c" <hardy.kevin.c@gmail.com>
+Date: Sun, 6 Sep 2026 21:20:44 +0900
+Subject: [PATCH] fused GELU activation type 7 (tanh approx) for int8 epilogue
+ fusion
+
+scalar activation_ss + create_activation_layer branch; vector paths
+for x86 (sse/avx/avx512), arm (f32 + f16), mips, loongarch (lsx/lasx),
+riscv. Consumed via conv 9=7 (see InstantJPDict #40).
+
+*penned by opencode + Muse Spark*
+---
+ src/layer/arm/arm_activation.h             | 24 +++++++++++
+ src/layer/fused_activation.h               | 15 +++++++
+ src/layer/loongarch/loongarch_activation.h | 32 +++++++++++++++
+ src/layer/mips/mips_activation.h           | 16 ++++++++
+ src/layer/riscv/riscv_activation.h         |  6 +++
+ src/layer/x86/x86_activation.h             | 46 ++++++++++++++++++++++
+ 6 files changed, 139 insertions(+)
+
+diff --git a/src/layer/arm/arm_activation.h b/src/layer/arm/arm_activation.h
+index 32e89445..ba34330f 100644
+--- a/src/layer/arm/arm_activation.h
++++ b/src/layer/arm/arm_activation.h
+@@ -52,6 +52,10 @@ static inline float32x4_t activation_ps(float32x4_t _v, int activation_type, con
+         _ans = vminq_f32(_ans, _one);
+         _v = vmulq_f32(_ans, _v);
+     }
++    else if (activation_type == 7)
++    {
++        _v = fast_gelu_ps(_v);
++    }
+ 
+     return _v;
+ }
+@@ -88,6 +92,12 @@ static inline __fp16 activation_ss_f16(__fp16 v, int activation_type, const ncnn
+     {
+         v = v * (__fp16)tanhf(logf(expf((float)v) + 1.f));
+     }
++    else if (activation_type == 7)
++    {
++        // fast GELU (tanh approximation)
++        float x = (float)v;
++        v = (__fp16)(0.5f * x * (1.f + tanhf(0.79788452f * (x + 0.044715f * x * x * x))));
++    }
+     else if (activation_type == 6)
+     {
+         const __fp16 alpha = (__fp16)(activation_params[0]);
+@@ -135,6 +145,13 @@ static inline float16x4_t activation_ps_f16(float16x4_t _v, int activation_type,
+     {
+         _v = vmul_f16(_v, tanh_ps_f16(log_ps_f16(vadd_f16(exp_ps_f16(_v), vdup_n_f16(1.f)))));
+     }
++    else if (activation_type == 7)
++    {
++        // fast GELU (tanh approximation)
++        float16x4_t _x3 = vmul_f16(vmul_f16(_v, _v), _v);
++        float16x4_t _inner = vadd_f16(vmul_f16(vdup_n_f16((__fp16)0.79788452f), _v), vmul_f16(vdup_n_f16((__fp16)(0.044715f * 0.79788452f)), _x3));
++        _v = vmul_f16(vmul_f16(vdup_n_f16((__fp16)0.5f), _v), vadd_f16(vdup_n_f16((__fp16)1.f), tanh_ps_f16(_inner)));
++    }
+     else if (activation_type == 6)
+     {
+         const __fp16 alpha = (__fp16)activation_params[0];
+@@ -181,6 +198,13 @@ static inline float16x8_t activation_ps_f16(float16x8_t _v, int activation_type,
+     {
+         _v = vmulq_f16(_v, tanh_ps_f16(log_ps_f16(vaddq_f16(exp_ps_f16(_v), vdupq_n_f16(1.f)))));
+     }
++    else if (activation_type == 7)
++    {
++        // fast GELU (tanh approximation)
++        float16x8_t _x3 = vmulq_f16(vmulq_f16(_v, _v), _v);
++        float16x8_t _inner = vaddq_f16(vmulq_f16(vdupq_n_f16((__fp16)0.79788452f), _v), vmulq_f16(vdupq_n_f16((__fp16)(0.044715f * 0.79788452f)), _x3));
++        _v = vmulq_f16(vmulq_f16(vdupq_n_f16((__fp16)0.5f), _v), vaddq_f16(vdupq_n_f16((__fp16)1.f), tanh_ps_f16(_inner)));
++    }
+     else if (activation_type == 6)
+     {
+         const __fp16 alpha_fp16 = (__fp16)activation_params[0];
+diff --git a/src/layer/fused_activation.h b/src/layer/fused_activation.h
+index c1d6647f..505c144f 100644
+--- a/src/layer/fused_activation.h
++++ b/src/layer/fused_activation.h
+@@ -58,6 +58,12 @@ static NCNN_FORCEINLINE float activation_ss(float v, int activation_type, const
+             v = v * (v * alpha + beta);
+         break;
+     }
++    case 7:
++    {
++        // fast GELU (tanh approximation, matches GELU layer fast_gelu=1)
++        v = 0.5f * v * (1.f + tanhf(0.79788452f * (v + 0.044715f * v * v * v)));
++        break;
++    }
+     }
+ 
+     return v;
+@@ -116,6 +122,15 @@ static ncnn::Layer* create_activation_layer(int activation_type, const ncnn::Mat
+ 
+         activation->load_param(pd);
+     }
++    else if (activation_type == 7)
++    {
++        activation = ncnn::create_layer_cpu(ncnn::LayerType::GELU);
++
++        ncnn::ParamDict pd;
++        pd.set(0, 1); // fast_gelu (tanh approximation)
++
++        activation->load_param(pd);
++    }
+ 
+     if (activation)
+     {
+diff --git a/src/layer/loongarch/loongarch_activation.h b/src/layer/loongarch/loongarch_activation.h
+index b0bbd571..cc3dec77 100644
+--- a/src/layer/loongarch/loongarch_activation.h
++++ b/src/layer/loongarch/loongarch_activation.h
+@@ -30,6 +30,17 @@ static NCNN_FORCEINLINE __m128 mish_lsx(__m128 inputs)
+     return __lsx_vfmul_s(inputs, tanh_lsx(log_ps(__lsx_vfadd_s(exp_ps(inputs), (__m128)__lsx_vreplfr2vr_s(1.f)))));
+ }
+ 
++static NCNN_FORCEINLINE __m128 fast_gelu_lsx(__m128 inputs)
++{
++    // 0.5x * (1 + tanh(0.79788452 * (x + 0.044715 * x^3)))
++    const __m128 half = (__m128)__lsx_vreplfr2vr_s(0.5f);
++    const __m128 one = (__m128)__lsx_vreplfr2vr_s(1.0f);
++    __m128 x3 = __lsx_vfmul_s(__lsx_vfmul_s(inputs, inputs), inputs);
++    __m128 inner = __lsx_vfadd_s(__lsx_vfmul_s((__m128)__lsx_vreplfr2vr_s(0.79788452f), inputs),
++                                 __lsx_vfmul_s((__m128)__lsx_vreplfr2vr_s(0.044715f * 0.79788452f), x3));
++    return __lsx_vfmul_s(__lsx_vfmul_s(half, inputs), __lsx_vfadd_s(one, tanh_lsx(inner)));
++}
++
+ static NCNN_FORCEINLINE __m128 swish_lsx(__m128 inputs)
+ {
+     return __lsx_vfmul_s(inputs, sigmoid_lsx(inputs));
+@@ -104,6 +115,11 @@ static NCNN_FORCEINLINE __m128 activation_lsx(__m128 _v, int activation_type, co
+         __m128 _b = (__m128)__lsx_vreplfr2vr_s(activation_params[1]);
+         return hardswish_lsx(_v, _a, _b);
+     }
++    case 7:
++    {
++        // fast GELU (tanh approximation)
++        return fast_gelu_lsx(_v);
++    }
+     }
+ 
+     return _v;
+@@ -134,6 +150,17 @@ static NCNN_FORCEINLINE __m256 mish_lasx(__m256 inputs)
+     return __lasx_xvfmul_s(inputs, tanh_lasx(log256_ps(__lasx_xvfadd_s(exp256_ps(inputs), (__m256)__lasx_xvreplfr2vr_s(1.f)))));
+ }
+ 
++static NCNN_FORCEINLINE __m256 fast_gelu_lasx(__m256 inputs)
++{
++    // 0.5x * (1 + tanh(0.79788452 * (x + 0.044715 * x^3)))
++    const __m256 half = (__m256)__lasx_xvreplfr2vr_s(0.5f);
++    const __m256 one = (__m256)__lasx_xvreplfr2vr_s(1.0f);
++    __m256 x3 = __lasx_xvfmul_s(__lasx_xvfmul_s(inputs, inputs), inputs);
++    __m256 inner = __lasx_xvfadd_s(__lasx_xvfmul_s((__m256)__lasx_xvreplfr2vr_s(0.79788452f), inputs),
++                                   __lasx_xvfmul_s((__m256)__lasx_xvreplfr2vr_s(0.044715f * 0.79788452f), x3));
++    return __lasx_xvfmul_s(__lasx_xvfmul_s(half, inputs), __lasx_xvfadd_s(one, tanh_lasx(inner)));
++}
++
+ static NCNN_FORCEINLINE __m256 swish_lasx(__m256 inputs)
+ {
+     return __lasx_xvfmul_s(inputs, sigmoid_lasx(inputs));
+@@ -208,6 +235,11 @@ static NCNN_FORCEINLINE __m256 activation_lasx(__m256 _v, int activation_type, c
+         __m256 _b = (__m256)__lasx_xvreplfr2vr_s(activation_params[1]);
+         return hardswish_lasx(_v, _a, _b);
+     }
++    case 7:
++    {
++        // fast GELU (tanh approximation)
++        return fast_gelu_lasx(_v);
++    }
+     }
+ 
+     return _v;
+diff --git a/src/layer/mips/mips_activation.h b/src/layer/mips/mips_activation.h
+index d3474793..56860735 100644
+--- a/src/layer/mips/mips_activation.h
++++ b/src/layer/mips/mips_activation.h
+@@ -30,6 +30,17 @@ static NCNN_FORCEINLINE v4f32 mish_msa(v4f32 inputs)
+     return __msa_fmul_w(inputs, tanh_msa(log_ps(__msa_fadd_w(exp_ps(inputs), (v4f32)__msa_fill_w_f32(1.f)))));
+ }
+ 
++static NCNN_FORCEINLINE v4f32 fast_gelu_msa(v4f32 inputs)
++{
++    // 0.5x * (1 + tanh(0.79788452 * (x + 0.044715 * x^3)))
++    const v4f32 half = (v4f32)__msa_fill_w_f32(0.5f);
++    const v4f32 one = (v4f32)__msa_fill_w_f32(1.0f);
++    v4f32 x3 = __msa_fmul_w(__msa_fmul_w(inputs, inputs), inputs);
++    v4f32 inner = __msa_fadd_w(__msa_fmul_w((v4f32)__msa_fill_w_f32(0.79788452f), inputs),
++                               __msa_fmul_w((v4f32)__msa_fill_w_f32(0.044715f * 0.79788452f), x3));
++    return __msa_fmul_w(__msa_fmul_w(half, inputs), __msa_fadd_w(one, tanh_msa(inner)));
++}
++
+ static NCNN_FORCEINLINE v4f32 swish_msa(v4f32 inputs)
+ {
+     return __msa_fmul_w(inputs, sigmoid_msa(inputs));
+@@ -104,6 +115,11 @@ static NCNN_FORCEINLINE v4f32 activation_msa(v4f32 _v, int activation_type, cons
+         v4f32 _b = (v4f32)__msa_fill_w_f32(activation_params[1]);
+         return hardswish_msa(_v, _a, _b);
+     }
++    case 7:
++    {
++        // fast GELU (tanh approximation)
++        return fast_gelu_msa(_v);
++    }
+     }
+ 
+     return _v;
+diff --git a/src/layer/riscv/riscv_activation.h b/src/layer/riscv/riscv_activation.h
+index 5cf84edb..07fbdc5a 100644
+--- a/src/layer/riscv/riscv_activation.h
++++ b/src/layer/riscv/riscv_activation.h
+@@ -51,6 +51,12 @@
+                                                                                                                                                                               \
+             vfloat##SEW##m##LMUL##_t _p0 = __riscv_vfadd_vf_f##SEW##m##LMUL##_m(_apply, __riscv_vfmul_vf_f##SEW##m##LMUL##_m(_apply, _v, (STYPE)alpha, vl), (STYPE)beta, vl); \
+             _v = __riscv_vfmul_vv_f##SEW##m##LMUL##_mu(_apply, _v, _v, _p0, vl);                                                                                              \
++        }                                                                                                                                                                     \
++        else if (activation_type == 7)                                                                                                                                        \
++        {                                                                                                                                                                     \
++            vfloat##SEW##m##LMUL##_t _x3 = __riscv_vfmul_vv_f##SEW##m##LMUL(__riscv_vfmul_vv_f##SEW##m##LMUL(_v, _v, vl), _v, vl);                                              \
++            vfloat##SEW##m##LMUL##_t _in = __riscv_vfadd_vv_f##SEW##m##LMUL(__riscv_vfmul_vf_f##SEW##m##LMUL(_v, (STYPE)0.79788452f, vl), __riscv_vfmul_vf_f##SEW##m##LMUL(_x3, (STYPE)(0.044715f * 0.79788452f), vl), vl); \
++            _v = __riscv_vfmul_vv_f##SEW##m##LMUL(__riscv_vfmul_vf_f##SEW##m##LMUL(_v, (STYPE)0.5f, vl), __riscv_vfadd_vf_f##SEW##m##LMUL(tanh_ps(_in, vl), (STYPE)1.f, vl), vl); \
+         }                                                                                                                                                                     \
+                                                                                                                                                                               \
+         return _v;                                                                                                                                                            \
+diff --git a/src/layer/x86/x86_activation.h b/src/layer/x86/x86_activation.h
+index acca6e5f..ea06bae3 100644
+--- a/src/layer/x86/x86_activation.h
++++ b/src/layer/x86/x86_activation.h
+@@ -44,6 +44,16 @@ static NCNN_FORCEINLINE __m128 hardswish_sse(__m128 inputs, __m128 a, __m128 b)
+     return _mm_mul_ps(b, inputs);
+ }
+ 
++static NCNN_FORCEINLINE __m128 fast_gelu_sse(__m128 inputs)
++{
++    // 0.5x * (1 + tanh(0.79788452 * (x + 0.044715 * x^3)))
++    const __m128 half = _mm_set1_ps(0.5f);
++    const __m128 one = _mm_set1_ps(1.0f);
++    __m128 x3 = _mm_mul_ps(_mm_mul_ps(inputs, inputs), inputs);
++    __m128 inner = _mm_comp_fmadd_ps(_mm_set1_ps(0.044715f * 0.79788452f), x3, _mm_mul_ps(_mm_set1_ps(0.79788452f), inputs));
++    return _mm_mul_ps(_mm_mul_ps(half, inputs), _mm_add_ps(one, tanh_sse(inner)));
++}
++
+ static NCNN_FORCEINLINE __m128 lrelu_sse(__m128 inputs, float slope)
+ {
+     __m128 pos = _mm_max_ps(_mm_setzero_ps(), inputs);
+@@ -103,6 +113,10 @@ static NCNN_FORCEINLINE __m128 activation_sse(__m128 _v, int activation_type, co
+         __m128 _b = _mm_set1_ps(activation_params[1]);
+         return hardswish_sse(_v, _a, _b);
+     }
++    case 7:
++    {
++        return fast_gelu_sse(_v);
++    }
+     }
+ 
+     return _v;
+@@ -134,6 +148,20 @@ static NCNN_FORCEINLINE __m256 mish_avx(__m256 inputs)
+     return _mm256_mul_ps(inputs, tanh_avx(log256_ps(_mm256_add_ps(exp256_ps(inputs), _mm256_set1_ps(1.f)))));
+ }
+ 
++static NCNN_FORCEINLINE __m256 fast_gelu_avx(__m256 inputs)
++{
++    // 0.5x * (1 + tanh(0.79788452 * (x + 0.044715 * x^3)))
++    const __m256 half = _mm256_set1_ps(0.5f);
++    const __m256 one = _mm256_set1_ps(1.0f);
++    __m256 x3 = _mm256_mul_ps(_mm256_mul_ps(inputs, inputs), inputs);
++#if __FMA__ || __FMA4__
++    __m256 inner = _mm256_comp_fmadd_ps(_mm256_set1_ps(0.044715f * 0.79788452f), x3, _mm256_mul_ps(_mm256_set1_ps(0.79788452f), inputs));
++#else
++    __m256 inner = _mm256_add_ps(_mm256_mul_ps(_mm256_set1_ps(0.044715f * 0.79788452f), x3), _mm256_mul_ps(_mm256_set1_ps(0.79788452f), inputs));
++#endif
++    return _mm256_mul_ps(_mm256_mul_ps(half, inputs), _mm256_add_ps(one, tanh_avx(inner)));
++}
++
+ static NCNN_FORCEINLINE __m256 swish_avx(__m256 inputs)
+ {
+     return _mm256_mul_ps(inputs, sigmoid_avx(inputs));
+@@ -207,6 +235,10 @@ static NCNN_FORCEINLINE __m256 activation_avx(__m256 _v, int activation_type, co
+         __m256 _b = _mm256_set1_ps(activation_params[1]);
+         return hardswish_avx(_v, _a, _b);
+     }
++    case 7:
++    {
++        return fast_gelu_avx(_v);
++    }
+     }
+ 
+     return _v;
+@@ -233,6 +265,16 @@ static NCNN_FORCEINLINE __m512 mish_avx512(__m512 inputs)
+     return _mm512_mul_ps(inputs, tanh_avx512(log512_ps(_mm512_add_ps(exp512_ps(inputs), _mm512_set1_ps(1.f)))));
+ }
+ 
++static NCNN_FORCEINLINE __m512 fast_gelu_avx512(__m512 inputs)
++{
++    // 0.5x * (1 + tanh(0.79788452 * (x + 0.044715 * x^3)))
++    const __m512 half = _mm512_set1_ps(0.5f);
++    const __m512 one = _mm512_set1_ps(1.0f);
++    __m512 x3 = _mm512_mul_ps(_mm512_mul_ps(inputs, inputs), inputs);
++    __m512 inner = _mm512_fmadd_ps(_mm512_set1_ps(0.044715f * 0.79788452f), x3, _mm512_mul_ps(_mm512_set1_ps(0.79788452f), inputs));
++    return _mm512_mul_ps(_mm512_mul_ps(half, inputs), _mm512_add_ps(one, tanh_avx512(inner)));
++}
++
+ static NCNN_FORCEINLINE __m512 swish_avx512(__m512 inputs)
+ {
+     return _mm512_mul_ps(inputs, sigmoid_avx512(inputs));
+@@ -305,6 +347,10 @@ static NCNN_FORCEINLINE __m512 activation_avx512(__m512 _v, int activation_type,
+         __m512 _b = _mm512_set1_ps(activation_params[1]);
+         return hardswish_avx512(_v, _a, _b);
+     }
++    case 7:
++    {
++        return fast_gelu_avx512(_v);
++    }
+     }
+ 
+     return _v;
+-- 
+2.55.0
+
