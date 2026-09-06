@@ -86,17 +86,18 @@ What the script does: loads the checkpoint float32, probes the output once
 in 18710 classes), traces a thin Wrapper per width at `[1,3,48,W]` ->
 `rec_w{W}.pt`.
 
-Then per width + det (pnnx 20260526):
+Then per width + det (pnnx 20260526 from pip, single call each -- the same
+binary parses, optimizes, fuses, and emits ncnn; verified: rec census
+179 layers / 206 blobs with GELU 13 / Swish 5 / LayerNorm 5 / SDPA 2, bins
+10.56 MB; det 217 layers, layer sequence md5-identical to shipped, det.bin
+byte-identical to shipped):
 
 ```bash
-pnnx /tmp/pt_models/rec_w{W}.pt inputshape=[1,3,48,{W}]
-# -> rec_w{W}.pnnx.param/.bin, zero hand-edits
+pnnx /tmp/pt_models/rec_w{W}.pt inputshape=[1,3,48,{W}] \
+  ncnnparam=rec_w{W}.param ncnnbin=rec_w{W}.bin
+# -> rec_w{W}.param/.bin FP32, zero hand-edits (no separate converter step)
 pnnx models/archive/PP-OCRv6_small_det_onnx/inference.onnx \
-  inputshape=[1,3,960,960] inputshape2=[1,3,960,960]
-# pnnx is the separate Tencent/pnnx project, pinned 20260526 via pip
-# (`uv pip install "pnnx==20260526"` -- no release binaries on GitHub);
-# the same binary converts pnnx format -> ncnn format:
-pnnx rec_w{W}.pnnx.param rec_w{W}.pnnx.bin rec_w{W}.param rec_w{W}.bin
+  inputshape=[1,3,960,960] ncnnparam=det.param ncnnbin=det.bin
 ```
 
 Contract (#5, the arbiter -- not trust): HF-vs-ORT-vs-ncnn max |logit|
@@ -105,19 +106,14 @@ Contract (#5, the arbiter -- not trust): HF-vs-ORT-vs-ncnn max |logit|
 the normalize-inside-vs-outside-trace boundary is the prime suspect
 (runtime feeds gray/127.5-1 NCHW).
 
-FP16-storage (was **[GAP-FP16]**, now inferred-but-verifiable): no recorded
-command exists anywhere (grepped repo + docs). Canonical ncnn form:
-
-```bash
-ncnnoptimize in.param in.bin out.param out.bin 1
-# trailing 1 = fp16 storage; ncnnoptimize ships in the build_ncnn.sh tree
-```
-
-Treat as hypothesis: the double-quant tripwires (step 5) + the #16 parity
-gate (step 7) confirm or reject it. Cross-check: shipped `det.param/bin`
-is fp16-storage per doc §131, and fp16 rounding (~2^-11) is ~16x finer than
-the INT8 grid (~2^-7), so fp32->fp16->int8 is measurably identical to
-fp32->int8 (w480 parity identical at 93.3%/0.007).
+FP16-storage (was **[GAP-FP16]**, now **resolved by experiment** 2026-09-06):
+quantizing straight from the FP32 pnnx output reproduces the shipped #16
+numbers exactly (w480 93.3%/0.007, INT8 bins 5.38 MB) -- no FP16 intermediate
+needed, consistent with the doc's note that fp32->fp16->int8 is measurably
+identical to fp32->int8. `ncnnoptimize in.param in.bin out.param out.bin 1`
+remains available in the `build_ncnn.sh` tree if a future flow wants it.
+Note: the pnnx `fp16=1` flag emits same-size bins, i.e. it does NOT produce
+the historical FP16-storage form -- do not use it for this purpose.
 
 ## 5. Quantize rec to INT8
 
@@ -185,10 +181,13 @@ exempting `meiki*` from the filter (owner decision, touches representation).
 ## Open holes for the first nuke-and-pave run
 
 1. **Exporter validation**: `tools/export_rec_onnx.py` is a reconstruction --
-   run it on the build machine and check the #5 contract before converting.
-2. **FP16 hypothesis**: confirm `ncnnoptimize ... 1` via the step-5 tripwires
-   + step-7 gate; record the verdict here.
-3. First full `tools/build_ncnn.sh` compile (no cmake on the audit machine).
+   validated 2026-09-06 in the Arch container (probe exact, census exact,
+   det.bin byte-identical, parity reproduced). Remaining: HF-vs-ORT-vs-ncnn
+   max-|logit| 4-8e-5 check if stricter proof is wanted.
+2. **FP16 verdict**: closed -- FP32 source reproduces shipped numbers; no
+   FP16 step needed.
+3. First full `tools/build_ncnn.sh` compile -- **done** 2026-09-06 in the
+   Arch container (host tools + android arm64 libncnn.a, `NCNN_VULKAN=OFF`).
 4. Commit `table_w{W}.txt` KL tables or bless regen-every-time (gate decides).
 5. The nuke-and-pave itself: clean checkout, this runbook only, ending with a
    byte-sane APK + passing parity gate.
