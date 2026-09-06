@@ -42,9 +42,10 @@ for W in 64 128 256 480; do
   P="$FP32/rec_w${W}.param"; B="$FP32/rec_w${W}.bin"; F="$CALIB/filelist_w${W}.txt"
   [ -f "$P" ] && [ -f "$B" ] && [ -f "$F" ] \
     || { echo "missing input for w$W" >&2; exit 1; }
-  # Refuse already-quantized input: int8 params carry scale-count terms
-  # (verified: 0 in FP det.param, 66 in shipped INT8 rec_dyn.param).
-  if grep -qE " 8=" "$P"; then
+  # Refuse already-quantized input: int8 Convolution/DepthWise lines carry an
+  # 8= scale-count term the FP32 graph lacks. (Scope to conv lines: Gemm uses
+  # 8= for its N dim in both. Verified: FP32 conv has no 8=, INT8 conv has.)
+  if grep -qE "^Convolution(DepthWise)? +[^ ]+ +[0-9]+ [0-9]+ .* 8=" "$P"; then
     echo "w$W: input looks already quantized -- refusing (quantize from FP32 source)" >&2
     exit 1
   fi
