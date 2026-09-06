@@ -191,13 +191,13 @@ class OcrBenchmarkTest {
         )
     }
 
-    /** Variant that uses an explicit engine + backend label for A/B — #14 */
-    private fun benchOneImageWithEngine(name: String, bitmap: Bitmap, eng: OcrEngine, backend: String): BenchResult {
-        Log.i(TAG, "bench start $name ${bitmap.width}x${bitmap.height} backend=$backend")
+    /** Variant that uses an explicit engine (for the ncnn correctness gate below). */
+    private fun benchOneImageWithEngine(name: String, bitmap: Bitmap, eng: OcrEngine): BenchResult {
+        Log.i(TAG, "bench start $name ${bitmap.width}x${bitmap.height}")
         val tDet = System.nanoTime()
         val boxes = eng.detect(bitmap)
         val detMs = (System.nanoTime() - tDet) / 1_000_000
-        Log.i(TAG, "bench det $name boxes=${boxes.size} detMs=$detMs backend=$backend")
+        Log.i(TAG, "bench det $name boxes=${boxes.size} detMs=$detMs")
         if (boxes.isEmpty()) {
             return BenchResult(name, bitmap.width, bitmap.height, detMs, detMs, detMs, 0, 0, 0, 0, 0, 0, emptyList())
         }
@@ -205,7 +205,7 @@ class OcrBenchmarkTest {
             boxes.size <= 3 -> boxes
             else -> listOf(boxes.first(), boxes[boxes.size / 2], boxes.last())
         }
-        Log.i(TAG, "bench sample ${sampleBoxes.size}/${boxes.size} boxes for rec backend=$backend")
+        Log.i(TAG, "bench sample ${sampleBoxes.size}/${boxes.size} boxes for rec")
         val texts = mutableListOf<String>()
         val collected = mutableListOf<Pair<Int, LineResult>>()
         val tRec = System.nanoTime()
@@ -218,7 +218,7 @@ class OcrBenchmarkTest {
         while (collected.size < sampleBoxes.size && waited < 2000) { Thread.sleep(50); waited += 50 }
         val recMs = (System.nanoTime() - tRec) / 1_000_000
         for ((_, line) in collected) texts.add(line.text)
-        Log.i(TAG, "bench rec $name sampled=${collected.size}/${sampleBoxes.size} totalBoxes=${boxes.size} recMs=$recMs perCrop=${if (sampleBoxes.isEmpty()) 0 else recMs / sampleBoxes.size} sample=${texts.take(3).joinToString(" | ")} backend=$backend")
+        Log.i(TAG, "bench rec $name sampled=${collected.size}/${sampleBoxes.size} totalBoxes=${boxes.size} recMs=$recMs perCrop=${if (sampleBoxes.isEmpty()) 0 else recMs / sampleBoxes.size} sample=${texts.take(3).joinToString(" | ")}")
         return BenchResult(name, bitmap.width, bitmap.height, detMs, detMs, detMs, recMs, recMs, recMs, if (sampleBoxes.isEmpty()) 0 else recMs / sampleBoxes.size, if (sampleBoxes.isEmpty()) 0 else recMs / sampleBoxes.size, boxes.size, texts.take(5))
     }
 
@@ -245,7 +245,6 @@ class OcrBenchmarkTest {
             append(" rec_perCrop_p50=${perCropMsP50}ms p95=${perCropMsP95}ms")
             if (sampleTexts.isNotEmpty()) append(" sample_texts=${sampleTexts.joinToString(" | ")}")
         }
-        fun toLogLineWithBackend(backend: String): String = "bench backend=$backend ${toLogLine()}"
     }
 
     @Test
@@ -320,13 +319,14 @@ class OcrBenchmarkTest {
     }
 
     /**
-     * ncnn bench + correctness gate (was dual-backend A/B for #14; ncnn-only
-     * since #15). Single-pass per image (Screenshot 2400x1080 + jpg 1366x768,
-     * 3-crop sample) ≈15s. Also runs the dynamic-width synthetic parity gate
-     * (w64/200/480 incl. off-bucket 200, #23).
+     * ncnn correctness gate + image bench (was dual-backend A/B for #14;
+     * ncnn-only since #15). Single-pass per image (Screenshot 2400x1080 +
+     * jpg 1366x768, 3-crop sample) ≈15s, with box-count range asserts. Also
+     * runs the dynamic-width synthetic parity gate (w64/200/480 incl.
+     * off-bucket 200, #23).
      */
     @Test
-    fun benchDualBackend_AB_CorrectnessAndBench() {
+    fun benchNcnnCorrectnessAndBench() {
         val appContext = InstrumentationRegistry.getInstrumentation().targetContext
         val instr = InstrumentationRegistry.getInstrumentation()
 
@@ -366,50 +366,45 @@ class OcrBenchmarkTest {
             "Screenshot_20260530-172718.png" to "Screenshot",
             "f5d7d08735383899.jpg" to "jpg"
         )
-        data class TaggedResult(val backend: String, val imageName: String, val result: BenchResult)
-        val allResults = mutableListOf<TaggedResult>()
+        val allResults = mutableListOf<BenchResult>()
         var totalDet = 0L
         var totalRec = 0L
 
-        for (backend in listOf("ncnn")) {
-            val eng = OcrEngine(appContext)
-            assertTrue("engine $backend failed to load", eng.isReady())
-            Log.i(TAG, "benchDual AB engine backend=$backend ready=${eng.isReady()} detThresh=${OcrEngine.getDetThresh(appContext)}")
-            for ((imgName, _) in images) {
-                val bmp = loadBenchmarkBitmap(imgName)
-                val r = benchOneImageWithEngine(imgName, bmp, eng, backend)
-                bmp.recycle()
-                val logLine = r.toLogLineWithBackend(backend)
-                Log.i(TAG, logLine)
-                Log.i(TAG, "bench backend=$backend image=$imgName ${r.width}x${r.height} boxes=${r.numBoxes} det=${r.detMsP50} rec=${r.recTotalMsP50} perCrop=${r.perCropMsP50}")
-                allResults.add(TaggedResult(backend, imgName, r))
-                totalDet += r.detMsP50
-                totalRec += r.recTotalMsP50
-                assertTrue("no boxes for $imgName backend=$backend", r.numBoxes > 0)
-                if (imgName.contains("Screenshot")) {
-                    assertTrue("Screenshot boxes expected ~37 got ${r.numBoxes} backend=$backend", r.numBoxes in 20..55)
-                } else {
-                    assertTrue("jpg boxes expected ~65 got ${r.numBoxes} backend=$backend", r.numBoxes in 40..85)
-                }
+        val eng = OcrEngine(appContext)
+        assertTrue("engine failed to load", eng.isReady())
+        Log.i(TAG, "benchNcnn engine ready=${eng.isReady()} detThresh=${OcrEngine.getDetThresh(appContext)}")
+        for ((imgName, _) in images) {
+            val bmp = loadBenchmarkBitmap(imgName)
+            val r = benchOneImageWithEngine(imgName, bmp, eng)
+            bmp.recycle()
+            Log.i(TAG, r.toLogLine())
+            Log.i(TAG, "bench image=$imgName ${r.width}x${r.height} boxes=${r.numBoxes} det=${r.detMsP50} rec=${r.recTotalMsP50} perCrop=${r.perCropMsP50}")
+            allResults.add(r)
+            totalDet += r.detMsP50
+            totalRec += r.recTotalMsP50
+            assertTrue("no boxes for $imgName", r.numBoxes > 0)
+            if (imgName.contains("Screenshot")) {
+                assertTrue("Screenshot boxes expected ~37 got ${r.numBoxes}", r.numBoxes in 20..55)
+            } else {
+                assertTrue("jpg boxes expected ~65 got ${r.numBoxes}", r.numBoxes in 40..85)
             }
-            eng.close()
         }
+        eng.close()
 
         Log.i(TAG, "SUMMARY ncnn 2 runs detTotal=${totalDet}ms recTotal=${totalRec}ms avgPerRunDet=${totalDet/2}ms avgPerRunRec=${totalRec/2}ms")
-        Log.i(TAG, "bench backend=ncnn complete — ncnn only")
 
         // Emit instrumentation bundle for cron gating
         val bundle = android.os.Bundle().apply {
-            putString("bench", allResults.joinToString(" | ") { it.result.toLogLineWithBackend(it.backend) })
+            putString("bench", allResults.joinToString(" | ") { it.toLogLine() })
             putLong("det_total", totalDet)
             putLong("rec_total", totalRec)
             putString("gate", bucketResults.joinToString(" | "))
         }
         instr.sendStatus(0, bundle)
 
-        // Final asserts ensure ncnn produced boxes (2 runs: 1 backend × 2 images, #15 ncnn-only)
+        // Final asserts ensure ncnn produced boxes (2 runs: Screenshot + jpg)
         assertEquals(2, allResults.size)
-        assertTrue(allResults.all { it.result.numBoxes > 0 })
+        assertTrue(allResults.all { it.numBoxes > 0 })
     }
 
     @Test
