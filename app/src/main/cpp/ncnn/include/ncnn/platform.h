@@ -28,6 +28,7 @@
 #define NCNN_AVX 0
 #define NCNN_XOP 0
 #define NCNN_FMA 0
+#define NCNN_FMA4 0
 #define NCNN_F16C 0
 #define NCNN_AVX2 0
 #define NCNN_AVXVNNI 0
@@ -62,8 +63,8 @@
 #define NCNN_BF16 1
 #define NCNN_FORCE_INLINE 1
 
-#define NCNN_VERSION_STRING "1.0.20260901"
-#define NCNN_VERSION_NUMBER 20260901
+#define NCNN_VERSION_STRING "1.0.20260906"
+#define NCNN_VERSION_NUMBER 20260906
 
 #include "ncnn_export.h"
 
