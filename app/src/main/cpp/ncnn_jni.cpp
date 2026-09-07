@@ -1,8 +1,10 @@
 #include <jni.h>
 #include <android/log.h>
+#include <cfloat>
 #include <string>
 #include "ncnn/net.h"
 #include "ncnn/mat.h"
+#include "ncnn/benchmark.h"
 #include "ncnn/option.h"
 #include "ncnn/cpu.h"
 #include "ncnn/gpu.h"
@@ -173,6 +175,98 @@ Java_com_holopengin_instantjpdict_RecNcnn_inferNative(JNIEnv *env, jclass, jlong
     // For dims=2, w=13193, h=8 -> data is [h][w]
     // For dims=3, check
     env->SetFloatArrayRegion(jout, 0, seqLen * numClasses, outData);
+    return jout;
+}
+
+// Top-K per CTC timestep, computed natively (#42 leftover: kill the multi-MB
+// logits download). Same input/extract path as inferNative, but instead of
+// copying seqLen×13193 floats to Java it partial-selects the top 15 per
+// timestep and returns packed pairs: [idx0,val0, idx1,val1, ...] per timestep
+// (idx stored as float; exact for ids < 2^24). Ties keep the lowest class id,
+// matching the Java argmax scan (strict >) and top-15 intent. Layout assumes
+// out row t lives at outData + t*numClasses (w=13193 innermost), same as above.
+JNIEXPORT jfloatArray JNICALL
+Java_com_holopengin_instantjpdict_RecNcnn_inferTopKNative(JNIEnv *env, jclass, jlong handle, jobject buffer, jint w, jint h) {
+    RecNcnn *rec = (RecNcnn *) handle;
+    if (!rec) return nullptr;
+    float *data = (float *) env->GetDirectBufferAddress(buffer);
+    if (!data) {
+        LOGE("GetDirectBufferAddress null");
+        return nullptr;
+    }
+    jlong capacity = env->GetDirectBufferCapacity(buffer);
+    long expectedFloats = 1 * 3 * 48 * w;
+    if (capacity < expectedFloats * 4) {
+        LOGE("buffer too small %ld vs %ld", capacity, expectedFloats*4);
+        return nullptr;
+    }
+
+    ncnn::Mat in(w, 48, 3);
+    for (int c = 0; c < 3; c++) {
+        float *ptr = in.channel(c);
+        long cOffset = c * 48 * w;
+        for (int y = 0; y < 48; y++) {
+            for (int x = 0; x < w; x++) {
+                ptr[y * w + x] = data[cOffset + y * w + x];
+            }
+        }
+    }
+
+    int64_t t0 = (int64_t)(ncnn::get_current_time() * 1000);
+    ncnn::Extractor ex = rec->net.create_extractor();
+    ex.set_light_mode(true);
+    ex.input("in0", in);
+    ncnn::Mat out;
+    int ret = ex.extract(191, out);
+    if (ret != 0) {
+        LOGE("extract out0 failed %d", ret);
+        return nullptr;
+    }
+    int64_t t1 = (int64_t)(ncnn::get_current_time() * 1000);
+
+    int seqLen = w / 8;
+    const int numClasses = 13193; // pruned CTC head (#39)
+    const int K = 15;             // must match OcrEngine.TOP_K
+    if ((int)out.total() < seqLen * numClasses) {
+        LOGE("out total too small %d vs %d", (int)out.total(), seqLen * numClasses);
+        return nullptr;
+    }
+    float *outData = (float *) out.data;
+
+    jfloatArray jout = env->NewFloatArray(seqLen * K * 2);
+    if (!jout) return nullptr;
+    // Fill via a host-side staging buffer, then one SetFloatArrayRegion.
+    // (Staging is seqLen*30 floats ≈ 15KB @250 steps vs 13MB full logits.)
+    int stageN = seqLen * K * 2;
+    float *stage = new (std::nothrow) float[stageN];
+    if (!stage) return nullptr;
+    for (int t = 0; t < seqLen; t++) {
+        const float *row = outData + (long)t * numClasses;
+        // top[] kept descending; insertion scan over ascending class ids with
+        // strict > keeps lowest id on ties (Java argmax parity).
+        int topIdx[15];
+        float topVal[15];
+        for (int k = 0; k < K; k++) { topIdx[k] = -1; topVal[k] = -FLT_MAX; }
+        for (int c = 0; c < numClasses; c++) {
+            float v = row[c];
+            if (v > topVal[K - 1]) {
+                int p = K - 1;
+                while (p > 0 && v > topVal[p - 1]) { topVal[p] = topVal[p - 1]; topIdx[p] = topIdx[p - 1]; p--; }
+                topVal[p] = v; topIdx[p] = c;
+            }
+        }
+        for (int k = 0; k < K; k++) {
+            stage[(t * K + k) * 2 + 0] = (float)topIdx[k];
+            stage[(t * K + k) * 2 + 1] = topVal[k];
+        }
+    }
+    int64_t t2 = (int64_t)(ncnn::get_current_time() * 1000);
+    env->SetFloatArrayRegion(jout, 0, stageN, stage);
+    delete[] stage;
+    int64_t t3 = (int64_t)(ncnn::get_current_time() * 1000);
+    LOGI("recTopK w=%d seq=%d extract=%.1fms topk=%.1fms copy=%.1fms out=%d floats (full would be %d)",
+         w, seqLen, (t1 - t0) / 1000.0, (t2 - t1) / 1000.0, (t3 - t2) / 1000.0,
+         stageN, seqLen * numClasses);
     return jout;
 }
 

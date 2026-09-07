@@ -700,6 +700,26 @@ class OcrEngine(private val context: Context) {
         resized.recycle()
         val inputFloats = buildRecInput(pixels, targetW, targetH, modelW)
         val seqLen = modelW / REC_STRIDE
+        val actualSeqLen = maxOf(1, ceil(targetW / REC_STRIDE.toFloat()).toInt())
+        // Preferred path (#42): native top-15 per timestep — downloads
+        // seqLen*30 floats instead of seqLen*13193 (up to ~880x smaller).
+        // Falls back to full logits + Java top-15 if the native entry is missing.
+        val packed = try { recNcnn.inferTopK(inputFloats, modelW, targetH) } catch (_: UnsatisfiedLinkError) { null }
+        if (packed != null && packed.size == seqLen * TOP_K * 2) {
+            // Native emits descending top-15 with lowest-id-wins ties; entry 0
+            // is the argmax, so decode text is identical to the full-logits path.
+            val topPruned = Array(actualSeqLen) { t ->
+                IntArray(TOP_K) { k -> packed[(t * TOP_K + k) * 2].toInt() }
+            }
+            val rawAlts = (0 until actualSeqLen).map { t ->
+                (0 until TOP_K).map { k ->
+                    decodeChar(remapClass(topPruned[t][k])) to packed[(t * TOP_K + k) * 2 + 1]
+                }
+            }
+            val decoded = ctcDecodeTopK(topPruned, rawAlts, actualSeqLen, 0f)
+            return decoded.copy(rawAlternatives = rawAlts)
+        }
+        if (packed != null) Log.w(TAG, "recNcnn w$modelW topK bad size ${packed.size} — full-logits fallback")
         val flatOutput = recNcnn.infer(inputFloats, modelW, targetH) ?: run {
             Log.e(TAG, "recNcnn w$modelW infer null")
             return null
@@ -708,7 +728,6 @@ class OcrEngine(private val context: Context) {
             Log.e(TAG, "recNcnn w$modelW bad output ${flatOutput.size} vs ${seqLen * REC_NUM_OUTPUTS}")
             return null
         }
-        val actualSeqLen = maxOf(1, ceil(targetW / REC_STRIDE.toFloat()).toInt())
         val cropLogits = Array(actualSeqLen) { t ->
             FloatArray(REC_NUM_OUTPUTS) { c -> flatOutput[t * REC_NUM_OUTPUTS + c] }
         }
@@ -810,7 +829,8 @@ class OcrEngine(private val context: Context) {
             // Single engine for the whole batch; the caller parallelizes across batches.
             recognizePpocrBatch(crops, engine) { index, result -> emitLine(index, result) }
             val elapsed = (System.nanoTime() - tBatch) / 1_000_000
-            Log.d(TAG, "Batch $batchIdx ${batch.size} jobs → $doneLines lines in ${elapsed}ms")
+            val engTag = if (engine === recDynNcnn) "cpu" else "vk"
+            Log.d(TAG, "Batch $batchIdx [$engTag] ${batch.size} jobs → $doneLines lines in ${elapsed}ms")
             // Per-batch recycle.
             crops.forEach { try { it.recycle() } catch (_: Exception) {} }
         } catch (e: Exception) {
@@ -1381,8 +1401,72 @@ class OcrEngine(private val context: Context) {
         return PPOcrResult(text.toString(), alts, charCols.toFloatArray(), seqLenTotal)
     }
 
-    private fun decodeChar(classIdx: Int): Char {
-        return when {
+    /** Greedy CTC decode from native top-15 lists (#42): same collapse/blank/
+     * space rules as [ctcDecode], but the argmax comes from entry 0 (native
+     * emits descending, lowest-id-wins ties) and blank/space tests use the
+     * remapped pruned indices — decoded chars alone can't flag blanks. */
+    private fun ctcDecodeTopK(
+        topPruned: Array<IntArray>,
+        topChars: List<List<Pair<Char, Float>>>,
+        seqLen: Int,
+        blankThreshold: Float,
+    ): PPOcrResult {
+        val text = StringBuilder()
+        val alts = mutableListOf<MutableList<Pair<Char, Float>>>()
+        val charCols = mutableListOf<Float>()
+        var prevClass = 0
+
+        for (t in 0 until seqLen) {
+            val pruned = topPruned.getOrNull(t) ?: continue
+            val indexed = topChars.getOrNull(t)?.toMutableList() ?: continue
+            if (pruned.isEmpty() || indexed.isEmpty()) continue
+            val maxVal = indexed[0].second
+            val classIdx = remapClass(pruned[0])
+
+            when {
+                classIdx == 0 -> {
+                    if (blankThreshold > 0f) {
+                        val topNonBlank = indexed.firstOrNull { (ch, sc) ->
+                            ch != GAP_CHAR && ch != '　' && (1f / (1f + abs(maxVal - sc)) > blankThreshold)
+                        }
+                        if (topNonBlank != null) {
+                            text.append(topNonBlank.first)
+                            charCols.add(t.toFloat())
+                            val reordered = mutableListOf(topNonBlank)
+                            reordered.add(GAP_CHAR to 0f)
+                            for (alt in indexed) {
+                                if (alt != topNonBlank && alt.first != '　' && alt !in reordered) {
+                                    reordered.add(alt)
+                                }
+                            }
+                            alts.add(reordered)
+                        }
+                    }
+                    prevClass = 0
+                }
+                classIdx == 18709 -> {
+                    text.append(' ')
+                    prevClass = 18709
+                    charCols.add(t.toFloat())
+                    alts.add(indexed)
+                }
+                classIdx == prevClass -> { /* collapse repeat */ }
+                else -> {
+                    val ch = decodeChar(classIdx)
+                    if (ch != '\uFFFD') {
+                        text.append(ch)
+                        charCols.add(t.toFloat())
+                        alts.add(indexed)
+                        prevClass = classIdx
+                    }
+                }
+            }
+        }
+
+        return PPOcrResult(text.toString(), alts, charCols.toFloatArray(), seqLen)
+    }
+
+    private fun decodeChar(classIdx: Int): Char {        return when {
             classIdx == 18709 -> ' '
             classIdx == 18708 -> '\u3000' // full-width space for last vocab slot
             classIdx in 1..18708 -> {

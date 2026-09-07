@@ -33,6 +33,27 @@ class RecNcnn private constructor(private val handle: Long, val targetW: Int) {
         return out
     }
 
+    /** Top-15 per timestep, packed [idx,val] pairs (see inferTopKNative in
+     * ncnn_jni.cpp). Returns seqLen*15*2 floats, or null on failure. */
+    fun inferTopK(floats: FloatArray, w: Int, h: Int = 48): FloatArray? {
+        if (floats.size != 3 * 48 * w) {
+            Log.e(TAG, "inferTopK: bad floats ${floats.size} vs ${3*48*w}")
+            return null
+        }
+        var bb = tlBuffer.get()
+        val needed = floats.size * 4
+        if (bb == null || bb.capacity() < needed) {
+            bb = ByteBuffer.allocateDirect(needed.coerceAtLeast(3 * 48 * 480 * 4)).order(ByteOrder.nativeOrder())
+            tlBuffer.set(bb)
+        } else {
+            bb.clear()
+            bb.order(ByteOrder.nativeOrder())
+        }
+        bb.asFloatBuffer().put(floats)
+        bb.position(0)
+        return inferTopKNative(handle, bb, w, h)
+    }
+
     fun close() {
         destroy(handle)
     }
@@ -82,5 +103,6 @@ class RecNcnn private constructor(private val handle: Long, val targetW: Int) {
         @JvmStatic private external fun create(paramPath: String, binPath: String, targetW: Int, useVulkan: Boolean): Long
         @JvmStatic private external fun destroy(handle: Long)
         @JvmStatic private external fun inferNative(handle: Long, buffer: ByteBuffer, w: Int, h: Int): FloatArray?
+        @JvmStatic private external fun inferTopKNative(handle: Long, buffer: ByteBuffer, w: Int, h: Int): FloatArray?
     }
 }
