@@ -34,6 +34,9 @@ class LineOverlayView(
         private set
 
     init {
+        // Vertical substitution lives ONLY here, never in backend text (#47):
+        // per-char Minikin vert subs (ja locale). vrt2 probed on-device as a
+        // no-op over vert (identical bounds on all probe chars) — vert only.
         if (line.isVertical) {
             paint.textLocale = java.util.Locale.JAPANESE
             paint.fontFeatureSettings = "'vert' 1"

@@ -808,24 +808,17 @@ class OcrEngine(private val context: Context) {
                     job.isVertical,
                 )
 
-                val finalText = if (job.isVertical) {
-                    result.text.map { ch -> toVerticalGlyph(ch) }.joinToString("")
-                } else result.text
-                val finalAlts = if (job.isVertical) {
-                    result.alternatives.map { alts ->
-                        alts.map { (ch, s) -> toVerticalGlyph(ch) to s }.toMutableList()
-                    }
-                } else result.alternatives.map { it.toMutableList() }
+                // Vertical lines keep horizontal chars end-to-end (#47): the
+                // overlay renderer applies the font's vert subs at draw time.
+                val finalText = result.text
+                val finalAlts = result.alternatives.map { it.toMutableList() }
 
                 val lineResult = LineResult(
                     text = finalText,
                     charBoxes = charBoxes,
                     alternatives = finalAlts,
                     isVertical = job.isVertical,
-                    rawAlternatives = result.rawAlternatives.map { row ->
-                        if (job.isVertical) row.map { (ch, s) -> toVerticalGlyph(ch) to s }
-                        else row
-                    },
+                    rawAlternatives = result.rawAlternatives.map { it.toList() },
                     seqLenTotal = result.seqLenTotal,
                     cropW = job.bbox.width(),
                     cropH = job.bbox.height(),
@@ -1789,24 +1782,5 @@ class OcrEngine(private val context: Context) {
 
 // Horizontal → vertical glyph equivalents (most CJK brackets are already upright
 // in the font; only chōonpu and ASCII-ish dashes need remapping).
-private val VERTICAL_GLYPH_MAP = mapOf(
-    '「' to '「', '」' to '」', '『' to '『', '』' to '』',
-    '（' to '（', '）' to '）', '［' to '［', '］' to '］',
-    '〔' to '〔', '〕' to '〕', '｛' to '｛', '｝' to '｝',
-    '〈' to '〈', '〉' to '〉', '《' to '《', '》' to '》',
-    '【' to '【', '】' to '】', '〘' to '〘', '〙' to '〙',
-    '〚' to '〚', '〛' to '〛',
-    '、' to '、', '。' to '。', '・' to '・',
-    '—' to '—', '…' to '…', '‥' to '‥',
-    '〜' to '〜',
-    'ー' to '｜', // chōonpu → vertical bar
-)
-
-private fun toVerticalGlyph(ch: Char): Char {
-    return VERTICAL_GLYPH_MAP[ch] ?:
-        // Dash/hyphen → vertical bar
-        if (ch == '-' || ch == '‐' || ch == '–' || ch == '—') '｜'
-        else ch
-}
 
 

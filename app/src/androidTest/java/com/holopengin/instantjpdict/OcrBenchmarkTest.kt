@@ -398,6 +398,40 @@ class OcrBenchmarkTest {
     }
 
     @Test
+    fun verticalVertSubstitution() {
+        // Renderer contract for #47: the device font must substitute vertical
+        // variants under Minikin vert (ja locale) — the backend ships
+        // horizontal chars and the overlay relies on the font. A substituted
+        // vertical glyph flips bounds aspect (wide->tall); kana/kanji have no
+        // vert sub and must stay identical. Fails = font lacks vert coverage.
+        val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+        paint.typeface = android.graphics.Typeface.DEFAULT
+        paint.textLocale = java.util.Locale.JAPANESE
+        paint.textSize = 100f
+        val b = android.graphics.Rect()
+        fun bounds(ch: Char, feat: String?): Pair<Int, Int> {
+            paint.fontFeatureSettings = feat
+            paint.getTextBounds(ch.toString(), 0, 1, b)
+            return b.width() to b.height()
+        }
+        // Substituted chars flip bounds-aspect sign (horizontal corner
+        // brackets/parens are naturally tall off-feature — what matters is
+        // the flip, e.g. 「 32x67 -> 72x32, ー 80x11 -> 10x80).
+        fun sgn(x: Int) = if (x > 0) 1 else if (x < 0) -1 else 0
+        for (ch in listOf('ー', '「', '」', '（', '）', '〜')) {
+            val (w0, h0) = bounds(ch, null)
+            val (w1, h1) = bounds(ch, "'vert' 1")
+            Log.i(TAG, "vertSub '$ch' off=${w0}x${h0} vert=${w1}x${h1}")
+            assertTrue("'$ch' must flip aspect under vert", sgn(w0 - h0) != sgn(w1 - h1))
+        }
+        for (ch in listOf('あ', '漢', '・')) {
+            val (w0, h0) = bounds(ch, null)
+            val (w1, h1) = bounds(ch, "'vert' 1")
+            assertTrue("'$ch' must be vert-invariant", Math.abs(w1 - w0) <= 2 && Math.abs(h1 - h0) <= 2)
+        }
+    }
+
+    @Test
     fun detInputSizeAB() {
         // Det input-size A/B (#51): 960 vs 896 box counts + walls on real
         // images. Host study predicts counts within ±4% and ~13% less
