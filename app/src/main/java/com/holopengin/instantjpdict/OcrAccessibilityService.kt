@@ -563,7 +563,9 @@ class OcrAccessibilityService : AccessibilityService() {
                 }
                 if (ocrEngine.isReady()) {
                     postStatus(gen, "Running detection...")
+                    val tDet = System.currentTimeMillis()
                     val lineBoxes = withContext(Dispatchers.IO) { ocrEngine.detect(bitmap) }
+                    val detMs = System.currentTimeMillis() - tDet
                     controller.activeLineBoxes = lineBoxes
                     
                     postStatus(gen, "Found ${lineBoxes.size} lines. Recognizing...")
@@ -618,8 +620,8 @@ class OcrAccessibilityService : AccessibilityService() {
                     if (screenshotOverlay != null && controller.currentTappedLineIdx == -1) {
                         updateCursor()
                     }
-                    val endTime = System.currentTimeMillis() - startTime
-                    postStatus(gen, "Found ${controller.activeAllChars.size} characters. Time: ${endTime}ms", hideProgress = true)
+                    val recMs = System.currentTimeMillis() - startTime
+                    postStatus(gen, "${controller.activeAllChars.size} chars | Det: ${detMs}ms | Rec: ${recMs}ms", hideProgress = true)
                 } else {
                     postStatus(gen, "Error: OCR Engine not ready", hideProgress = true)
                 }
