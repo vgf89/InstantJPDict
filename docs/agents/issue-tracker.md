@@ -12,6 +12,7 @@ Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all o
 - **Close**: `gh issue close <number> --comment "..."`
 - **Close with revisit conditions**: if the closing comment names conditions under which the work should be reconsidered (post-Vulkan, new data, a measured pool growing), also apply the `potential-revisit` label: `gh issue edit <number> --add-label "potential-revisit"`. Killed-by-measurement and parked-backburner closes must carry it; clean ships and verdicts must not.
 - **Close with a follow-up**: a `Proposing ticket: ...` line is open work owned by the ticket being closed. Either leave the current ticket open until the follow-up exists, or open the follow-up ticket in the same session (evidence-certain case) and link it from the resolution comment. Never close with a dangling proposal. If the follow-up cannot be opened yet, the ticket stays open and the maintainer signs off on closure.
+- **UI/UX close gate**: never close an issue about user-visible behavior (overlay, rendering, text the user reads, interaction, timing the user feels) on agent verification alone — green suites, structural arguments, and device logs are not sufficient, because the maintainer's eye is the only instrument that reads the actual screen. Such tickets stay open (or get reopened on a contrary report) until the maintainer directly confirms the fix is finished. The resolution comment must invite that confirmation explicitly.
 
 Infer the repo from `git remote -v`; `gh` does this automatically when run inside a clone.
 
