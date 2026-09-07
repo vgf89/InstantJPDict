@@ -943,7 +943,12 @@ class OcrEngine(private val context: Context) {
             val targetW = maxOf(4, minOf(LONG_LINE_GATE,
                 (rw.toFloat() * targetH / rh.toFloat()).roundToInt()
             ))
-            val sqTarget = squishTarget(targetW, recSquish)
+            val sqTarget = squishTarget(targetW, recSquish).let {
+                // Crush floor (#48): squish must leave >= 32 timesteps; short
+                // dense lines (e.g. ruby-widened vertical crops at targetW 363
+                // -> 23 steps for 16 chars) keep full resolution instead.
+                if (it / REC_STRIDE < 32) targetW else it
+            }
             val result = inferResizedRec(rotated, sqTarget, targetH, engine)
             if (rotated !== crop) rotated.recycle()
             if (result == null) {

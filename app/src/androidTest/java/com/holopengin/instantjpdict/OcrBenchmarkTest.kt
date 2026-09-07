@@ -701,13 +701,14 @@ class OcrBenchmarkTest {
                     synchronized(collected) { collected.addAll(pairs) }
                 }
                 var waited = 0; var last = -1; var still = 0
-                while (collected.size < boxes.size && waited < 60000) {
-                    kotlinx.coroutines.delay(200); waited += 200
+                while (collected.size < boxes.size && waited < 120000) {
+                    kotlinx.coroutines.delay(500); waited += 500
                     synchronized(collected) {
-                        if (collected.size == last) still += 200 else { still = 0; last = collected.size }
+                        if (collected.size == last) still += 500 else { still = 0; last = collected.size }
                     }
-                    if (still >= 1500 && waited > 5000) break
+                    if (still >= 10000 && waited > 15000) break
                 }
+                Log.i(TAG, "dumpCollect ${collected.size}/${boxes.size} boxes")
             }
             val out = bmp.copy(android.graphics.Bitmap.Config.ARGB_8888, true)
             val cv = android.graphics.Canvas(out)
@@ -737,6 +738,51 @@ class OcrBenchmarkTest {
             f.outputStream().use { out.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
             Log.i(TAG, "overlayDump $asset boxes=${boxes.size} lines=${collected.size} file=${f.absolutePath}")
             eng.close()
+        } finally {
+            prefs.edit().putInt(OcrEngine.PREF_REC_BACKEND, OcrEngine.DEF_REC_BACKEND).apply()
+        }
+    }
+
+    @Test
+    fun rubyGutterExclusion() {
+        // #48: ruby intruding INSIDE a vertical line box must not contaminate
+        // the decode. Ground truth for the target line (ruby stripped).
+        val truth = "じわり、と掌に滲んだのは、血と、汗。"
+        val appContext = InstrumentationRegistry.getInstrumentation().targetContext
+        val prefs = appContext.getSharedPreferences(OcrEngine.PREFS_NAME, android.content.Context.MODE_PRIVATE)
+        prefs.edit().putInt(OcrEngine.PREF_REC_BACKEND, OcrEngine.BACKEND_CPU).apply()
+        try {
+            val bmp = loadBenchmarkBitmap("ruby_ebook.png")
+            val eng = OcrEngine(appContext)
+            assertTrue("engine ready", eng.isReady())
+            val boxes = eng.detect(bmp)
+            assertTrue("expected boxes", boxes.isNotEmpty())
+            val collected = mutableListOf<Pair<Int, LineResult>>()
+            runBlocking {
+                eng.recognizeStreaming(bmp, boxes) { pairs ->
+                    synchronized(collected) { collected.addAll(pairs) }
+                }
+                // Deterministic full collection (#48 collateral): empties never
+                // arrive, so count alone can't terminate — but quiescence must
+                // be LONG (10s still) or slow lines get truncated nondeterministically.
+                var waited = 0; var last = -1; var still = 0
+                while (collected.size < boxes.size && waited < 120000) {
+                    kotlinx.coroutines.delay(500); waited += 500
+                    synchronized(collected) {
+                        if (collected.size == last) still += 500 else { still = 0; last = collected.size }
+                    }
+                    if (still >= 10000 && waited > 15000) break
+                }
+                Log.i(TAG, "rubyCollect ${collected.size}/${boxes.size} boxes in ${waited}ms")
+            }
+            eng.close()
+            val texts = collected.sortedBy { it.first }.map { it.second.text }
+            texts.forEachIndexed { i, t -> Log.i(TAG, "rubyLine [$i]='$t'") }
+            val scored = texts.map { it to editDistance(it, truth) }
+            val (best, d) = scored.minByOrNull { it.second } ?: ("" to Int.MAX_VALUE)
+            Log.i(TAG, "rubyBest dist=$d text='$best' truth='$truth'")
+            assertTrue("ruby line misread: '$best' vs '$truth' (dist $d)", d <= 4)
+            assertTrue("reported failure: じ read as わ-side kana in '$best'", 'じ' in best)
         } finally {
             prefs.edit().putInt(OcrEngine.PREF_REC_BACKEND, OcrEngine.DEF_REC_BACKEND).apply()
         }
