@@ -46,6 +46,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.Locale
@@ -600,10 +602,15 @@ class OcrAccessibilityService : AccessibilityService() {
                     controller.activeAllAlternatives = mutableListOf()
 
                     val startTime = System.currentTimeMillis()
+                    // Progress posts are double-async (engine mainHandler post +
+                    // serviceScope.launch): the last one can enqueue AFTER the
+                    // final post below. Join them first so the final line truly
+                    // lands last (#50 follow-up: stayed on "Recognized x/y").
+                    val progressJobs = mutableListOf<Job>()
                     withContext(Dispatchers.IO) {
                         ocrEngine.recognizeStreaming(bitmap, lineBoxes) { results ->
                             if (screenshotOverlay == null) return@recognizeStreaming
-                            serviceScope.launch {
+                            progressJobs += serviceScope.launch {
                                 results.forEach { (index, lineResult) ->
                                     addLineToResults(rootLayout, clicksLayer, index, lineResult)
                                 }
@@ -614,6 +621,7 @@ class OcrAccessibilityService : AccessibilityService() {
                             }
                         }
                     }
+                    progressJobs.joinAll()
                     val endTime = System.currentTimeMillis() - startTime
                     postStatus(gen, "Found ${controller.activeAllChars.size} characters. Time: ${endTime}ms", hideProgress = true)
                 } else {
