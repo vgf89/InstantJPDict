@@ -19,6 +19,9 @@ data class LineResult(
     val cropH: Int = 0,
     val cropX: Int = 0,
     val cropY: Int = 0,
+    /** CTC timestep column per emitted char (#49) — lets tests recompute
+     * char boxes under any BOX_LAYOUT_MODE from one recognition run. */
+    val charCols: FloatArray = floatArrayOf(),
 )
 
 sealed class DefinitionNode {

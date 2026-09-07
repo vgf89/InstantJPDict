@@ -432,6 +432,298 @@ class OcrBenchmarkTest {
     }
 
     @Test
+    fun synthBoxingBench() {
+        // #49 positioning regression: overlay boxes vs exact em-box truth
+        // (synth set, 4 box variants each). Layout ideas 1+2 were removed
+        // after losing to legacy uniform mapping on this ground truth;
+        // fractional charCols (peak interpolation) flow through here.
+        val appContext = InstrumentationRegistry.getInstrumentation().targetContext
+        val prefs = appContext.getSharedPreferences(OcrEngine.PREFS_NAME, android.content.Context.MODE_PRIVATE)
+        prefs.edit().putInt(OcrEngine.PREF_REC_BACKEND, OcrEngine.BACKEND_CPU).apply()
+        // Synth set lives in the TEST apk (androidTest/assets/synth).
+        val testAssets = InstrumentationRegistry.getInstrumentation().context.assets
+        fun assetText(name: String): String {
+            testAssets.open(name).use { ins ->
+                return ins.readBytes().toString(Charsets.UTF_8)
+            }
+        }
+        val truth = org.json.JSONObject(assetText("synth/truth.json"))
+        val lines = truth.getJSONArray("lines")
+        Log.i(TAG, "synthBox START lines=${lines.length()}")
+        val eng = OcrEngine(appContext)
+        assertTrue("engine ready", eng.isReady())
+        try {
+            for (li in 0 until lines.length()) {
+                val entry = lines.getJSONObject(li)
+                val file = entry.getString("file")
+                val tText = entry.getString("text")
+                val vertical = entry.getString("orientation") == "V"
+                val tBoxes = entry.getJSONArray("boxes")
+                val tEm = (0 until tBoxes.length()).map { i ->
+                    val b = tBoxes.getJSONArray(i)
+                    intArrayOf(b.getInt(0), b.getInt(1), b.getInt(2), b.getInt(3))
+                }
+                val tUnion = intArrayOf(
+                    tEm.minOf { it[0] }, tEm.minOf { it[1] },
+                    tEm.maxOf { it[0] + it[2] }, tEm.maxOf { it[1] + it[3] })
+                val bmp = testAssets.open("synth/$file").use { ins ->
+                    android.graphics.BitmapFactory.decodeStream(ins)
+                } ?: continue
+                val det = eng.detect(bmp)
+                if (det.isEmpty()) {
+                    Log.i(TAG, "synthBox $file: NO det boxes, skip")
+                    bmp.recycle(); continue
+                }
+                // Largest det box = the line (single-line images).
+                val db = det.maxByOrNull { it.width() * it.height() }!!
+                val iw = (tUnion[2] - tUnion[0]).toFloat()
+                val ih = (tUnion[3] - tUnion[1]).toFloat()
+                val ix = maxOf(0, minOf(db.right, tUnion[2]) - maxOf(db.left, tUnion[0])).toFloat()
+                val iy = maxOf(0, minOf(db.bottom, tUnion[3]) - maxOf(db.top, tUnion[1])).toFloat()
+                val detIou = (ix * iy) / (db.width() * db.height() + iw * ih - ix * iy)
+                // Box variants: det box (realistic), exact truth box (clean
+                // reference), +25% padding at reading-start / reading-end
+                // (adversarial: leading/trailing blank mass). One recognition
+                // run per variant (mode-independent text/cols), boxes per mode.
+                val tLen = if (vertical) tUnion[3] - tUnion[1] else tUnion[2] - tUnion[0]
+                val pad = (tLen * 0.25).toInt()
+                fun jrect(l: Int, t: Int, r: Int, b: Int) = JpDictRect(
+                    l.coerceAtLeast(0), t.coerceAtLeast(0),
+                    r.coerceAtMost(bmp.width), b.coerceAtMost(bmp.height))
+                val variants = listOf(
+                    "det" to db,
+                    "truth" to jrect(tUnion[0], tUnion[1], tUnion[2], tUnion[3]),
+                    "padEnd" to (if (vertical)
+                        jrect(tUnion[0], tUnion[1], tUnion[2], tUnion[3] + pad)
+                    else jrect(tUnion[0], tUnion[1], tUnion[2] + pad, tUnion[3])),
+                    "padStart" to (if (vertical)
+                        jrect(tUnion[0], tUnion[1] - pad, tUnion[2], tUnion[3])
+                    else jrect(tUnion[0] - pad, tUnion[1], tUnion[2], tUnion[3])),
+                )
+                fun runVariant(vtag: String, vbox: JpDictRect, viou: Double) {
+                    // Single recognition run per variant.
+                    val collected = mutableListOf<Pair<Int, LineResult>>()
+                    runBlocking {
+                        eng.recognizeStreaming(bmp, listOf(vbox)) { pairs ->
+                            synchronized(collected) { collected.addAll(pairs) }
+                        }
+                        var waited = 0; var last = -1; var still = 0
+                        while (collected.isEmpty() && waited < 15000) {
+                            kotlinx.coroutines.delay(200); waited += 200
+                            synchronized(collected) {
+                                if (collected.size == last) still += 200 else { still = 0; last = collected.size }
+                            }
+                            if (still >= 1000 && waited > 2000) break
+                        }
+                    }
+                    if (collected.isEmpty()) {
+                        Log.i(TAG, "synthBox $file/$vtag: recognized EMPTY, skip")
+                        return
+                    }
+                    val lr = collected.sortedBy { it.first }.first().second
+                    val pairs = alignChars(tText, lr.text)
+                    val nMatch = pairs.size
+                    run {
+                        val mode = 0
+                        val boxes = eng.computeCharBoxes(lr.text, lr.charCols, lr.seqLenTotal,
+                            lr.cropX, lr.cropY, lr.cropW, lr.cropH, lr.isVertical)
+                        assertEquals("$file/$vtag mode $mode box count", lr.text.length, boxes.size)
+                        var errSum = 0.0; var errMax = 0.0
+                        var sxSum = 0.0; var sySum = 0.0
+                        val errs = mutableListOf<Triple<Double, Double, Double>>()
+                        for ((ti, di) in pairs) {
+                            val tb = tEm[ti]
+                            val ob = boxes[di]
+                            val tcx = tb[0] + tb[2] / 2.0; val tcy = tb[1] + tb[3] / 2.0
+                            val ocx = (ob.left + ob.right) / 2.0; val ocy = (ob.top + ob.bottom) / 2.0
+                            val dx = ocx - tcx; val dy = ocy - tcy
+                            val e = Math.hypot(dx, dy)
+                            errSum += e; errMax = maxOf(errMax, e)
+                            sxSum += dx; sySum += dy
+                            errs.add(Triple(dx, dy, e))
+                        }
+                        // Demeaned: strip the systematic det-box offset to isolate
+                        // layout error from detection shift.
+                        val mx = if (nMatch > 0) sxSum / nMatch else 0.0
+                        val my = if (nMatch > 0) sySum / nMatch else 0.0
+                        var dmSum = 0.0; var dmMax = 0.0
+                        for ((dx, dy, _) in errs) {
+                            val e = Math.hypot(dx - mx, dy - my)
+                            dmSum += e; dmMax = maxOf(dmMax, e)
+                        }
+                        val em = 44.0
+                        // Span fill along the line axis.
+                        val (tSpan, oSpan) = if (vertical) {
+                            (tUnion[3] - tUnion[1]).toDouble() to
+                                ((boxes.maxOf { it.bottom } - boxes.minOf { it.top }).toDouble())
+                        } else {
+                            (tUnion[2] - tUnion[0]).toDouble() to
+                                ((boxes.maxOf { it.right } - boxes.minOf { it.left }).toDouble())
+                        }
+                        Log.i(TAG, "synthBox $file/$vtag mode=$mode iou=%.3f nT=%d nD=%d match=%d unT=%d unD=%d meanErr=%.1fpx(%.2fem) maxErr=%.1fpx off=(%.1f,%.1f) demean=%.1fpx(%.2fem) maxDm=%.1fpx spanT=%.0f spanO=%.0f fill=%.2f".format(
+                            viou, tText.length, lr.text.length, nMatch,
+                            tText.length - pairs.map { it.first }.toSet().size,
+                            lr.text.length - pairs.map { it.second }.toSet().size,
+                            if (nMatch > 0) errSum / nMatch else -1.0,
+                            if (nMatch > 0) errSum / nMatch / em else -1.0,
+                            errMax, mx, my,
+                            if (nMatch > 0) dmSum / nMatch else -1.0,
+                            if (nMatch > 0) dmSum / nMatch / em else -1.0,
+                            dmMax, tSpan, oSpan, oSpan / tSpan))
+                }
+                } // end runVariant
+                for ((vtag, vbox) in variants) {
+                    val vx = maxOf(0, minOf(vbox.right, tUnion[2]) - maxOf(vbox.left, tUnion[0])).toFloat()
+                    val vy = maxOf(0, minOf(vbox.bottom, tUnion[3]) - maxOf(vbox.top, tUnion[1])).toFloat()
+                    val viou = ((vx * vy) / (vbox.width() * vbox.height() + iw * ih - vx * vy)).toDouble()
+                    runVariant(vtag, vbox, viou)
+                }
+                bmp.recycle()
+            }
+        } finally {
+            prefs.edit().putInt(OcrEngine.PREF_REC_BACKEND, OcrEngine.DEF_REC_BACKEND).apply()
+        }
+    }
+
+    /** Levenshtein backtrack aligning truth->decoded chars; returns matched
+     * (truthIdx, decIdx) pairs (matches + substitutions). */
+    private fun alignChars(a: String, b: String): List<Pair<Int, Int>> {
+        val n = a.length; val m = b.length
+        val dp = Array(n + 1) { IntArray(m + 1) }
+        for (i in 0..n) dp[i][0] = i
+        for (j in 0..m) dp[0][j] = j
+        for (i in 1..n) for (j in 1..m) {
+            dp[i][j] = minOf(dp[i - 1][j] + 1, dp[i][j - 1] + 1,
+                dp[i - 1][j - 1] + if (a[i - 1] == b[j - 1]) 0 else 1)
+        }
+        val out = mutableListOf<Pair<Int, Int>>()
+        var i = n; var j = m
+        while (i > 0 && j > 0) {
+            val sub = dp[i - 1][j - 1] + if (a[i - 1] == b[j - 1]) 0 else 1
+            when {
+                dp[i][j] == sub -> { out.add((i - 1) to (j - 1)); i--; j-- }
+                dp[i][j] == dp[i - 1][j] + 1 -> i--
+                else -> j--
+            }
+        }
+        return out.reversed()
+    }
+
+    @Test
+    fun questColsStats() {
+        // #49 real-data diagnosis: per-line CTC column pathology on the dense
+        // quest image (leading mass, max internal gap, trailing mass) to find
+        // the lines behind the whitespace-offset / shortfall complaints.
+        val appContext = InstrumentationRegistry.getInstrumentation().targetContext
+        val prefs = appContext.getSharedPreferences(OcrEngine.PREFS_NAME, android.content.Context.MODE_PRIVATE)
+        prefs.edit().putInt(OcrEngine.PREF_REC_BACKEND, OcrEngine.BACKEND_CPU).apply()
+        try {
+            val bmp = loadBenchmarkBitmap("Screenshot_20260905-093821.png")
+            val eng = OcrEngine(appContext)
+            assertTrue("engine ready", eng.isReady())
+            val boxes = eng.detect(bmp)
+            val collected = mutableListOf<Pair<Int, LineResult>>()
+            runBlocking {
+                eng.recognizeStreaming(bmp, boxes) { pairs ->
+                    synchronized(collected) { collected.addAll(pairs) }
+                }
+                var waited = 0; var last = -1; var still = 0
+                while (collected.size < boxes.size && waited < 60000) {
+                    kotlinx.coroutines.delay(200); waited += 200
+                    synchronized(collected) {
+                        if (collected.size == last) still += 200 else { still = 0; last = collected.size }
+                    }
+                    if (still >= 1500 && waited > 5000) break
+                }
+            }
+            for ((idx, lr) in collected.sortedBy { it.first }) {
+                val cols = lr.charCols
+                if (cols.isEmpty()) continue
+                var maxGap = 0f
+                for (i in 1 until cols.size) maxGap = maxOf(maxGap, cols[i] - cols[i - 1] - 1f)
+                val lead = cols[0]
+                val trail = lr.seqLenTotal - 1 - cols[cols.size - 1]
+                val avg = (if (lr.isVertical) lr.cropH else lr.cropW).toFloat() / lr.seqLenTotal
+                Log.i(TAG, "questCols idx=$idx n=${cols.size} seq=${lr.seqLenTotal} vert=${lr.isVertical} " +
+                    "lead=${lead}x trail=${trail}x maxGap=${maxGap}x " +
+                    "leadPx=${(lead * avg).toInt()} trailPx=${(trail * avg).toInt()} " +
+                    "text='${lr.text.take(24)}'")
+            }
+            eng.close()
+        } finally {
+            prefs.edit().putInt(OcrEngine.PREF_REC_BACKEND, OcrEngine.DEF_REC_BACKEND).apply()
+        }
+    }
+
+    @Test
+    fun ebookOverlayDump() {
+        overlayDumpToFile("ebook_tategaki.png", "ebook_overlay.png")
+    }
+
+    @Test
+    fun questOverlayDump() {
+        overlayDumpToFile("Screenshot_20260905-093821.png", "quest_overlay.png")
+    }
+
+    /** Shared visual-diagnosis dump (#49): det boxes (blue) + legacy overlay
+     * char boxes (red) + per-line column pathology in logcat. */
+    private fun overlayDumpToFile(asset: String, outName: String) {
+        val appContext = InstrumentationRegistry.getInstrumentation().targetContext
+        val prefs = appContext.getSharedPreferences(OcrEngine.PREFS_NAME, android.content.Context.MODE_PRIVATE)
+        prefs.edit().putInt(OcrEngine.PREF_REC_BACKEND, OcrEngine.BACKEND_CPU).apply()
+        try {
+            val bmp = loadBenchmarkBitmap(asset)
+            val eng = OcrEngine(appContext)
+            assertTrue("engine ready", eng.isReady())
+            val boxes = eng.detect(bmp)
+            val collected = mutableListOf<Pair<Int, LineResult>>()
+            runBlocking {
+                eng.recognizeStreaming(bmp, boxes) { pairs ->
+                    synchronized(collected) { collected.addAll(pairs) }
+                }
+                var waited = 0; var last = -1; var still = 0
+                while (collected.size < boxes.size && waited < 60000) {
+                    kotlinx.coroutines.delay(200); waited += 200
+                    synchronized(collected) {
+                        if (collected.size == last) still += 200 else { still = 0; last = collected.size }
+                    }
+                    if (still >= 1500 && waited > 5000) break
+                }
+            }
+            val out = bmp.copy(android.graphics.Bitmap.Config.ARGB_8888, true)
+            val cv = android.graphics.Canvas(out)
+            val detPaint = android.graphics.Paint().apply {
+                color = android.graphics.Color.BLUE; style = android.graphics.Paint.Style.STROKE; strokeWidth = 3f
+            }
+            val boxPaint = android.graphics.Paint().apply {
+                color = android.graphics.Color.RED; style = android.graphics.Paint.Style.STROKE; strokeWidth = 2f
+            }
+            for (b in boxes) cv.drawRect(b.left.toFloat(), b.top.toFloat(), b.right.toFloat(), b.bottom.toFloat(), detPaint)
+            for ((idx, lr) in collected.sortedBy { it.first }) {
+                for (cb in lr.charBoxes) cv.drawRect(cb.left.toFloat(), cb.top.toFloat(), cb.right.toFloat(), cb.bottom.toFloat(), boxPaint)
+                val cols = lr.charCols
+                if (cols.isNotEmpty()) {
+                    var mg = 0f
+                    for (i in 1 until cols.size) mg = maxOf(mg, cols[i] - cols[i - 1] - 1f)
+                    Log.i(TAG, "ebookDump idx=$idx n=${cols.size} seq=${lr.seqLenTotal} vert=${lr.isVertical} " +
+                        "lead=${cols[0]} trail=${lr.seqLenTotal - 1 - cols[cols.size - 1]} maxGap=$mg " +
+                        "crop=${lr.cropX},${lr.cropY},${lr.cropW},${lr.cropH} " +
+                        "text='${lr.text}'")
+                    if (cols.size > 15) {
+                        Log.i(TAG, "ebookCols idx=$idx cols=" + cols.joinToString(",") { "%.2f".format(it) })
+                    }
+                }
+            }
+            val f = java.io.File(appContext.getExternalFilesDir(null), outName)
+            f.outputStream().use { out.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
+            Log.i(TAG, "overlayDump $asset boxes=${boxes.size} lines=${collected.size} file=${f.absolutePath}")
+            eng.close()
+        } finally {
+            prefs.edit().putInt(OcrEngine.PREF_REC_BACKEND, OcrEngine.DEF_REC_BACKEND).apply()
+        }
+    }
+
+    @Test
     fun detInputSizeAB() {
         // Det input-size A/B (#51): 960 vs 896 box counts + walls on real
         // images. Host study predicts counts within ±4% and ~13% less

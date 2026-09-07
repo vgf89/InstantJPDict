@@ -687,6 +687,21 @@ class OcrEngine(private val context: Context) {
         return pq.toList().sortedByDescending { slice[it] }.map { decodeChar(remapClass(it)) to slice[it] }
     }
 
+    /** Sub-column peak offset (#49): parabolic interpolation of the winning
+     * class value across neighboring timesteps. CTC columns quantize truth
+     * peaks to integers (up to 0.5 col ≈ 0.2em error); the fractional peak
+     * recovers most of it. Returns 0 when the peak is flat, at a boundary,
+     * or neighbor values are unavailable. */
+    private fun peakOffset(v0: Float, v1: Float, v2: Float): Float {
+        val denom = v0 - 2f * v1 + v2
+        if (denom >= -1e-6f) return 0f
+        // Prominence gate (#49): on flat plateaus any nonzero offset is noise
+        // (it regressed clean truth boxes 0.7 -> 1.6px). Fire only when the
+        // peak stands clearly above BOTH neighbors.
+        if (minOf(v1 - v0, v1 - v2) <= 1.0f) return 0f
+        return (0.5f * (v0 - v2) / denom).coerceIn(-0.5f, 0.5f)
+    }
+
     /** Pruned-out id -> orig class id (#39); identity fallback if remap failed to load. */
     private fun remapClass(prunedIdx: Int): Int = classRemap.getOrElse(prunedIdx) { prunedIdx }
 
@@ -824,6 +839,7 @@ class OcrEngine(private val context: Context) {
                     cropH = job.bbox.height(),
                     cropX = job.bbox.left,
                     cropY = job.bbox.top,
+                    charCols = result.charCols,
                 )
                 doneLines++
                 mainHandler.post { onLinesRecognized(listOf(job.idx to lineResult)) }
@@ -1351,6 +1367,13 @@ class OcrEngine(private val context: Context) {
         val charCols = mutableListOf<Float>()
         var prevClass = 0
 
+        // Fractional peaks (#49): winner values at neighboring timesteps for
+        // sub-column interpolation (charCols carry fractions downstream).
+        fun wval(tt: Int, cls: Int): Float? {
+            if (tt < 0 || tt >= seqLen) return null
+            val s = cropLogits?.getOrNull(tt) as? FloatArray ?: return null
+            return s.getOrNull(cls)
+        }
         for (t in 0 until seqLen) {
             val slice = cropLogits?.getOrNull(t) as? FloatArray
             if (slice == null || slice.size < numClasses) continue
@@ -1361,6 +1384,9 @@ class OcrEngine(private val context: Context) {
             for (k in slice.indices) {
                 if (slice[k] > maxVal) { maxVal = slice[k]; maxIdx = k }
             }
+            val w0 = wval(t - 1, maxIdx)
+            val w2 = wval(t + 1, maxIdx)
+            val tFrac = if (w0 != null && w2 != null) t + peakOffset(w0, maxVal, w2) else t.toFloat()
 
             val classIdx = remapClass(maxIdx)
 
@@ -1378,7 +1404,7 @@ class OcrEngine(private val context: Context) {
                         if (topNonBlank != null) {
                             // Show the best non-blank character; put GAP_CHAR as an alternative
                             text.append(topNonBlank.first)
-                            charCols.add(t.toFloat())
+                            charCols.add(tFrac)
                             val reordered = mutableListOf(topNonBlank)
                             reordered.add(GAP_CHAR to 0f) // blank as selectable option
                             for (alt in indexed) {
@@ -1394,7 +1420,7 @@ class OcrEngine(private val context: Context) {
                 classIdx == 18709 -> {
                     text.append(' ')
                     prevClass = 18709
-                    charCols.add(t.toFloat())
+                    charCols.add(tFrac)
                     alts.add(indexed)
                 }
                 classIdx == prevClass -> { /* collapse repeat */ }
@@ -1402,7 +1428,7 @@ class OcrEngine(private val context: Context) {
                     val ch = decodeChar(classIdx)
                     if (ch != '\uFFFD') {
                         text.append(ch)
-                        charCols.add(t.toFloat())
+                        charCols.add(tFrac)
                         alts.add(indexed)
                         prevClass = classIdx
                     }
@@ -1428,12 +1454,23 @@ class OcrEngine(private val context: Context) {
         val charCols = mutableListOf<Float>()
         var prevClass = 0
 
+        // Fractional peaks (#49): winner (entry 0) score at neighboring
+        // timesteps, matched by pruned class id (absent from top-15 → 0 offset).
+        fun wval(tt: Int, cls: Int): Float? {
+            val p = topPruned.getOrNull(tt) ?: return null
+            val c = topChars.getOrNull(tt) ?: return null
+            val k = p.indexOf(cls)
+            return if (k < 0) null else c.getOrNull(k)?.second
+        }
         for (t in 0 until seqLen) {
             val pruned = topPruned.getOrNull(t) ?: continue
             val indexed = topChars.getOrNull(t)?.toMutableList() ?: continue
             if (pruned.isEmpty() || indexed.isEmpty()) continue
             val maxVal = indexed[0].second
             val classIdx = remapClass(pruned[0])
+            val w0 = wval(t - 1, pruned[0])
+            val w2 = wval(t + 1, pruned[0])
+            val tFrac = if (w0 != null && w2 != null) t + peakOffset(w0, maxVal, w2) else t.toFloat()
 
             when {
                 classIdx == 0 -> {
@@ -1443,7 +1480,7 @@ class OcrEngine(private val context: Context) {
                         }
                         if (topNonBlank != null) {
                             text.append(topNonBlank.first)
-                            charCols.add(t.toFloat())
+                            charCols.add(tFrac)
                             val reordered = mutableListOf(topNonBlank)
                             reordered.add(GAP_CHAR to 0f)
                             for (alt in indexed) {
@@ -1459,7 +1496,7 @@ class OcrEngine(private val context: Context) {
                 classIdx == 18709 -> {
                     text.append(' ')
                     prevClass = 18709
-                    charCols.add(t.toFloat())
+                    charCols.add(tFrac)
                     alts.add(indexed)
                 }
                 classIdx == prevClass -> { /* collapse repeat */ }
@@ -1467,7 +1504,7 @@ class OcrEngine(private val context: Context) {
                     val ch = decodeChar(classIdx)
                     if (ch != '\uFFFD') {
                         text.append(ch)
-                        charCols.add(t.toFloat())
+                        charCols.add(tFrac)
                         alts.add(indexed)
                         prevClass = classIdx
                     }
@@ -1517,11 +1554,15 @@ class OcrEngine(private val context: Context) {
             // ── HORIZONTAL: x-axis char boxes ──
             val avgColW = cropW.toFloat() / seqLenTotal.toFloat()
             val charW = maxOf(cropH.toFloat(), 3f)
+            val L = cropW.toFloat()
 
+            // Uniform column mapping (#49 verdict: gap surgery and affine
+            // refits all lost to this on ground truth — model timing is
+            // uniform; fractional charCols from peak interpolation flow here.
             val cells = charCols.map { t ->
                 val c = (t + 0.5f) * avgColW
                 val half = charW / 2f
-                (maxOf(c - half, 0f)) to (minOf(c + half, cropW.toFloat()))
+                (maxOf(c - half, 0f)) to (minOf(c + half, L))
             }.sortedBy { it.first }
 
             // Resolve overlaps
@@ -1547,11 +1588,12 @@ class OcrEngine(private val context: Context) {
             // final timestep (seqLen) aligns with bbox bottom.
             val avgColW = cropH.toFloat() / seqLenTotal.toFloat()
             val avgChH = maxOf(cropW.toFloat(), 3f)
+            val L = cropH.toFloat()
 
             val cells = charCols.map { t ->
                 val c = (t + 0.5f) * avgColW
                 val half = avgChH / 2f
-                (maxOf(c - half, 0f)) to (minOf(c + half, cropH.toFloat()))
+                (maxOf(c - half, 0f)) to (minOf(c + half, L))
             }.sortedBy { it.first }
 
             val isCp = text.map { ch ->
@@ -1707,6 +1749,15 @@ class OcrEngine(private val context: Context) {
         val charCols = mutableListOf<Float>()
         var prevChar: Char? = null
 
+        fun wval(t: Int, ch: Char): Float? {
+            if (t < 0 || t >= raw.size) return null
+            return raw[t].firstOrNull { (c, _) -> c == ch }?.second
+        }
+        fun fracFor(t: Int, ch: Char, v1: Float): Float {
+            val w0 = wval(t - 1, ch)
+            val w2 = wval(t + 1, ch)
+            return if (w0 != null && w2 != null) peakOffset(w0, v1, w2) else 0f
+        }
         for ((t, alts) in raw.withIndex()) {
             val top = alts.firstOrNull() ?: continue
             val blankScore = alts.firstOrNull { (ch, _) -> ch == '\u3000' }?.second ?: top.second
@@ -1721,7 +1772,7 @@ class OcrEngine(private val context: Context) {
                         if (topNonBlank != null) {
                             // Show the best non-blank character; put GAP_CHAR as an alternative
                             text.append(topNonBlank.first)
-                            charCols.add(t.toFloat())
+                            charCols.add(t + fracFor(t, topNonBlank.first, topNonBlank.second))
                             val reordered = mutableListOf(topNonBlank)
                             reordered.add(GAP_CHAR to 0f) // blank as selectable option
                             for (alt in alts) {
@@ -1737,13 +1788,13 @@ class OcrEngine(private val context: Context) {
                 topChar == ' ' -> {
                     text.append(' ')
                     prevChar = ' '
-                    charCols.add(t.toFloat())
+                    charCols.add(t + fracFor(t, ' ', top.second))
                     newAlts.add(alts.toMutableList())
                 }
                 topChar == prevChar -> { /* collapse */ }
                 else -> {
                     text.append(topChar)
-                    charCols.add(t.toFloat())
+                    charCols.add(t + fracFor(t, topChar, top.second))
                     newAlts.add(alts.toMutableList())
                     prevChar = topChar
                 }
@@ -1770,6 +1821,7 @@ class OcrEngine(private val context: Context) {
             cropH = oldLine.cropH,
             cropX = oldLine.cropX,
             cropY = oldLine.cropY,
+            charCols = charCols.toFloatArray(),
         )
     }
 
