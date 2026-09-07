@@ -1588,6 +1588,8 @@ class OcrEngine(private val context: Context) {
      * centroid, clamped to its Voronoi cell (ordering preserved, worst case
      * ~= legacy) with a 0.4-pitch leash. Polarity auto-detects (dark-on-light
      * vs light-on-dark) from border pixels. Needs crop pixels; null = skip. */
+    private data class Peak(val mid: Int, val argmax: Float, val centroid: Float, val mass: Float)
+
     private fun snapCells(
         cells: List<Pair<Float, Float>>,
         text: String,
@@ -1644,6 +1646,39 @@ class OcrEngine(private val context: Context) {
         // Cells live in crop coords; pixels may be the clamped subset at image
         // edges — scale defensively (normally identity).
         val centers = cells.map { (a, b) -> (a + b) / 2f }
+        // Ink peaks along the axis (local maxima with prominence): in dense
+        // text a window centroid is contaminated by neighbors, so each box
+        // snaps to the NEAREST peak instead (#49: single rushed transitions
+        // accumulate downstream; peak assignment removes cumulativity).
+        // Each peak carries ARGMAX + CENTROID: region growing can walk
+        // through shallow valleys and merge neighbors (seen: し centroid
+        // pulled 21px into the gap toward 失). When they disagree the window
+        // is contaminated and the box keeps legacy (veto below); when they
+        // agree the centroid is the stable snap target.
+        // Peak = (regionMid, argmaxPos, centroidPos, mass).
+        val peaks = mutableListOf<Peak>()
+        run {
+            var p = 1
+            while (p < profLen - 1) {
+                if (sm[p] > sm[p - 1] && sm[p] >= sm[p + 1]) {
+                    var l = p
+                    while (l > 0 && sm[l - 1] >= sm[l] * 0.5f) l--
+                    var r = p
+                    while (r < profLen - 1 && sm[r + 1] >= sm[r] * 0.5f) r++
+                    var m2 = 0f; var mo = 0f; var am = -1f; var ap = p
+                    for (q in l..r) {
+                        m2 += sm[q]; mo += sm[q] * q
+                        if (sm[q] > am) { am = sm[q]; ap = q }
+                    }
+                    if (m2 > 0f) peaks.add(Peak((l + r) / 2, ap.toFloat(), mo / m2, m2))
+                    p = r + 1
+                } else p++
+            }
+        }
+        // Peak prominence gate: speck peaks (ruby fragments, noise) carry
+        // little mass vs a full glyph; measured against the median peak.
+        val medMass = peaks.map { it.mass }.sorted()
+            .let { if (it.isEmpty()) 0f else it[it.size / 2] }
         return cells.mapIndexed { i, (a, b) ->
             if (i >= text.length || isSnapSkipped(text[i])) return@mapIndexed a to b
             val c = centers[i]
@@ -1651,14 +1686,27 @@ class OcrEngine(private val context: Context) {
             // Position on the pixel axis.
             val scale = profLen.toFloat() / L.coerceAtLeast(1f)
             val cp = (c * scale).coerceIn(0f, profLen - 1f)
-            val half = 0.6f * pitch * scale
-            val lo = maxOf(0, (cp - half).toInt()); val hi = minOf(profLen - 1, (cp + half).toInt())
-            var mass = 0f; var mom = 0f
-            for (p in lo..hi) { mass += sm[p]; mom += sm[p] * p }
-            if (mass < maxOf(6f, 0.02f * (hi - lo + 1) * (if (vertical) (pixW * 0.6f) else (pixH * 0.6f)))) {
+            val band = (if (vertical) (pixW * 0.6f) else (pixH * 0.6f))
+            // Nearest peak within half pitch; must clear the mass floor.
+            var best: Peak? = null
+            var bestD = 0.5f * pitch * scale + 1f
+            for (pk in peaks) {
+                if (pk.mass < maxOf(6f, 0.35f * medMass)) continue
+                val d = kotlin.math.abs(pk.centroid - cp)
+                if (d < bestD) { bestD = d; best = pk }
+            }
+            if (best == null) return@mapIndexed a to b
+            // Agreement veto: centroid far from argmax = merged neighbors
+            // (the し case) — keep legacy rather than snap into a gap.
+            if (kotlin.math.abs(best.centroid - best.argmax) > 0.3f * pitch * scale) {
                 return@mapIndexed a to b
             }
-            var nc = mom / mass / scale
+            // Min-move gate: sub-visible moves (< 3px) carry measurement risk
+            // without visible benefit — they regressed exact boxes ~1px.
+            if (kotlin.math.abs(best.centroid / scale - c) < 3f) {
+                return@mapIndexed a to b
+            }
+            var nc = best.centroid / scale
             // Voronoi clamp between neighbor centers (ends: line bounds).
             val loB = if (i > 0) (centers[i - 1] + c) / 2f else 0f
             val hiB = if (i < centers.size - 1) (c + centers[i + 1]) / 2f else L
