@@ -600,16 +600,23 @@ class OcrAccessibilityService : AccessibilityService() {
                     controller.activeAllAlternatives = mutableListOf()
 
                     val startTime = System.currentTimeMillis()
+                    // Render-once (#50): stash results during streaming, build
+                    // all views after every line completes. Recognition is ~1s,
+                    // so progressive rendering bought nothing and its per-line
+                    // Main work congested the queue mid-run.
+                    val finishedLines = mutableListOf<Pair<Int, LineResult>>()
                     withContext(Dispatchers.IO) {
                         ocrEngine.recognizeStreaming(bitmap, lineBoxes) { results ->
                             if (screenshotOverlay == null) return@recognizeStreaming
-                            results.forEach { (index, lineResult) ->
-                                addLineToResults(rootLayout, clicksLayer, index, lineResult)
-                            }
-                            if (controller.currentTappedLineIdx == -1) {
-                                updateCursor()
-                            }
+                            finishedLines.addAll(results)
                         }
+                    }
+                    for ((index, lineResult) in finishedLines.sortedBy { it.first }) {
+                        if (screenshotOverlay == null) break
+                        addLineToResults(rootLayout, clicksLayer, index, lineResult)
+                    }
+                    if (screenshotOverlay != null && controller.currentTappedLineIdx == -1) {
+                        updateCursor()
                     }
                     val endTime = System.currentTimeMillis() - startTime
                     postStatus(gen, "Found ${controller.activeAllChars.size} characters. Time: ${endTime}ms", hideProgress = true)
