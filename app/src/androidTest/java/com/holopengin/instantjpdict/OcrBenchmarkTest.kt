@@ -400,7 +400,9 @@ class OcrBenchmarkTest {
                     synchronized(collected) { collected.addAll(pairs) }
                 }
                 // Quiescence wait: empty texts are skipped by design, so count
-                // can never reach boxes.size — stop 3s after last arrival.
+                // can never reach boxes.size — stop ~1.5s after last arrival.
+                // (A 5s floor here once hid true compute: 61-line legs measured
+                // ~6s while batches finished in ~1s. Keep the floor small.)
                 var waited = 0
                 var lastSize = -1
                 var still = 0
@@ -410,7 +412,7 @@ class OcrBenchmarkTest {
                     synchronized(collected) {
                         if (collected.size == lastSize) still += 200 else { still = 0; lastSize = collected.size }
                     }
-                    if (still >= 3000 && waited > 5000) break
+                    if (still >= 1500 && waited > 2500) break
                 }
             }
             val ms = (System.nanoTime() - t0) / 1_000_000

@@ -754,6 +754,7 @@ class OcrEngine(private val context: Context) {
         bitmap: Bitmap,
         mainHandler: android.os.Handler,
         onLinesRecognized: (List<Pair<Int, LineResult>>) -> Unit,
+        fanout: Int = 4,
     ) {
         coroutineContext.ensureActive()
         val tBatch = System.nanoTime()
@@ -827,7 +828,7 @@ class OcrEngine(private val context: Context) {
                 mainHandler.post { onLinesRecognized(listOf(job.idx to lineResult)) }
             }
             // Single engine for the whole batch; the caller parallelizes across batches.
-            recognizePpocrBatch(crops, engine) { index, result -> emitLine(index, result) }
+            recognizePpocrBatch(crops, engine, fanout) { index, result -> emitLine(index, result) }
             val elapsed = (System.nanoTime() - tBatch) / 1_000_000
             val engTag = if (engine === recDynNcnn) "cpu" else "vk"
             Log.d(TAG, "Batch $batchIdx [$engTag] ${batch.size} jobs → $doneLines lines in ${elapsed}ms")
@@ -840,9 +841,16 @@ class OcrEngine(private val context: Context) {
         }
     }
 
+    /**
+     * @param fanout max concurrent line infers in this batch. Single-backend
+     * modes use 4; parallel-mode workers use 2 each (2 workers x 2 = 4 total,
+     * same core pressure as single modes but spread over both backends, #42).
+     * Waves run sequentially; completion-order streaming holds within a wave.
+     */
     private suspend fun recognizePpocrBatch(
         crops: List<Bitmap>,
         engine: RecNcnn? = null,
+        fanout: Int = 4,
         onEach: ((index: Int, result: PPOcrResult) -> Unit)? = null,
     ): List<PPOcrResult> {
         coroutineContext.ensureActive()
@@ -852,8 +860,10 @@ class OcrEngine(private val context: Context) {
         val targetH = REC_TARGET_H
 
         val ordered = arrayOfNulls<PPOcrResult>(numCrops)
-        coroutineScope {
-            val deferreds = (0 until numCrops).map { ci ->
+        for (wave in (0 until numCrops).chunked(fanout.coerceAtLeast(1))) {
+            coroutineContext.ensureActive()
+            coroutineScope {
+            val deferreds = wave.map { ci ->
                 async(Dispatchers.Default) {
                     coroutineContext.ensureActive()
                     val crop = crops[ci]
@@ -904,7 +914,7 @@ class OcrEngine(private val context: Context) {
             // Await in completion order so callers can stream per-line results (#21, §D5):
             // the returned list stays index-aligned; onEach fires on the selecting
             // worker and recognizeStreaming re-posts to the main thread.
-            val pending = deferreds.mapIndexed { ci, d -> d to ci }.toMap().toMutableMap()
+            val pending = deferreds.mapIndexed { wi, d -> d to wave[wi] }.toMap().toMutableMap()
             while (pending.isNotEmpty()) {
                 coroutineContext.ensureActive()
                 val (done, res) = select<Pair<Deferred<PPOcrResult?>, PPOcrResult?>> {
@@ -917,7 +927,8 @@ class OcrEngine(private val context: Context) {
                     try { onEach?.invoke(ci, res) } catch (_: Exception) {}
                 }
             }
-        }
+            } // end wave scope
+        } // end waves
         return ordered.map { it ?: PPOcrResult("", emptyList(), floatArrayOf(), 0) }
     }
 
