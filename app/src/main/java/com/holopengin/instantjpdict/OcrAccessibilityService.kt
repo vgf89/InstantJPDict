@@ -621,7 +621,7 @@ class OcrAccessibilityService : AccessibilityService() {
                         updateCursor()
                     }
                     val recMs = System.currentTimeMillis() - startTime
-                    postStatus(gen, "${controller.activeAllChars.size} chars | Det: ${detMs}ms | Rec: ${recMs}ms", hideProgress = true)
+                    postStatus(gen, "${finishedLines.size} ln | ${controller.activeAllChars.size} chr | Det ${detMs}ms | Rec ${recMs}ms", hideProgress = true)
                 } else {
                     postStatus(gen, "Error: OCR Engine not ready", hideProgress = true)
                 }
