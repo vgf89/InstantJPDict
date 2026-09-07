@@ -533,6 +533,15 @@ class OcrAccessibilityService : AccessibilityService() {
 
         ocrJob = serviceScope.launch {
             try {
+                // Rebuild the engine if the rec backend pref moved since init
+                // (handles load once at init; #42).
+                val wantBackend = getSharedPreferences(OcrEngine.PREFS_NAME, MODE_PRIVATE)
+                    .getInt(OcrEngine.PREF_REC_BACKEND, OcrEngine.DEF_REC_BACKEND).coerceIn(0, 2)
+                if (ocrEngine.builtBackend != wantBackend) {
+                    Log.i("OcrAccessibilityService", "rec backend ${ocrEngine.builtBackend}→$wantBackend, rebuilding engine")
+                    try { ocrEngine.close() } catch (_: Exception) {}
+                    ocrEngine = OcrEngine(this@OcrAccessibilityService)
+                }
                 if (ocrEngine.isReady()) {
                     debugTextView.text = "Running detection..."
                     val lineBoxes = withContext(Dispatchers.IO) { ocrEngine.detect(bitmap) }

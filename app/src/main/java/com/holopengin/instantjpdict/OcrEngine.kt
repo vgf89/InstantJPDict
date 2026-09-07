@@ -42,6 +42,10 @@ class OcrEngine(private val context: Context) {
     private var recVkNcnn: RecNcnn? = null // IP-swapped twin graph, created only for Vulkan use (#42)
     val recBackend: Int
         get() = prefs.getInt(PREF_REC_BACKEND, DEF_REC_BACKEND).coerceIn(0, 2)
+    // Backend this engine's handles were built for; the service recreates the
+    // engine when the pref moves (handles load at init, #42).
+    var builtBackend: Int = DEF_REC_BACKEND
+        private set
 
     companion object {
         private const val TAG = "PPOCREngine"
@@ -230,6 +234,7 @@ class OcrEngine(private val context: Context) {
                     Log.e(TAG, "RecNcnn vulkan failed", e)
                 }
             }
+            builtBackend = prefs.getInt(PREF_REC_BACKEND, DEF_REC_BACKEND).coerceIn(0, 2)
 
             // ── Load vocabulary ──
             val vocabJson = context.assets.open("PP-OCRv6_small_ncnn/vocab.json")

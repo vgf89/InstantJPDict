@@ -335,6 +335,7 @@ class OcrBenchmarkTest {
             prefs.edit().putInt(OcrEngine.PREF_REC_BACKEND, mode).apply()
             val eng = OcrEngine(appContext)
             assertTrue("$label engine ready", eng.isReady())
+            assertEquals("$label built backend", mode, eng.builtBackend)
             val collected = mutableListOf<Pair<Int, LineResult>>()
             val t0 = System.nanoTime()
             runBlocking {
@@ -371,6 +372,75 @@ class OcrBenchmarkTest {
         assertClose("vulkan-vs-cpu", cpuTexts, vkTexts)
         assertClose("parallel-vs-cpu", cpuTexts, parTexts)
         Log.i(TAG, "backendParity SUMMARY cpu=${cpuMs}ms vulkan=${vkMs}ms parallel=${parMs}ms")
+    }
+
+    @Test
+    fun backendEndToEndQuestBook() {
+        // End-to-end backend comparison on a dense real screenshot (#42):
+        // detect once (backend-independent), recognize ALL lines per backend.
+        val appContext = InstrumentationRegistry.getInstrumentation().targetContext
+        val prefs = appContext.getSharedPreferences(OcrEngine.PREFS_NAME, android.content.Context.MODE_PRIVATE)
+        val bmp = loadBenchmarkBitmap("Screenshot_20260905-093821.png")
+        prefs.edit().putInt(OcrEngine.PREF_REC_BACKEND, OcrEngine.BACKEND_CPU).apply()
+        val detEng = OcrEngine(appContext)
+        assertTrue("det engine ready", detEng.isReady())
+        val boxes = detEng.detect(bmp)
+        Log.i(TAG, "backendE2E quest book boxes=${boxes.size}")
+        assertTrue("expected 20+ lines, got ${boxes.size}", boxes.size >= 20)
+        detEng.close()
+
+        fun runBackend(mode: Int, label: String): Pair<List<String>, Long> {
+            prefs.edit().putInt(OcrEngine.PREF_REC_BACKEND, mode).apply()
+            val eng = OcrEngine(appContext)
+            assertTrue("$label engine ready", eng.isReady())
+            val collected = mutableListOf<Pair<Int, LineResult>>()
+            val t0 = System.nanoTime()
+            runBlocking {
+                eng.recognizeStreaming(bmp, boxes) { pairs ->
+                    synchronized(collected) { collected.addAll(pairs) }
+                }
+                // Quiescence wait: empty texts are skipped by design, so count
+                // can never reach boxes.size — stop 3s after last arrival.
+                var waited = 0
+                var lastSize = -1
+                var still = 0
+                while (collected.size < boxes.size && waited < 120000) {
+                    kotlinx.coroutines.delay(200)
+                    waited += 200
+                    synchronized(collected) {
+                        if (collected.size == lastSize) still += 200 else { still = 0; lastSize = collected.size }
+                    }
+                    if (still >= 3000 && waited > 5000) break
+                }
+            }
+            val ms = (System.nanoTime() - t0) / 1_000_000
+            val texts = collected.sortedBy { it.first }.map { it.second.text }
+            Log.i(TAG, "backendE2E $label lines=${texts.size}/${boxes.size} recMs=${ms}ms")
+            eng.close()
+            prefs.edit().putInt(OcrEngine.PREF_REC_BACKEND, OcrEngine.DEF_REC_BACKEND).apply()
+            return texts to ms
+        }
+
+        val (cpuTexts, cpuMs) = runBackend(OcrEngine.BACKEND_CPU, "cpu")
+        val (vkTexts, vkMs) = runBackend(OcrEngine.BACKEND_VULKAN, "vulkan")
+        val (parTexts, parMs) = runBackend(OcrEngine.BACKEND_PARALLEL, "parallel")
+        // Empty texts are skipped by design — assert all backends agree on count.
+        assertTrue("cpu returned lines", cpuTexts.isNotEmpty())
+        assertEquals("vulkan line count", cpuTexts.size, vkTexts.size)
+        assertEquals("parallel line count", cpuTexts.size, parTexts.size)
+        fun cerLike(a: List<String>, b: List<String>): Double {
+            var d = 0; var n = 0
+            for (i in a.indices) {
+                d += editDistance(a[i], b.getOrElse(i) { "" })
+                n += maxOf(a[i].length, 1)
+            }
+            return d.toDouble() / n
+        }
+        val vkCer = cerLike(cpuTexts, vkTexts)
+        val parCer = cerLike(cpuTexts, parTexts)
+        Log.i(TAG, "backendE2E SUMMARY lines=${boxes.size} cpu=${cpuMs}ms vulkan=${vkMs}ms parallel=${parMs}ms vkCER=$vkCer parCER=$parCer")
+        assertTrue("vulkan CER $vkCer too high", vkCer <= 0.05)
+        assertTrue("parallel CER $parCer too high", parCer <= 0.05)
     }
 
     @Test

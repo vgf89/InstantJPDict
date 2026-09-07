@@ -366,7 +366,7 @@ class MainActivity : AppCompatActivity() {
                 setOnCheckedChangeListener { _, checked ->
                     if (checked) {
                         prefs.edit().putInt(OcrEngine.PREF_REC_BACKEND, i).apply()
-                        Toast.makeText(this@MainActivity, "Backend → $label (applies on re-run)", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this@MainActivity, "Backend → $label (engine rebuilds on next OCR run)", Toast.LENGTH_SHORT).show()
                     }
                 }
             }
