@@ -175,15 +175,19 @@ class OcrBenchmarkTest {
                 synchronized(collected) { collected.addAll(pairs) }
             }
             var waited = 0
+            var lastSize = -1
+            var still = 0
+            // Quiescence wait (empties are skipped by design): stop ~1s after
+            // last arrival instead of burning a fixed 30s timeout (#51 — a
+            // single empty sample inflated perCrop past its gate).
             while (collected.size < sampleBoxes.size && waited < 30000) {
-                kotlinx.coroutines.delay(50)
-                waited += 50
+                kotlinx.coroutines.delay(100)
+                waited += 100
+                synchronized(collected) {
+                    if (collected.size == lastSize) still += 100 else { still = 0; lastSize = collected.size }
+                }
+                if (still >= 1000 && waited > 2000) break
             }
-        }
-        var waited = 0
-        while (collected.size < sampleBoxes.size && waited < 2000) {
-            Thread.sleep(50)
-            waited += 50
         }
         val recMs = (System.nanoTime() - tRec) / 1_000_000
         for ((_, line) in collected) texts.add(line.text)
@@ -227,10 +231,21 @@ class OcrBenchmarkTest {
         runBlocking {
             eng.recognizeStreaming(bitmap, sampleBoxes) { pairs -> synchronized(collected) { collected.addAll(pairs) } }
             var waited = 0
-            while (collected.size < sampleBoxes.size && waited < 30000) { kotlinx.coroutines.delay(50); waited += 50 }
+            var lastSize = -1
+            var still = 0
+            // Quiescence wait (empties are skipped by design): stop ~1s after
+            // last arrival instead of burning a fixed 30s timeout (#51 — a
+            // single empty sample inflated perCrop past its gate).
+            while (collected.size < sampleBoxes.size && waited < 30000) {
+                kotlinx.coroutines.delay(100)
+                waited += 100
+                synchronized(collected) {
+                    if (collected.size == lastSize) still += 100 else { still = 0; lastSize = collected.size }
+                }
+                if (still >= 1000 && waited > 2000) break
+            }
         }
-        var waited = 0
-        while (collected.size < sampleBoxes.size && waited < 2000) { Thread.sleep(50); waited += 50 }
+
         val recMs = (System.nanoTime() - tRec) / 1_000_000
         for ((_, line) in collected) texts.add(line.text)
         Log.i(TAG, "bench rec $name sampled=${collected.size}/${sampleBoxes.size} totalBoxes=${boxes.size} recMs=$recMs perCrop=${if (sampleBoxes.isEmpty()) 0 else recMs / sampleBoxes.size} sample=${texts.take(3).joinToString(" | ")}")
@@ -343,9 +358,17 @@ class OcrBenchmarkTest {
                     synchronized(collected) { collected.addAll(pairs) }
                 }
                 var waited = 0
+                var lastSize = -1
+                var still = 0
+                // Quiescence wait (empties are skipped by design): stop ~1s
+                // after last arrival instead of a fixed 30s timeout (#51).
                 while (collected.size < sampleBoxes.size && waited < 30000) {
-                    kotlinx.coroutines.delay(50)
-                    waited += 50
+                    kotlinx.coroutines.delay(100)
+                    waited += 100
+                    synchronized(collected) {
+                        if (collected.size == lastSize) still += 100 else { still = 0; lastSize = collected.size }
+                    }
+                    if (still >= 1000 && waited > 2000) break
                 }
             }
             val ms = (System.nanoTime() - t0) / 1_000_000
@@ -372,6 +395,50 @@ class OcrBenchmarkTest {
         assertClose("vulkan-vs-cpu", cpuTexts, vkTexts)
         assertClose("parallel-vs-cpu", cpuTexts, parTexts)
         Log.i(TAG, "backendParity SUMMARY cpu=${cpuMs}ms vulkan=${vkMs}ms parallel=${parMs}ms")
+    }
+
+    @Test
+    fun detInputSizeAB() {
+        // Det input-size A/B (#51): 960 vs 896 box counts + walls on real
+        // images. Host study predicts counts within ±4% and ~13% less
+        // compute; gate here is ±15% (fp16 + resampling noise), walls must drop.
+        val appContext = InstrumentationRegistry.getInstrumentation().targetContext
+        val imgs = listOf("Screenshot_20260905-093821.png", "f5d7d08735383899.jpg")
+        val counts = mutableMapOf<Int, List<Int>>()
+        val walls = mutableMapOf<Int, List<Long>>()
+        try {
+            for (size in listOf(960, 896)) {
+                OcrEngine.DET_MODEL_SIZE = size
+                val eng = OcrEngine(appContext)
+                assertTrue("det engine ready @ $size", eng.isReady())
+                val cs = mutableListOf<Int>(); val ws = mutableListOf<Long>()
+                for (name in imgs) {
+                    val bmp = loadBenchmarkBitmap(name)
+                    // Warmup then min-of-3.
+                    eng.detect(bmp)
+                    var best = Long.MAX_VALUE; var n = 0
+                    repeat(3) {
+                        val t0 = System.nanoTime()
+                        n = eng.detect(bmp).size
+                        best = minOf(best, (System.nanoTime() - t0) / 1_000_000)
+                    }
+                    cs.add(n); ws.add(best)
+                    Log.i(TAG, "detSizeAB size=$size img=$name boxes=$n wallMs=$best")
+                }
+                eng.close()
+                counts[size] = cs; walls[size] = ws
+            }
+        } finally {
+            OcrEngine.DET_MODEL_SIZE = 896
+        }
+        for (i in imgs.indices) {
+            val c960 = counts[960]!![i]; val c896 = counts[896]!![i]
+            val w960 = walls[960]!![i]; val w896 = walls[896]!![i]
+            Log.i(TAG, "detSizeAB SUMMARY ${imgs[i]}: 960: $c960 boxes/${w960}ms -> 896: $c896 boxes/${w896}ms")
+            assertTrue("${imgs[i]}: 896 count $c896 vs 960 $c960",
+                c896 >= (c960 * 0.85).toInt() && c896 <= (c960 * 1.15).toInt() + 2)
+            assertTrue("${imgs[i]}: 896 wall ${w896}ms not faster than 960 ${w960}ms", w896 <= w960)
+        }
     }
 
     @Test
@@ -649,10 +716,20 @@ class OcrBenchmarkTest {
             kotlinx.coroutines.runBlocking {
                 eng.recognizeStreaming(bitmap, sampleBoxes) { pairs -> synchronized(collected) { collected.addAll(pairs) } }
                 var waited = 0
-                while (collected.size < sampleBoxes.size && waited < 30000) { kotlinx.coroutines.delay(50); waited += 50 }
+                var lastSize = -1
+                var still = 0
+                // Quiescence wait (empties are skipped by design): stop ~1s after
+                // last arrival instead of burning a fixed 30s timeout (#51 — a
+                // single empty sample inflated perCrop past its gate).
+                while (collected.size < sampleBoxes.size && waited < 30000) {
+                    kotlinx.coroutines.delay(100)
+                    waited += 100
+                    synchronized(collected) {
+                        if (collected.size == lastSize) still += 100 else { still = 0; lastSize = collected.size }
+                    }
+                    if (still >= 1000 && waited > 2000) break
+                }
             }
-            var waited = 0
-            while (collected.size < sampleBoxes.size && waited < 2000) { Thread.sleep(50); waited += 50 }
             val recMs = (System.nanoTime() - tRec) / 1_000_000
             for ((_, line) in collected) texts.add(line.text)
             Log.i(TAG, "bench rec $name sampled=${collected.size}/${sampleBoxes.size} totalBoxes=${boxes.size} recMs=$recMs perCrop=${if (sampleBoxes.isEmpty()) 0 else recMs / sampleBoxes.size} sample=${texts.take(3).joinToString(" | ")} backend=ncnn")

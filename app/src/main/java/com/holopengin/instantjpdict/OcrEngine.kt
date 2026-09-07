@@ -26,7 +26,7 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
-/** PP-OCRv6 [OcrEngine] — ncnn detect (DB 960×960) + dynamic-width rec (48×W) + CTC.
+/** PP-OCRv6 [OcrEngine] — ncnn detect (DB, DET_MODEL_SIZE²) + dynamic-width rec (48×W) + CTC.
  *
  * Seams (single file by decision, #29): Detect §§ (detect + unclip + furigana +
  * merge/split/sort) → Rec batch/stream §§ (recognizePpocrBatch + recognizeStreaming,
@@ -37,7 +37,7 @@ import kotlin.math.sqrt
  */
 
 class OcrEngine(private val context: Context) {
-    // Detection model (DB 960×960) + vocabulary + single dynamic-width rec model (#23).
+    // Detection model (DB, #51) + vocabulary + single dynamic-width rec model (#23).
     private var detNcnn: DetNcnn? = null
     private var ppocrVocab: List<String> = emptyList()
     private var classRemap: IntArray = IntArray(0) // pruned-out -> orig class id (#39)
@@ -65,6 +65,11 @@ class OcrEngine(private val context: Context) {
 
         // Defaults (previous hard constants)
         const val DEF_DET_LONG_SIDE = 960
+        /** Det net input side (#51): 896 holds box counts within ±4% on all 8
+         * bench images (host study, app-exact postprocess port) for ~13%
+         * less compute than 960; 832+ breaks dense screenshots. Test-flippable
+         * to 960 for A/B walls. */
+        var DET_MODEL_SIZE = 896
         const val DEF_DET_THRESH = 0.3f
         const val DEF_DET_UNCLIP = 1.50f
         const val DEF_X_OVERLAP = 0.40f
@@ -184,7 +189,7 @@ class OcrEngine(private val context: Context) {
 
         // Pooled det buffers — same ThreadLocal pattern as RecNcnn.tlBuffer. detect()
         // repaints the letterbox fully (opaque gray drawColor) and overwrites both
-        // arrays end-to-end every call, so reuse is stale-safe. modelSize is fixed 960. #20
+        // arrays end-to-end every call, so reuse is stale-safe. Sized by modelSize (#20, #51).
         private val tlDetImgData = ThreadLocal<FloatArray>()
         private val tlDetPixels = ThreadLocal<IntArray>()
         private val tlDetLetterbox = ThreadLocal<android.graphics.Bitmap>()
@@ -193,7 +198,7 @@ class OcrEngine(private val context: Context) {
     // ——— Tunable getters (live SharedPreferences, defaults from companion) ———
     private val prefs
         get() = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-    /** Fixed 960: det long side is not tunable (model input is 960×960). */
+    /** Content long side pref; clamped to the net input side at detect() (#51). */
     private val detLongSide: Int
         get() = DEF_DET_LONG_SIDE
     private val detThresh: Float
@@ -213,7 +218,7 @@ class OcrEngine(private val context: Context) {
             // Clear stale cached models so asset updates take effect
             cacheDir.listFiles()?.forEach { it.delete() }
 
-            // ── Load PP-OCRv6 detection model (ncnn 960×960 DB) ──
+            // ── Load PP-OCRv6 detection model (ncnn DB) ──
             try {
                 detNcnn = DetNcnn.create(context)
                 Log.d(TAG, "DetNcnn loaded: $detNcnn")
@@ -273,9 +278,10 @@ class OcrEngine(private val context: Context) {
         val origW = bitmap.width.toFloat()
         val origH = bitmap.height.toFloat()
 
-        // 1. Resize keeping longest side = 960, pad to 960×960 letterbox.
-        val targetLong = detLongSide
-        val modelSize = 960
+        // 1. Resize keeping longest side = min(pref, modelSize), pad to
+        // modelSize×modelSize letterbox (#51: net runs at DET_MODEL_SIZE).
+        val modelSize = DET_MODEL_SIZE.coerceIn(320, 960)
+        val targetLong = minOf(detLongSide, modelSize)
         Log.d(TAG, "detect tunables thresh=$detThresh unclip=$detUnclip longSide=$targetLong xOverlap=$xOverlapThresh modelSize=$modelSize")
         val scale = targetLong.toFloat() / maxOf(origW, origH)
         val resizeW = maxOf((origW * scale).roundToInt(), 32)
@@ -294,10 +300,12 @@ class OcrEngine(private val context: Context) {
         canvas.setBitmap(null)
         resized.recycle()
 
-        // 2. Build NCHW input with ImageNet normalisation [3,960,960].
+        // 2. Build NCHW input with ImageNet normalisation [3,S,S].
         // Buffers pooled ThreadLocal; fully overwritten below. #20
         val needFloats = 3 * modelSize * modelSize
-        val imgData: FloatArray = tlDetImgData.get()?.takeIf { it.size >= needFloats }
+        // Exact-size pool match: DetNcnn.infer strict-checks array length, so a
+        // 960-sized reuse under an 896 run (or vice versa) hard-fails (#51).
+        val imgData: FloatArray = tlDetImgData.get()?.takeIf { it.size == needFloats }
             ?: FloatArray(needFloats).also { tlDetImgData.set(it) }
         val needInts = modelSize * modelSize
         val pixels: IntArray = tlDetPixels.get()?.takeIf { it.size >= needInts }
@@ -319,7 +327,7 @@ class OcrEngine(private val context: Context) {
 
         // 3. Run detection via ncnn.
         val probArr = det.infer(imgData, modelSize, modelSize) ?: return emptyList()
-        // probArr should be 960×960 float prob map; upsample a downsampled
+        // probArr should be S×S float prob map; upsample a downsampled
         // square output (e.g. 240×240) via nearest.
         val outH: Int
         val outW: Int
