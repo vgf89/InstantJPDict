@@ -108,6 +108,20 @@ class OcrBenchmarkTest {
         }
 
         /** Decode top-1 text from flat logits for quick top-1 check (CTC greedy without blank handling). */
+        private fun editDistance(a: String, b: String): Int {
+            if (a == b) return 0
+            var dp = IntArray(b.length + 1) { it }
+            for (i in 1..a.length) {
+                var prev = dp[0]
+                dp[0] = i
+                for (j in 1..b.length) {
+                    val cur = dp[j]
+                    dp[j] = minOf(dp[j] + 1, dp[j - 1] + 1, prev + if (a[i - 1] == b[j - 1]) 0 else 1)
+                    prev = cur
+                }
+            }
+            return dp[b.length]
+        }
         private fun decodeTop1Flat(logits: FloatArray, seqLen: Int, numClasses: Int, vocab: List<String>, remap: IntArray = IntArray(0)): String {
             val sb = StringBuilder()
             var prev = -1
@@ -298,6 +312,65 @@ class OcrBenchmarkTest {
         instr.sendStatus(0, bundle)
         bmp.recycle()
         assertTrue("no boxes detected for jpg", r.numBoxes > 0)
+    }
+
+    // 3-way backend check (#42): CPU-only vs Vulkan-only vs parallel split must
+    // agree textually on the same boxes; Vulkan/parallel must load and run.
+    @Test
+    fun backendParityAndBench() {
+        val appContext = InstrumentationRegistry.getInstrumentation().targetContext
+        val prefs = appContext.getSharedPreferences(OcrEngine.PREFS_NAME, android.content.Context.MODE_PRIVATE)
+        val bmp = loadBenchmarkBitmap("f5d7d08735383899.jpg")
+        // Detect once on CPU (det path is backend-independent).
+        prefs.edit().putInt(OcrEngine.PREF_REC_BACKEND, OcrEngine.BACKEND_CPU).apply()
+        val detEng = OcrEngine(appContext)
+        assertTrue("det engine ready", detEng.isReady())
+        val boxes = detEng.detect(bmp)
+        assertTrue("expected boxes, got ${boxes.size}", boxes.size > 3)
+        detEng.close()
+        val sampleBoxes = listOf(boxes.first(), boxes[boxes.size / 2], boxes.last())
+        Log.i(TAG, "backendParity boxes=${boxes.size} sample=${sampleBoxes.size}")
+
+        fun runBackend(mode: Int, label: String): Pair<List<String>, Long> {
+            prefs.edit().putInt(OcrEngine.PREF_REC_BACKEND, mode).apply()
+            val eng = OcrEngine(appContext)
+            assertTrue("$label engine ready", eng.isReady())
+            val collected = mutableListOf<Pair<Int, LineResult>>()
+            val t0 = System.nanoTime()
+            runBlocking {
+                eng.recognizeStreaming(bmp, sampleBoxes) { pairs ->
+                    synchronized(collected) { collected.addAll(pairs) }
+                }
+                var waited = 0
+                while (collected.size < sampleBoxes.size && waited < 30000) {
+                    kotlinx.coroutines.delay(50)
+                    waited += 50
+                }
+            }
+            val ms = (System.nanoTime() - t0) / 1_000_000
+            val texts = collected.sortedBy { it.first }.map { it.second.text }
+            Log.i(TAG, "backendParity $label recMs=${ms}ms texts=$texts")
+            eng.close()
+            prefs.edit().putInt(OcrEngine.PREF_REC_BACKEND, OcrEngine.DEF_REC_BACKEND).apply()
+            return texts to ms
+        }
+
+        val (cpuTexts, cpuMs) = runBackend(OcrEngine.BACKEND_CPU, "cpu")
+        val (vkTexts, vkMs) = runBackend(OcrEngine.BACKEND_VULKAN, "vulkan")
+        val (parTexts, parMs) = runBackend(OcrEngine.BACKEND_PARALLEL, "parallel")
+        // Cross-graph tolerance: CPU (fused) and Vulkan (IP-swapped, no requantize
+        // round-trip) agree ~98%; single-kanji wobbles like 目/日 are expected.
+        // Assert per-line edit distance <= 2, not string equality.
+        fun assertClose(tag: String, a: List<String>, b: List<String>) {
+            assertEquals("$tag line count", a.size, b.size)
+            for (i in a.indices) {
+                val d = editDistance(a[i], b[i])
+                assertTrue("$tag line $i differs by $d: '${a[i]}' vs '${b[i]}'", d <= 2)
+            }
+        }
+        assertClose("vulkan-vs-cpu", cpuTexts, vkTexts)
+        assertClose("parallel-vs-cpu", cpuTexts, parTexts)
+        Log.i(TAG, "backendParity SUMMARY cpu=${cpuMs}ms vulkan=${vkMs}ms parallel=${parMs}ms")
     }
 
     @Test

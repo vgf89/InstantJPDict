@@ -8,6 +8,7 @@ import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import java.io.File
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
@@ -38,6 +39,9 @@ class OcrEngine(private val context: Context) {
     private var ppocrVocab: List<String> = emptyList()
     private var classRemap: IntArray = IntArray(0) // pruned-out -> orig class id (#39)
     private var recDynNcnn: RecNcnn? = null
+    private var recVkNcnn: RecNcnn? = null // IP-swapped twin graph, created only for Vulkan use (#42)
+    val recBackend: Int
+        get() = prefs.getInt(PREF_REC_BACKEND, DEF_REC_BACKEND).coerceIn(0, 2)
 
     companion object {
         private const val TAG = "PPOCREngine"
@@ -99,6 +103,14 @@ class OcrEngine(private val context: Context) {
         private const val REC_NUM_CLASSES = 18710  // 0=blank, 1..18708=chars, 18709=space (orig id space)
         // Pruned CTC-head width (#39): gemm_8 emits 13193 outs; CLASS_REMAP[new] = orig id.
         private const val REC_NUM_OUTPUTS = 13193
+        // Rec backend (#42): 0 = CPU-only, 1 = Vulkan-only, 2 = parallel split.
+        const val PREF_REC_BACKEND = "rec_backend"
+        const val DEF_REC_BACKEND = 0
+        const val BACKEND_CPU = 0
+        const val BACKEND_VULKAN = 1
+        const val BACKEND_PARALLEL = 2
+        // Vulkan cost relative to CPU per width unit, for parallel split (measured ~2x). 
+        const val VK_COST_RATIO = 0.5f
         private const val BATCH_SIZE = 4
         private const val REC_STRIDE = 8
         /** Alternative-list cap everywhere (per-timestep top-K, per-char alts, stitch merges). */
@@ -209,6 +221,16 @@ class OcrEngine(private val context: Context) {
                 Log.e(TAG, "RecNcnn dyn failed", e)
             }
 
+            // ── Vulkan twin, only when selected (saves ~10MB RAM + GPU init otherwise) ──
+            if (prefs.getInt(PREF_REC_BACKEND, DEF_REC_BACKEND) != BACKEND_CPU) {
+                try {
+                    recVkNcnn = RecNcnn.create(context, 64, true)
+                    Log.d(TAG, "RecNcnn vulkan loaded: $recVkNcnn")
+                } catch (e: Exception) {
+                    Log.e(TAG, "RecNcnn vulkan failed", e)
+                }
+            }
+
             // ── Load vocabulary ──
             val vocabJson = context.assets.open("PP-OCRv6_small_ncnn/vocab.json")
                 .bufferedReader().use { it.readText() }
@@ -230,7 +252,8 @@ class OcrEngine(private val context: Context) {
     }
 
     fun isReady(): Boolean =
-        detNcnn != null && recDynNcnn != null && ppocrVocab.isNotEmpty() && classRemap.size == REC_NUM_OUTPUTS
+        detNcnn != null && recDynNcnn != null && ppocrVocab.isNotEmpty() && classRemap.size == REC_NUM_OUTPUTS &&
+            (recBackend == BACKEND_CPU || recVkNcnn != null)
 
     // ═════════════════════════════════════════════════════════════════════════
     //  Detect — DB segmentation → contours → boxes (#28 furigana, unclip)
@@ -658,9 +681,9 @@ class OcrEngine(private val context: Context) {
      * when inference fails (callers fall back: batch emits empty, stitch falls
      * through to crush). Does NOT recycle [src] — callers own their bitmaps.
      * Cooperative cancellation via `coroutineContext.ensureActive()`. */
-    private suspend fun inferResizedRec(src: Bitmap, targetW: Int, targetH: Int): PPOcrResult? {
+    private suspend fun inferResizedRec(src: Bitmap, targetW: Int, targetH: Int, engine: RecNcnn? = null): PPOcrResult? {
         coroutineContext.ensureActive()
-        val recNcnn = recDynNcnn ?: return null
+        val recNcnn = engine ?: recDynNcnn ?: return null
         val modelW = ((targetW + 7) / 8) * 8
         val resized = Bitmap.createScaledBitmap(src, targetW, targetH, true)
         val pixels = IntArray(targetW * targetH)
@@ -694,13 +717,53 @@ class OcrEngine(private val context: Context) {
      * applied pre-inference (#24). Cooperative cancellation: checks
      * coroutineContext.isActive.
      */
+    /**
+     * Backend routing for one batch (#42): returns (engine, global crop
+     * indices) parts — one entry, unless PARALLEL with both engines up, when
+     * lines split by longest-processing-time on estimated cost (targetW, VK
+     * weighted by [VK_COST_RATIO]). Callers run parts concurrently and merge
+     * by index. Vulkan-missing falls back to CPU with a warning.
+     */
+    private fun assignBackends(crops: List<Bitmap>): List<Pair<RecNcnn, List<Int>>> {
+        val cpu = recDynNcnn
+        val vk = recVkNcnn
+        if (recBackend == BACKEND_VULKAN) {
+            if (vk != null) return listOf(vk to crops.indices.toList())
+            Log.w(TAG, "Vulkan backend selected but handle missing — falling back to CPU")
+        }
+        if (recBackend != BACKEND_PARALLEL || vk == null || cpu == null) {
+            val engine = cpu ?: vk ?: return emptyList()
+            return listOf(engine to crops.indices.toList())
+        }
+        fun estCost(crop: Bitmap): Float {
+            val cw = crop.width; val ch = crop.height
+            val rw = if (ch >= cw * 3 / 2) ch else cw
+            val rh = if (ch >= cw * 3 / 2) cw else ch
+            return minOf(LONG_LINE_GATE.toFloat(), rw * REC_TARGET_H / rh.coerceAtLeast(1).toFloat())
+        }
+        val order = crops.indices.sortedByDescending { estCost(crops[it]) }
+        var cpuLoad = 0f; var vkLoad = 0f
+        val cpuIdx = mutableListOf<Int>(); val vkIdx = mutableListOf<Int>()
+        for (i in order) {
+            val c = estCost(crops[i])
+            if (cpuLoad <= vkLoad) { cpuIdx.add(i); cpuLoad += c }
+            else { vkIdx.add(i); vkLoad += c / VK_COST_RATIO }
+        }
+        Log.d(TAG, "Parallel split: ${cpuIdx.size} CPU / ${vkIdx.size} VK")
+        return listOfNotNull(
+            cpu.takeIf { cpuIdx.isNotEmpty() }?.let { it to cpuIdx },
+            vk.takeIf { vkIdx.isNotEmpty() }?.let { it to vkIdx },
+        )
+    }
+
     private suspend fun recognizePpocrBatch(
         crops: List<Bitmap>,
+        engine: RecNcnn? = null,
         onEach: ((index: Int, result: PPOcrResult) -> Unit)? = null,
     ): List<PPOcrResult> {
         coroutineContext.ensureActive()
         val numCrops = crops.size
-        if (numCrops == 0 || ppocrVocab.isEmpty() || recDynNcnn == null) return emptyList()
+        if (numCrops == 0 || ppocrVocab.isEmpty() || (engine ?: recDynNcnn) == null) return emptyList()
 
         val targetH = REC_TARGET_H
 
@@ -728,9 +791,9 @@ class OcrEngine(private val context: Context) {
             val isLongVert = rh >= rw * 3 / 2 && (rh.toFloat() * targetH / rw.toFloat() > LONG_LINE_GATE)
             if (isLongHoriz || isLongVert) {
                 val stitched = if (isLongHoriz) {
-                    recognizeAndStitchLongHoriz(rotated, targetH)
+                    recognizeAndStitchLongHoriz(rotated, targetH, engine)
                 } else {
-                    recognizeAndStitchLongVert(rotated, targetH)
+                    recognizeAndStitchLongVert(rotated, targetH, engine)
                 }
                 if (stitched != null) {
                     if (rotated !== crop) rotated.recycle()
@@ -745,7 +808,7 @@ class OcrEngine(private val context: Context) {
                 (rw.toFloat() * targetH / rh.toFloat()).roundToInt()
             ))
             val sqTarget = squishTarget(targetW, recSquish)
-            val result = inferResizedRec(rotated, sqTarget, targetH)
+            val result = inferResizedRec(rotated, sqTarget, targetH, engine)
             if (rotated !== crop) rotated.recycle()
             if (result == null) {
                 Log.e(TAG, "recDynNcnn w$sqTarget infer failed — skip crop")
@@ -814,7 +877,7 @@ class OcrEngine(private val context: Context) {
      * collapse at the end. `charCols` stay global timesteps scaled by
      * `totalSeqLen = ceil(rw*48/rh/8)`. */
     private suspend fun recognizeAndStitchLongHoriz(
-        rotated: Bitmap, targetH: Int
+        rotated: Bitmap, targetH: Int, engine: RecNcnn? = null
     ): PPOcrResult? {
         coroutineContext.ensureActive()
         val rw = rotated.width; val rh = rotated.height
@@ -834,7 +897,7 @@ class OcrEngine(private val context: Context) {
             val cw = chunkBmp.width; val ch = chunkBmp.height
             // Preserve aspect w → targetW via cw*48/ch (not stretch); cap at CHUNK_TARGET_MAX.
             val targetW = minOf(CHUNK_TARGET_MAX, (cw.toFloat() * targetH / ch.toFloat()).roundToInt().coerceAtLeast(4))
-            val decoded = inferResizedRec(chunkBmp, targetW, targetH)
+            val decoded = inferResizedRec(chunkBmp, targetW, targetH, engine)
             chunkBmp.recycle()
             if (decoded == null) { Log.e(TAG, "recNcnn chunk w$targetW infer null"); return null }
             val actualSeqLen = decoded.seqLenTotal
@@ -990,7 +1053,7 @@ class OcrEngine(private val context: Context) {
      * second-to-last-char anchor, then align by identical timestep size
      * (`rw/6` px) with the same 30px / 0.4 / 0.3-0.7 best-pair rule. */
     private suspend fun recognizeAndStitchLongVert(
-        rotated: Bitmap, targetH: Int
+        rotated: Bitmap, targetH: Int, engine: RecNcnn? = null
     ): PPOcrResult? {
         coroutineContext.ensureActive()
         val rw = rotated.width; val rh = rotated.height
@@ -1007,7 +1070,7 @@ class OcrEngine(private val context: Context) {
             val chunkBmp = Bitmap.createBitmap(rotated, 0, y, rw, h)
             val cw = chunkBmp.width; val ch = chunkBmp.height
             val targetW = minOf(CHUNK_TARGET_MAX, (cw.toFloat() * targetH / ch.toFloat()).roundToInt().coerceAtLeast(4))
-            val decoded = inferResizedRec(chunkBmp, targetW, targetH)
+            val decoded = inferResizedRec(chunkBmp, targetW, targetH, engine)
             chunkBmp.recycle()
             if (decoded == null) { Log.e(TAG, "recNcnn chunk w$targetW infer null"); return null }
             val actualSeqLen = decoded.seqLenTotal
@@ -1462,9 +1525,11 @@ class OcrEngine(private val context: Context) {
                 // batch order) — same 4-concurrent throughput, faster first
                 // result. Results stay keyed by job idx. #21
                 var doneLines = 0
-                recognizePpocrBatch(crops) { index, result ->
-                    val job = batchJobs.getOrNull(index) ?: return@recognizePpocrBatch
-                    if (result.text.isEmpty()) return@recognizePpocrBatch
+                // Backend routing (#42): one engine, or LPT-split halves on both
+                // backends concurrently; everything merges by job idx below.
+                val emitLine = emit@{ index: Int, result: PPOcrResult ->
+                    val job = batchJobs.getOrNull(index) ?: return@emit
+                    if (result.text.isEmpty()) return@emit
 
                     val charBoxes = computeCharBoxes(
                         result.text, result.charCols, result.seqLenTotal,
@@ -1499,6 +1564,20 @@ class OcrEngine(private val context: Context) {
                     )
                     doneLines++
                     mainHandler.post { onLinesRecognized(listOf(job.idx to lineResult)) }
+                }
+                // Dispatch: one engine, or parallel halves run concurrently (#42).
+                val parts = assignBackends(crops)
+                if (parts.size == 1) {
+                    val (engine, gidx) = parts[0]
+                    val sub = gidx.map { crops[it] }
+                    recognizePpocrBatch(sub, engine) { si, res -> emitLine(gidx[si], res) }
+                } else coroutineScope {
+                    parts.map { (engine, gidx) ->
+                        async {
+                            val sub = gidx.map { crops[it] }
+                            recognizePpocrBatch(sub, engine) { si, res -> emitLine(gidx[si], res) }
+                        }
+                    }.awaitAll()
                 }
                 val elapsed = (System.nanoTime() - tBatch) / 1_000_000
                 Log.d(TAG, "Batch $batchIdx ${batchJobs.size} jobs → $doneLines lines in ${elapsed}ms")
@@ -1604,6 +1683,7 @@ class OcrEngine(private val context: Context) {
     fun close() {
         try { detNcnn?.close() } catch (_: Exception) {}
         try { recDynNcnn?.close() } catch (_: Exception) {}
+        try { recVkNcnn?.close() } catch (_: Exception) {}
     }
 }
 

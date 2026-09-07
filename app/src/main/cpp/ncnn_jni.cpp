@@ -5,10 +5,14 @@
 #include "ncnn/mat.h"
 #include "ncnn/option.h"
 #include "ncnn/cpu.h"
+#include "ncnn/gpu.h"
 
 #define LOG_TAG "NcnnJni"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+
+// Process-wide GPU instance, created on first Vulkan request (#42).
+static bool g_gpu_ready = false;
 
 struct RecNcnn {
     ncnn::Net net;
@@ -19,7 +23,7 @@ struct RecNcnn {
 extern "C" {
 
 JNIEXPORT jlong JNICALL
-Java_com_holopengin_instantjpdict_RecNcnn_create(JNIEnv *env, jclass, jstring paramPath_, jstring binPath_, jint targetW) {
+Java_com_holopengin_instantjpdict_RecNcnn_create(JNIEnv *env, jclass, jstring paramPath_, jstring binPath_, jint targetW, jboolean useVulkan) {
     const char *paramPath = env->GetStringUTFChars(paramPath_, 0);
     const char *binPath = env->GetStringUTFChars(binPath_, 0);
 
@@ -38,6 +42,22 @@ Java_com_holopengin_instantjpdict_RecNcnn_create(JNIEnv *env, jclass, jstring pa
     opt.use_fp16_arithmetic = false;
     opt.use_packing_layout = true;
     opt.use_bf16_storage = false;
+    if (useVulkan) {
+        if (!g_gpu_ready) {
+            int gpuCount = ncnn::get_gpu_count();
+            LOGI("vulkan gpu count=%d", gpuCount);
+            if (gpuCount > 0) {
+                ncnn::create_gpu_instance();
+                g_gpu_ready = true;
+            }
+        }
+        if (g_gpu_ready) {
+            rec->net.set_vulkan_device(ncnn::get_gpu_device(0));
+            opt.use_vulkan_compute = true;
+        } else {
+            LOGE("vulkan requested but no GPU; falling back to CPU");
+        }
+    }
     rec->net.opt = opt;
 
     // Enable big cores

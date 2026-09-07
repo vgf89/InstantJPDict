@@ -8,7 +8,8 @@ import java.nio.ByteOrder
 
 /**
  * ncnn Rec wrapper — single dynamic-width model rec_dyn (#23).
- * Loads 179-layer pnnx→ncnn 5.2 MB INT8 bin via JNI; exact-width inference (mult of 8).
+ * Loads the 166-layer pnnx→ncnn INT8 bin via JNI; exact-width inference (mult of 8).
+ * Vulkan runs the IP-swapped twin graph rec_dyn_vk (#42); numerics identical by design.
  */
 class RecNcnn private constructor(private val handle: Long, val targetW: Int) {
 
@@ -52,13 +53,14 @@ class RecNcnn private constructor(private val handle: Long, val targetW: Int) {
             }
         }
 
-        fun create(context: Context, targetW: Int = 64): RecNcnn? {
+        fun create(context: Context, targetW: Int = 64, useVulkan: Boolean = false): RecNcnn? {
             ensureLoaded()
             val cache = File(context.cacheDir, "ncnn")
             cache.mkdirs()
             // Single dynamic-width model (#23) — targetW only sizes seqLen/buffers now.
-            val paramName = "rec_dyn.param"
-            val binName = "rec_dyn.bin"
+            // Vulkan runs the IP-swapped twin graph (#42); CPU the fused one.
+            val paramName = if (useVulkan) "rec_dyn_vk.param" else "rec_dyn.param"
+            val binName = if (useVulkan) "rec_dyn_vk.bin" else "rec_dyn.bin"
             val paramFile = File(cache, paramName)
             val binFile = File(cache, binName)
             try {
@@ -68,7 +70,7 @@ class RecNcnn private constructor(private val handle: Long, val targetW: Int) {
                 Log.e(TAG, "copy asset PP-OCRv6_small_ncnn/$paramName failed", e)
                 return null
             }
-            val h = create(paramFile.absolutePath, binFile.absolutePath, targetW)
+            val h = create(paramFile.absolutePath, binFile.absolutePath, targetW, useVulkan)
             if (h == 0L) {
                 Log.e(TAG, "RecNcnn.create failed for W=$targetW")
                 return null
@@ -77,7 +79,7 @@ class RecNcnn private constructor(private val handle: Long, val targetW: Int) {
             return RecNcnn(h, targetW)
         }
 
-        @JvmStatic private external fun create(paramPath: String, binPath: String, targetW: Int): Long
+        @JvmStatic private external fun create(paramPath: String, binPath: String, targetW: Int, useVulkan: Boolean): Long
         @JvmStatic private external fun destroy(handle: Long)
         @JvmStatic private external fun inferNative(handle: Long, buffer: ByteBuffer, w: Int, h: Int): FloatArray?
     }
