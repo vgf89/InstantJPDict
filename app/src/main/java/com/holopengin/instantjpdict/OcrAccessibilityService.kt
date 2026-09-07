@@ -65,6 +65,10 @@ class OcrAccessibilityService : AccessibilityService() {
     private val gson = Gson()
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var ocrJob: kotlinx.coroutines.Job? = null
+    /** Overlay status generation (#50): every OCR run takes the next id; queued
+     * status posts from older runs are dropped, so a late progress post can
+     * neither clobber the final line nor write after overlay close. */
+    private var statusGen = 0
     private var lookupJob: kotlinx.coroutines.Job? = null
     
     private var cursorView: View? = null
@@ -448,6 +452,20 @@ class OcrAccessibilityService : AccessibilityService() {
         }
         rootLayout.addView(progressBar, progressParams)
 
+        // Ordered status writes (#50): progress, final and error text all go
+        // through the view's main queue carrying the run generation. The queue
+        // is FIFO, so the final line always executes after every progress post
+        // (previously an async post could land after it and clobber it), and
+        // posts from a superseded run or a closed overlay are dropped.
+        fun postStatus(gen: Int, text: String, hideProgress: Boolean = false) {
+            debugTextView.post {
+                if (gen != statusGen || screenshotOverlay == null) return@post
+                debugTextView.text = text
+                debugTextView.bringToFront()
+                if (hideProgress) progressBar.visibility = View.GONE
+            }
+        }
+
         // Confidence Controls (Left Side)
         val controlsRoot = LinearLayout(this).apply {
             tag = "confidence_controls"
@@ -532,6 +550,7 @@ class OcrAccessibilityService : AccessibilityService() {
         rootLayout.addView(closeButton, lp)
 
         ocrJob = serviceScope.launch {
+            val gen = ++statusGen
             try {
                 // Rebuild the engine if the rec backend pref moved since init
                 // (handles load once at init; #42).
@@ -543,11 +562,11 @@ class OcrAccessibilityService : AccessibilityService() {
                     ocrEngine = OcrEngine(this@OcrAccessibilityService)
                 }
                 if (ocrEngine.isReady()) {
-                    debugTextView.text = "Running detection..."
+                    postStatus(gen, "Running detection...")
                     val lineBoxes = withContext(Dispatchers.IO) { ocrEngine.detect(bitmap) }
                     controller.activeLineBoxes = lineBoxes
                     
-                    debugTextView.text = "Found ${lineBoxes.size} lines. Recognizing..."
+                    postStatus(gen, "Found ${lineBoxes.size} lines. Recognizing...")
                     
                     val linesBorderLayer = FrameLayout(this@OcrAccessibilityService)
                     contentContainer.addView(linesBorderLayer, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
@@ -591,24 +610,19 @@ class OcrAccessibilityService : AccessibilityService() {
                                 if (controller.currentTappedLineIdx == -1) {
                                     updateCursor()
                                 }
-                                debugTextView.text = "Recognized ${controller.activeLineResults.count { it != null }}/${lineBoxes.size} lines..."
-                                debugTextView.bringToFront()
+                                postStatus(gen, "Recognized ${controller.activeLineResults.count { it != null }}/${lineBoxes.size} lines...")
                             }
                         }
                     }
                     val endTime = System.currentTimeMillis() - startTime
-                    debugTextView.text = "Found ${controller.activeAllChars.size} characters. Time: ${endTime}ms"
-                    progressBar.visibility = View.GONE
+                    postStatus(gen, "Found ${controller.activeAllChars.size} characters. Time: ${endTime}ms", hideProgress = true)
                 } else {
-                    debugTextView.text = "Error: OCR Engine not ready"
-                    progressBar.visibility = View.GONE
+                    postStatus(gen, "Error: OCR Engine not ready", hideProgress = true)
                 }
             } catch (e: Exception) {
                 val errorMsg = e.message ?: e.toString()
                 Log.e("OcrAccessibilityService", "OCR Inference Error", e)
-                debugTextView.text = "Error: $errorMsg"
-                debugTextView.bringToFront()
-                progressBar.visibility = View.GONE
+                postStatus(gen, "Error: $errorMsg", hideProgress = true)
                 Toast.makeText(this@OcrAccessibilityService, "OCR Error: $errorMsg", Toast.LENGTH_LONG).show()
             }
         }
@@ -1767,6 +1781,7 @@ class OcrAccessibilityService : AccessibilityService() {
     private fun hideScreenshotOverlay() {
         ocrJob?.cancel()
         ocrJob = null
+        statusGen++
         lookupJob?.cancel()
         lookupJob = null
         val root = screenshotOverlay ?: return
