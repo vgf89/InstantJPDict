@@ -562,13 +562,13 @@ class OcrAccessibilityService : AccessibilityService() {
                     ocrEngine = OcrEngine(this@OcrAccessibilityService)
                 }
                 if (ocrEngine.isReady()) {
-                    postStatus(gen, "Running detection...")
+                    postStatus(gen, "Detecting...")
                     val tDet = System.currentTimeMillis()
                     val lineBoxes = withContext(Dispatchers.IO) { ocrEngine.detect(bitmap) }
                     val detMs = System.currentTimeMillis() - tDet
                     controller.activeLineBoxes = lineBoxes
                     
-                    postStatus(gen, "Found ${lineBoxes.size} lines. Recognizing...")
+                    postStatus(gen, "Recognizing...")
                     
                     val linesBorderLayer = FrameLayout(this@OcrAccessibilityService)
                     contentContainer.addView(linesBorderLayer, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
