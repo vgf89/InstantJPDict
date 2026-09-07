@@ -817,8 +817,9 @@ class OcrEngine(private val context: Context) {
             // batch order) — same 4-concurrent throughput, faster first
             // result. Results stay keyed by job idx. #21
             var doneLines = 0
-            // Backend routing (#42): one engine, or LPT-split halves on both
-            // backends concurrently; everything merges by job idx below.
+            // Backend routing (#42): one engine per whole batch; parallel
+            // mode deals batches to both backends from a shared queue and
+            // everything merges by job idx below.
             val emitLine = emit@{ index: Int, result: PPOcrResult ->
                 val job = batch.getOrNull(index) ?: return@emit
                 if (result.text.isEmpty()) return@emit
@@ -832,8 +833,9 @@ class OcrEngine(private val context: Context) {
                 if (BOX_LAYOUT_MODE == BOX_SNAP && crop != null && !crop.isRecycled && crop.width >= 8 && crop.height >= 8) {
                     try {
                         snapW = crop.width; snapH = crop.height
-                        snapPx = IntArray(snapW * snapH)
-                        crop.getPixels(snapPx!!, 0, snapW, 0, 0, snapW, snapH)
+                        val arr = IntArray(snapW * snapH)
+                        crop.getPixels(arr, 0, snapW, 0, 0, snapW, snapH)
+                        snapPx = arr
                     } catch (_: Exception) {
                         snapPx = null
                     }
@@ -1561,7 +1563,10 @@ class OcrEngine(private val context: Context) {
      * timesteps absorb at the bottom), except punctuation: closing marks shrink
      * onto the next box's start and opening marks onto the previous box's end,
      * then expand back to the mean non-punctuation height (bounded by the next
-     * non-punctuation edge). */
+     * non-punctuation edge).
+     *
+     * @param pixels optional crop pixels (idea 4): snap box centers to ink
+     * evidence when BOX_LAYOUT_MODE is BOX_SNAP; null/legacy skips snapping. */
     /** Legacy uniform column mapping (#49 verdict: gap surgery and affine
      * refits all lost to this on ground truth — model timing is uniform;
      * fractional charCols from peak interpolation flow here). */
@@ -1574,9 +1579,10 @@ class OcrEngine(private val context: Context) {
         }.sortedBy { it.first }
     }
 
-    /** Chars whose ink centroid is NOT the em center: corner/side punctuation
-     * and small kana. Snapping their boxes to centroids would misplace them
-     * (truth is em boxes; the renderer centers ink itself) — legacy keeps them. */
+    /** Chars kept on legacy boxes (conservative): corner/side punctuation
+     * whose ink centroid is NOT the em center, small kana, and centered
+     * midline marks (harmless either way — left untouched to minimize
+     * behavior surface). The renderer centers ink itself. */
     private fun isSnapSkipped(ch: Char): Boolean {
         if (ch in "ぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮヵヶ") return true
         return ch in "、。．，,．「」『』（）〔〕［］｛｝〈〉《》【】〘〙〚〛'\"\"‘’“”()[]{}-+*/<>＜＞＝…‥：；"
@@ -1588,7 +1594,7 @@ class OcrEngine(private val context: Context) {
      * centroid, clamped to its Voronoi cell (ordering preserved, worst case
      * ~= legacy) with a 0.4-pitch leash. Polarity auto-detects (dark-on-light
      * vs light-on-dark) from border pixels. Needs crop pixels; null = skip. */
-    private data class Peak(val mid: Int, val argmax: Float, val centroid: Float, val mass: Float)
+    private data class Peak(val argmax: Float, val centroid: Float, val mass: Float)
 
     private fun snapCells(
         cells: List<Pair<Float, Float>>,
@@ -1655,7 +1661,6 @@ class OcrEngine(private val context: Context) {
         // pulled 21px into the gap toward 失). When they disagree the window
         // is contaminated and the box keeps legacy (veto below); when they
         // agree the centroid is the stable snap target.
-        // Peak = (regionMid, argmaxPos, centroidPos, mass).
         val peaks = mutableListOf<Peak>()
         run {
             var p = 1
@@ -1670,7 +1675,7 @@ class OcrEngine(private val context: Context) {
                         m2 += sm[q]; mo += sm[q] * q
                         if (sm[q] > am) { am = sm[q]; ap = q }
                     }
-                    if (m2 > 0f) peaks.add(Peak((l + r) / 2, ap.toFloat(), mo / m2, m2))
+                    if (m2 > 0f) peaks.add(Peak(ap.toFloat(), mo / m2, m2))
                     p = r + 1
                 } else p++
             }
@@ -1686,7 +1691,6 @@ class OcrEngine(private val context: Context) {
             // Position on the pixel axis.
             val scale = profLen.toFloat() / L.coerceAtLeast(1f)
             val cp = (c * scale).coerceIn(0f, profLen - 1f)
-            val band = (if (vertical) (pixW * 0.6f) else (pixH * 0.6f))
             // Nearest peak within half pitch; must clear the mass floor.
             var best: Peak? = null
             var bestD = 0.5f * pitch * scale + 1f
