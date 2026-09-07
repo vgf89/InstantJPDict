@@ -10,6 +10,9 @@ import java.io.File
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
@@ -40,6 +43,9 @@ class OcrEngine(private val context: Context) {
     private var classRemap: IntArray = IntArray(0) // pruned-out -> orig class id (#39)
     private var recDynNcnn: RecNcnn? = null
     private var recVkNcnn: RecNcnn? = null // IP-swapped twin graph, created only for Vulkan use (#42)
+
+    // One line awaiting recognition; results stay keyed by idx.
+    private data class Job(val idx: Int, val bbox: JpDictRect, val isVertical: Boolean)
     val recBackend: Int
         get() = prefs.getInt(PREF_REC_BACKEND, DEF_REC_BACKEND).coerceIn(0, 2)
     // Backend this engine's handles were built for; the service recreates the
@@ -113,8 +119,6 @@ class OcrEngine(private val context: Context) {
         const val BACKEND_CPU = 0
         const val BACKEND_VULKAN = 1
         const val BACKEND_PARALLEL = 2
-        // Vulkan cost relative to CPU per width unit, for parallel split (measured ~2x). 
-        const val VK_COST_RATIO = 0.5f
         private const val BATCH_SIZE = 4
         private const val REC_STRIDE = 8
         /** Alternative-list cap everywhere (per-timestep top-K, per-char alts, stitch merges). */
@@ -722,43 +726,98 @@ class OcrEngine(private val context: Context) {
      * applied pre-inference (#24). Cooperative cancellation: checks
      * coroutineContext.isActive.
      */
-    /**
-     * Backend routing for one batch (#42): returns (engine, global crop
-     * indices) parts — one entry, unless PARALLEL with both engines up, when
-     * lines split by longest-processing-time on estimated cost (targetW, VK
-     * weighted by [VK_COST_RATIO]). Callers run parts concurrently and merge
-     * by index. Vulkan-missing falls back to CPU with a warning.
-     */
-    private fun assignBackends(crops: List<Bitmap>): List<Pair<RecNcnn, List<Int>>> {
-        val cpu = recDynNcnn
-        val vk = recVkNcnn
-        if (recBackend == BACKEND_VULKAN) {
-            if (vk != null) return listOf(vk to crops.indices.toList())
-            Log.w(TAG, "Vulkan backend selected but handle missing — falling back to CPU")
+    /** One batch end-to-end: crops, inference on [engine], emit, recycle.
+     * Cooperative cancellation via ensureActive; crops always recycled. */
+    private suspend fun processOneBatch(
+        batchIdx: Int,
+        batch: List<Job>,
+        engine: RecNcnn,
+        bitmap: Bitmap,
+        mainHandler: android.os.Handler,
+        onLinesRecognized: (List<Pair<Int, LineResult>>) -> Unit,
+    ) {
+        coroutineContext.ensureActive()
+        val tBatch = System.nanoTime()
+        // Create crops per batch (4 bitmaps pinned at a time).
+        val cropsWithJobs = batch.mapNotNull { job ->
+            val cropX = maxOf(job.bbox.left, 0)
+            val cropY = maxOf(job.bbox.top, 0)
+            val cropW = minOf(bitmap.width - cropX, job.bbox.width()).coerceAtLeast(1)
+            val cropH = minOf(bitmap.height - cropY, job.bbox.height()).coerceAtLeast(1)
+            if (cropW < 4 || cropH < 4) return@mapNotNull null
+            val crop = try {
+                Bitmap.createBitmap(bitmap, cropX, cropY, cropW, cropH)
+            } catch (e: Exception) {
+                Log.e(TAG, "createBitmap failed for $job", e)
+                return@mapNotNull null
+            }
+            if (crop.width < 4 || crop.height < 4) { crop.recycle(); return@mapNotNull null }
+            job to crop
         }
-        if (recBackend != BACKEND_PARALLEL || vk == null || cpu == null) {
-            val engine = cpu ?: vk ?: return emptyList()
-            return listOf(engine to crops.indices.toList())
+        if (cropsWithJobs.isEmpty()) return
+        val crops = cropsWithJobs.map { it.second }
+        val batchJobs = cropsWithJobs.map { it.first }
+        try {
+            // Early exit if cancelled before batch
+            if (!coroutineContext.isActive) {
+                crops.forEach { try { it.recycle() } catch (_: Exception) {} }
+                return
+            }
+            // Stream per line as each infer completes (completion order, not
+            // batch order) — same 4-concurrent throughput, faster first
+            // result. Results stay keyed by job idx. #21
+            var doneLines = 0
+            // Backend routing (#42): one engine, or LPT-split halves on both
+            // backends concurrently; everything merges by job idx below.
+            val emitLine = emit@{ index: Int, result: PPOcrResult ->
+                val job = batch.getOrNull(index) ?: return@emit
+                if (result.text.isEmpty()) return@emit
+
+                val charBoxes = computeCharBoxes(
+                    result.text, result.charCols, result.seqLenTotal,
+                    job.bbox.left, job.bbox.top,
+                    job.bbox.width(), job.bbox.height(),
+                    job.isVertical,
+                )
+
+                val finalText = if (job.isVertical) {
+                    result.text.map { ch -> toVerticalGlyph(ch) }.joinToString("")
+                } else result.text
+                val finalAlts = if (job.isVertical) {
+                    result.alternatives.map { alts ->
+                        alts.map { (ch, s) -> toVerticalGlyph(ch) to s }.toMutableList()
+                    }
+                } else result.alternatives.map { it.toMutableList() }
+
+                val lineResult = LineResult(
+                    text = finalText,
+                    charBoxes = charBoxes,
+                    alternatives = finalAlts,
+                    isVertical = job.isVertical,
+                    rawAlternatives = result.rawAlternatives.map { row ->
+                        if (job.isVertical) row.map { (ch, s) -> toVerticalGlyph(ch) to s }
+                        else row
+                    },
+                    seqLenTotal = result.seqLenTotal,
+                    cropW = job.bbox.width(),
+                    cropH = job.bbox.height(),
+                    cropX = job.bbox.left,
+                    cropY = job.bbox.top,
+                )
+                doneLines++
+                mainHandler.post { onLinesRecognized(listOf(job.idx to lineResult)) }
+            }
+            // Single engine for the whole batch; the caller parallelizes across batches.
+            recognizePpocrBatch(crops, engine) { index, result -> emitLine(index, result) }
+            val elapsed = (System.nanoTime() - tBatch) / 1_000_000
+            Log.d(TAG, "Batch $batchIdx ${batch.size} jobs → $doneLines lines in ${elapsed}ms")
+            // Per-batch recycle.
+            crops.forEach { try { it.recycle() } catch (_: Exception) {} }
+        } catch (e: Exception) {
+            Log.e(TAG, "Batch $batchIdx failed", e)
+            // Ensure crops recycled even on failure
+            try { crops.forEach { it.recycle() } } catch (_: Exception) {}
         }
-        fun estCost(crop: Bitmap): Float {
-            val cw = crop.width; val ch = crop.height
-            val rw = if (ch >= cw * 3 / 2) ch else cw
-            val rh = if (ch >= cw * 3 / 2) cw else ch
-            return minOf(LONG_LINE_GATE.toFloat(), rw * REC_TARGET_H / rh.coerceAtLeast(1).toFloat())
-        }
-        val order = crops.indices.sortedByDescending { estCost(crops[it]) }
-        var cpuLoad = 0f; var vkLoad = 0f
-        val cpuIdx = mutableListOf<Int>(); val vkIdx = mutableListOf<Int>()
-        for (i in order) {
-            val c = estCost(crops[i])
-            if (cpuLoad <= vkLoad) { cpuIdx.add(i); cpuLoad += c }
-            else { vkIdx.add(i); vkLoad += c / VK_COST_RATIO }
-        }
-        Log.d(TAG, "Parallel split: ${cpuIdx.size} CPU / ${vkIdx.size} VK")
-        return listOfNotNull(
-            cpu.takeIf { cpuIdx.isNotEmpty() }?.let { it to cpuIdx },
-            vk.takeIf { vkIdx.isNotEmpty() }?.let { it to vkIdx },
-        )
     }
 
     private suspend fun recognizePpocrBatch(
@@ -1476,7 +1535,6 @@ class OcrEngine(private val context: Context) {
         if (recDynNcnn == null || ppocrVocab.isEmpty()) return@coroutineScope
 
         // Build job queue — no Bitmaps yet; crops are created per batch below.
-        data class Job(val idx: Int, val bbox: JpDictRect, val isVertical: Boolean)
 
         val jobs = lineBoxes.mapIndexedNotNull { i, box ->
             if (box.width() < 4 || box.height() < 4) null
@@ -1497,101 +1555,35 @@ class OcrEngine(private val context: Context) {
 
         val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
-        // Process in batches — cooperative cancellation for #18 (overlay closed → cancel)
-        for ((batchIdx, batch) in sortedJobs.chunked(BATCH_SIZE).withIndex()) {
-            coroutineContext.ensureActive()
-            val tBatch = System.nanoTime()
-            // Create crops per batch (4 bitmaps pinned at a time).
-            val cropsWithJobs = batch.mapNotNull { job ->
-                val cropX = maxOf(job.bbox.left, 0)
-                val cropY = maxOf(job.bbox.top, 0)
-                val cropW = minOf(bitmap.width - cropX, job.bbox.width()).coerceAtLeast(1)
-                val cropH = minOf(bitmap.height - cropY, job.bbox.height()).coerceAtLeast(1)
-                if (cropW < 4 || cropH < 4) return@mapNotNull null
-                val crop = try {
-                    Bitmap.createBitmap(bitmap, cropX, cropY, cropW, cropH)
-                } catch (e: Exception) {
-                    Log.e(TAG, "createBitmap failed for $job", e)
-                    return@mapNotNull null
+        // Process in batches — cooperative cancellation for #18 (overlay closed → cancel).
+        // PARALLEL mode work-steals whole batches across both backends (#42):
+        // no speed model needed, faster backend simply takes more batches.
+        val batches = sortedJobs.chunked(BATCH_SIZE)
+        val useParallel = recBackend == BACKEND_PARALLEL && recDynNcnn != null && recVkNcnn != null
+        if (useParallel) {
+            val queue = ArrayDeque(batches.indices.toList())
+            val mutex = Mutex()
+            suspend fun worker(engine: RecNcnn) {
+                while (true) {
+                    coroutineContext.ensureActive()
+                    val bi = mutex.withLock { if (queue.isEmpty()) null else queue.removeFirst() }
+                        ?: break
+                    processOneBatch(bi, batches[bi], engine, bitmap, mainHandler, onLinesRecognized)
                 }
-                if (crop.width < 4 || crop.height < 4) { crop.recycle(); return@mapNotNull null }
-                job to crop
             }
-            if (cropsWithJobs.isEmpty()) continue
-            val crops = cropsWithJobs.map { it.second }
-            val batchJobs = cropsWithJobs.map { it.first }
-            try {
-                // Early exit if cancelled before batch
-                if (!coroutineContext.isActive) {
-                    crops.forEach { try { it.recycle() } catch (_: Exception) {} }
-                    break
-                }
-                // Stream per line as each infer completes (completion order, not
-                // batch order) — same 4-concurrent throughput, faster first
-                // result. Results stay keyed by job idx. #21
-                var doneLines = 0
-                // Backend routing (#42): one engine, or LPT-split halves on both
-                // backends concurrently; everything merges by job idx below.
-                val emitLine = emit@{ index: Int, result: PPOcrResult ->
-                    val job = batchJobs.getOrNull(index) ?: return@emit
-                    if (result.text.isEmpty()) return@emit
-
-                    val charBoxes = computeCharBoxes(
-                        result.text, result.charCols, result.seqLenTotal,
-                        job.bbox.left, job.bbox.top,
-                        job.bbox.width(), job.bbox.height(),
-                        job.isVertical,
-                    )
-
-                    val finalText = if (job.isVertical) {
-                        result.text.map { ch -> toVerticalGlyph(ch) }.joinToString("")
-                    } else result.text
-                    val finalAlts = if (job.isVertical) {
-                        result.alternatives.map { alts ->
-                            alts.map { (ch, s) -> toVerticalGlyph(ch) to s }.toMutableList()
-                        }
-                    } else result.alternatives.map { it.toMutableList() }
-
-                    val lineResult = LineResult(
-                        text = finalText,
-                        charBoxes = charBoxes,
-                        alternatives = finalAlts,
-                        isVertical = job.isVertical,
-                        rawAlternatives = result.rawAlternatives.map { row ->
-                            if (job.isVertical) row.map { (ch, s) -> toVerticalGlyph(ch) to s }
-                            else row
-                        },
-                        seqLenTotal = result.seqLenTotal,
-                        cropW = job.bbox.width(),
-                        cropH = job.bbox.height(),
-                        cropX = job.bbox.left,
-                        cropY = job.bbox.top,
-                    )
-                    doneLines++
-                    mainHandler.post { onLinesRecognized(listOf(job.idx to lineResult)) }
-                }
-                // Dispatch: one engine, or parallel halves run concurrently (#42).
-                val parts = assignBackends(crops)
-                if (parts.size == 1) {
-                    val (engine, gidx) = parts[0]
-                    val sub = gidx.map { crops[it] }
-                    recognizePpocrBatch(sub, engine) { si, res -> emitLine(gidx[si], res) }
-                } else coroutineScope {
-                    parts.map { (engine, gidx) ->
-                        async {
-                            val sub = gidx.map { crops[it] }
-                            recognizePpocrBatch(sub, engine) { si, res -> emitLine(gidx[si], res) }
-                        }
-                    }.awaitAll()
-                }
-                val elapsed = (System.nanoTime() - tBatch) / 1_000_000
-                Log.d(TAG, "Batch $batchIdx ${batchJobs.size} jobs → $doneLines lines in ${elapsed}ms")
-                // Per-batch recycle.
-                crops.forEach { try { it.recycle() } catch (_: Exception) {} }
-            } catch (e: Exception) {
-                Log.e(TAG, "Batch $batchIdx failed", e)
-                // Ensure crops recycled even on failure
-                try { crops.forEach { it.recycle() } } catch (_: Exception) {}
+            coroutineScope {
+                launch { worker(recDynNcnn!!) }
+                launch { worker(recVkNcnn!!) }
+            }
+        } else {
+            val engine = if (recBackend == BACKEND_VULKAN) recVkNcnn ?: recDynNcnn else recDynNcnn
+            if (engine == null) return@coroutineScope
+            if (recBackend == BACKEND_VULKAN && recVkNcnn == null) {
+                Log.w(TAG, "Vulkan backend selected but handle missing — falling back to CPU")
+            }
+            for ((batchIdx, batch) in batches.withIndex()) {
+                coroutineContext.ensureActive()
+                processOneBatch(batchIdx, batch, engine, bitmap, mainHandler, onLinesRecognized)
             }
         }
 
