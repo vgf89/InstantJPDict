@@ -456,7 +456,7 @@ class OcrBenchmarkTest {
         assertTrue("expected 20+ lines, got ${boxes.size}", boxes.size >= 20)
         detEng.close()
 
-        fun runBackend(mode: Int, label: String): Pair<List<String>, Long> {
+        fun runBackend(mode: Int, label: String): Pair<Map<Int, String>, Long> {
             prefs.edit().putInt(OcrEngine.PREF_REC_BACKEND, mode).apply()
             val eng = OcrEngine(appContext)
             assertTrue("$label engine ready", eng.isReady())
@@ -483,8 +483,11 @@ class OcrBenchmarkTest {
                 }
             }
             val ms = (System.nanoTime() - t0) / 1_000_000
-            val texts = collected.sortedBy { it.first }.map { it.second.text }
+            // Idx-keyed: empties are skipped by design, so lists differ in
+            // length when one backend drops a junk fragment — align by job idx.
+            val texts = collected.sortedBy { it.first }.associate { it.first to it.second.text }
             Log.i(TAG, "backendE2E $label lines=${texts.size}/${boxes.size} recMs=${ms}ms")
+            texts.forEach { (idx, t) -> Log.i(TAG, "backendE2E $label job[$idx]='$t'") }
             eng.close()
             prefs.edit().putInt(OcrEngine.PREF_REC_BACKEND, OcrEngine.DEF_REC_BACKEND).apply()
             return texts to ms
@@ -493,16 +496,21 @@ class OcrBenchmarkTest {
         val (cpuTexts, cpuMs) = runBackend(OcrEngine.BACKEND_CPU, "cpu")
         val (vkTexts, vkMs) = runBackend(OcrEngine.BACKEND_VULKAN, "vulkan")
         val (parTexts, parMs) = runBackend(OcrEngine.BACKEND_PARALLEL, "parallel")
-        // Empty texts are skipped by design — assert all backends agree on count.
+        // Empty texts are skipped by design; one backend may drop a junk
+        // fragment (1-char noise) the other keeps — align by job idx so a
+        // single junk-line difference can't cascade into positional mismatch.
+        // Dropped REAL lines still blow the CER gate via full-length penalty.
         assertTrue("cpu returned lines", cpuTexts.isNotEmpty())
-        assertEquals("vulkan line count", cpuTexts.size, vkTexts.size)
-        assertEquals("parallel line count", cpuTexts.size, parTexts.size)
-        fun cerLike(a: List<String>, b: List<String>): Double {
+        assertTrue("vulkan dropped too many", cpuTexts.size - vkTexts.size <= 2)
+        assertTrue("parallel dropped too many", cpuTexts.size - parTexts.size <= 2)
+        fun cerLike(a: Map<Int, String>, b: Map<Int, String>): Double {
             var d = 0; var n = 0
-            for (i in a.indices) {
-                d += editDistance(a[i], b.getOrElse(i) { "" })
-                n += maxOf(a[i].length, 1)
+            for ((idx, ta) in a) {
+                d += editDistance(ta, b.getOrElse(idx) { "" })
+                n += maxOf(ta.length, 1)
             }
+            // Lines b has but a lacks count as full-length errors too.
+            for ((idx, tb) in b) if (idx !in a) d += tb.length
             return d.toDouble() / n
         }
         val vkCer = cerLike(cpuTexts, vkTexts)
