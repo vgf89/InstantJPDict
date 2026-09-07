@@ -70,6 +70,13 @@ class OcrEngine(private val context: Context) {
          * less compute than 960; 832+ breaks dense screenshots. Test-flippable
          * to 960 for A/B walls. */
         var DET_MODEL_SIZE = 896
+        /** Char-box layout (#49): 0=legacy uniform columns, 1=legacy +
+         * image-evidence snapping (idea 4, default — quest failing line mean
+         * 5.7->4.0px, max 25->15px; synth worst-case ~= legacy). Null pixels
+         * (re-decode path) always take legacy. Test-flippable. */
+        var BOX_LAYOUT_MODE = 1
+        const val BOX_LEGACY = 0
+        const val BOX_SNAP = 1
         const val DEF_DET_THRESH = 0.3f
         const val DEF_DET_UNCLIP = 1.50f
         const val DEF_X_OVERLAP = 0.40f
@@ -816,11 +823,27 @@ class OcrEngine(private val context: Context) {
                 val job = batch.getOrNull(index) ?: return@emit
                 if (result.text.isEmpty()) return@emit
 
+                // Crop pixels for idea-4 snapping (crop alive until batch
+                // recycle below; null-safe when sizes mismatch).
+                val crop = crops.getOrNull(index)
+                var snapPx: IntArray? = null
+                var snapW = 0
+                var snapH = 0
+                if (BOX_LAYOUT_MODE == BOX_SNAP && crop != null && !crop.isRecycled && crop.width >= 8 && crop.height >= 8) {
+                    try {
+                        snapW = crop.width; snapH = crop.height
+                        snapPx = IntArray(snapW * snapH)
+                        crop.getPixels(snapPx!!, 0, snapW, 0, 0, snapW, snapH)
+                    } catch (_: Exception) {
+                        snapPx = null
+                    }
+                }
                 val charBoxes = computeCharBoxes(
                     result.text, result.charCols, result.seqLenTotal,
                     job.bbox.left, job.bbox.top,
                     job.bbox.width(), job.bbox.height(),
                     job.isVertical,
+                    snapPx, snapW, snapH,
                 )
 
                 // Vertical lines keep horizontal chars end-to-end (#47): the
@@ -1539,6 +1562,114 @@ class OcrEngine(private val context: Context) {
      * onto the next box's start and opening marks onto the previous box's end,
      * then expand back to the mean non-punctuation height (bounded by the next
      * non-punctuation edge). */
+    /** Legacy uniform column mapping (#49 verdict: gap surgery and affine
+     * refits all lost to this on ground truth — model timing is uniform;
+     * fractional charCols from peak interpolation flow here). */
+    private fun legacyCells(cols: FloatArray, seqLen: Int, L: Float, cross: Float): List<Pair<Float, Float>> {
+        val avgColW = L / seqLen.toFloat()
+        val half = cross / 2f
+        return cols.map { t ->
+            val c = (t + 0.5f) * avgColW
+            (maxOf(c - half, 0f)) to (minOf(c + half, L))
+        }.sortedBy { it.first }
+    }
+
+    /** Chars whose ink centroid is NOT the em center: corner/side punctuation
+     * and small kana. Snapping their boxes to centroids would misplace them
+     * (truth is em boxes; the renderer centers ink itself) — legacy keeps them. */
+    private fun isSnapSkipped(ch: Char): Boolean {
+        if (ch in "ぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮヵヶ") return true
+        return ch in "、。．，,．「」『』（）〔〕［］｛｝〈〉《》【】〘〙〚〛'\"\"‘’“”()[]{}-+*/<>＜＞＝…‥：；"
+    }
+
+    /** Idea 4 (#49 positioning): snap legacy box centers to image-ink
+     * evidence along the line axis. Profiled over the central 60% cross-band
+     * (dodges ruby at the edges); each center moves to its window ink
+     * centroid, clamped to its Voronoi cell (ordering preserved, worst case
+     * ~= legacy) with a 0.4-pitch leash. Polarity auto-detects (dark-on-light
+     * vs light-on-dark) from border pixels. Needs crop pixels; null = skip. */
+    private fun snapCells(
+        cells: List<Pair<Float, Float>>,
+        text: String,
+        pixels: IntArray,
+        pixW: Int,
+        pixH: Int,
+        vertical: Boolean,
+        L: Float,
+    ): List<Pair<Float, Float>> {
+        if (cells.isEmpty() || pixels.size != pixW * pixH || pixW < 8 || pixH < 8) return cells
+        val lum = FloatArray(pixW * pixH) { i ->
+            val px = pixels[i]
+            (((px shr 16) and 0xFF) + ((px shr 8) and 0xFF) + (px and 0xFF)) / 3f
+        }
+        // Background polarity from border samples.
+        val border = mutableListOf<Float>()
+        var bi = 0
+        while (bi < pixW) {
+            border.add(lum[bi]); border.add(lum[(pixH - 1) * pixW + bi]); bi += 7
+        }
+        bi = 0
+        while (bi < pixH) {
+            border.add(lum[bi * pixW]); border.add(lum[bi * pixW + pixW - 1]); bi += 7
+        }
+        border.sort()
+        val bgLight = border[border.size / 2] > 128f
+        fun isInk(v: Float) = if (bgLight) v < 110f else v > 145f
+        // Axis profile over the central cross-band.
+        val profLen = if (vertical) pixH else pixW
+        val prof = FloatArray(profLen)
+        if (vertical) {
+            val x0 = (pixW * 0.2f).toInt(); val x1 = (pixW * 0.8f).toInt()
+            for (y in 0 until pixH) {
+                var m = 0f
+                for (x in x0 until x1) if (isInk(lum[y * pixW + x])) m += 1f
+                prof[y] = m
+            }
+        } else {
+            val y0 = (pixH * 0.2f).toInt(); val y1 = (pixH * 0.8f).toInt()
+            for (x in 0 until pixW) {
+                var m = 0f
+                for (y in y0 until y1) if (isInk(lum[y * pixW + x])) m += 1f
+                prof[x] = m
+            }
+        }
+        // Box blur radius 2.
+        val sm = FloatArray(profLen) { i ->
+            var a = 0f; var c = 0
+            for (k in -2..2) {
+                val j = (i + k).coerceIn(0, profLen - 1); a += prof[j]; c++
+            }
+            a / c
+        }
+        // Cells live in crop coords; pixels may be the clamped subset at image
+        // edges — scale defensively (normally identity).
+        val centers = cells.map { (a, b) -> (a + b) / 2f }
+        return cells.mapIndexed { i, (a, b) ->
+            if (i >= text.length || isSnapSkipped(text[i])) return@mapIndexed a to b
+            val c = centers[i]
+            val pitch = (b - a).coerceAtLeast(4f)
+            // Position on the pixel axis.
+            val scale = profLen.toFloat() / L.coerceAtLeast(1f)
+            val cp = (c * scale).coerceIn(0f, profLen - 1f)
+            val half = 0.6f * pitch * scale
+            val lo = maxOf(0, (cp - half).toInt()); val hi = minOf(profLen - 1, (cp + half).toInt())
+            var mass = 0f; var mom = 0f
+            for (p in lo..hi) { mass += sm[p]; mom += sm[p] * p }
+            if (mass < maxOf(6f, 0.02f * (hi - lo + 1) * (if (vertical) (pixW * 0.6f) else (pixH * 0.6f)))) {
+                return@mapIndexed a to b
+            }
+            var nc = mom / mass / scale
+            // Voronoi clamp between neighbor centers (ends: line bounds).
+            val loB = if (i > 0) (centers[i - 1] + c) / 2f else 0f
+            val hiB = if (i < centers.size - 1) (c + centers[i + 1]) / 2f else L
+            nc = nc.coerceIn(loB, hiB)
+            nc = nc.coerceIn(c - 0.4f * pitch, c + 0.4f * pitch)
+            val len = b - a
+            val s0 = (nc - len / 2f).coerceIn(0f, maxOf(L - len, 0f))
+            s0 to minOf(s0 + len, L)
+        }
+    }
+
     fun computeCharBoxes(
         text: String,
         charCols: FloatArray,
@@ -1546,6 +1677,9 @@ class OcrEngine(private val context: Context) {
         cropX: Int, cropY: Int,
         cropW: Int, cropH: Int,
         isVertical: Boolean,
+        pixels: IntArray? = null,
+        pixW: Int = 0,
+        pixH: Int = 0,
     ): List<JpDictRect> {
         val n = charCols.size
         if (n == 0 || seqLenTotal <= 0) return emptyList()
@@ -1556,14 +1690,10 @@ class OcrEngine(private val context: Context) {
             val charW = maxOf(cropH.toFloat(), 3f)
             val L = cropW.toFloat()
 
-            // Uniform column mapping (#49 verdict: gap surgery and affine
-            // refits all lost to this on ground truth — model timing is
-            // uniform; fractional charCols from peak interpolation flow here.
-            val cells = charCols.map { t ->
-                val c = (t + 0.5f) * avgColW
-                val half = charW / 2f
-                (maxOf(c - half, 0f)) to (minOf(c + half, L))
-            }.sortedBy { it.first }
+            val base = legacyCells(charCols, seqLenTotal, L, charW)
+            val cells = if (BOX_LAYOUT_MODE == BOX_SNAP && pixels != null) {
+                snapCells(base, text, pixels, pixW, pixH, vertical = false, L)
+            } else base
 
             // Resolve overlaps
             val resolved = cells.toMutableList()
@@ -1590,11 +1720,10 @@ class OcrEngine(private val context: Context) {
             val avgChH = maxOf(cropW.toFloat(), 3f)
             val L = cropH.toFloat()
 
-            val cells = charCols.map { t ->
-                val c = (t + 0.5f) * avgColW
-                val half = avgChH / 2f
-                (maxOf(c - half, 0f)) to (minOf(c + half, L))
-            }.sortedBy { it.first }
+            val base = legacyCells(charCols, seqLenTotal, L, avgChH)
+            val cells = if (BOX_LAYOUT_MODE == BOX_SNAP && pixels != null) {
+                snapCells(base, text, pixels, pixW, pixH, vertical = true, L)
+            } else base
 
             val isCp = text.map { ch ->
                 ch in "。.．、,，)）〕》」』】〙〗〟’”］"

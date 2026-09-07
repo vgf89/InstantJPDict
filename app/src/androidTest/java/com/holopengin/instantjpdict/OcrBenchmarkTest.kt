@@ -433,10 +433,10 @@ class OcrBenchmarkTest {
 
     @Test
     fun synthBoxingBench() {
-        // #49 positioning regression: overlay boxes vs exact em-box truth
-        // (synth set, 4 box variants each). Layout ideas 1+2 were removed
-        // after losing to legacy uniform mapping on this ground truth;
-        // fractional charCols (peak interpolation) flow through here.
+        // #49 positioning: overlay boxes vs exact em-box truth (synth set,
+        // 4 box variants each), legacy (0) vs image-snapping (1, pixels from
+        // source bitmap). Decoded text is DP-aligned to truth text; metrics
+        // on matched pairs + span/unmatched.
         val appContext = InstrumentationRegistry.getInstrumentation().targetContext
         val prefs = appContext.getSharedPreferences(OcrEngine.PREFS_NAME, android.content.Context.MODE_PRIVATE)
         prefs.edit().putInt(OcrEngine.PREF_REC_BACKEND, OcrEngine.BACKEND_CPU).apply()
@@ -523,10 +523,29 @@ class OcrBenchmarkTest {
                     val lr = collected.sortedBy { it.first }.first().second
                     val pairs = alignChars(tText, lr.text)
                     val nMatch = pairs.size
-                    run {
-                        val mode = 0
+                    for (mode in 0..1) {
+                        OcrEngine.BOX_LAYOUT_MODE = mode
+                        // Snap mode needs crop pixels: re-extract from the
+                        // source bitmap via the line's crop geometry.
+                        var px: IntArray? = null
+                        var pw = 0
+                        var ph = 0
+                        if (mode == OcrEngine.BOX_SNAP) {
+                            val cx = lr.cropX.coerceIn(0, bmp.width - 1)
+                            val cy = lr.cropY.coerceIn(0, bmp.height - 1)
+                            val cw = minOf(lr.cropW, bmp.width - cx).coerceAtLeast(1)
+                            val ch = minOf(lr.cropH, bmp.height - cy).coerceAtLeast(1)
+                            try {
+                                val cb = android.graphics.Bitmap.createBitmap(bmp, cx, cy, cw, ch)
+                                pw = cb.width; ph = cb.height
+                                px = IntArray(pw * ph)
+                                cb.getPixels(px!!, 0, pw, 0, 0, pw, ph)
+                                if (cb != bmp) cb.recycle()
+                            } catch (_: Exception) { px = null }
+                        }
                         val boxes = eng.computeCharBoxes(lr.text, lr.charCols, lr.seqLenTotal,
-                            lr.cropX, lr.cropY, lr.cropW, lr.cropH, lr.isVertical)
+                            lr.cropX, lr.cropY, lr.cropW, lr.cropH, lr.isVertical,
+                            px, pw, ph)
                         assertEquals("$file/$vtag mode $mode box count", lr.text.length, boxes.size)
                         var errSum = 0.0; var errMax = 0.0
                         var sxSum = 0.0; var sySum = 0.0
