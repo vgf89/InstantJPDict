@@ -366,9 +366,9 @@ class OcrBenchmarkTest {
     @Test
     fun synthBoxingBench() {
         // #49 positioning: overlay boxes vs exact em-box truth (synth set,
-        // 4 box variants each), legacy (0) vs image-snapping (1, pixels from
-        // source bitmap). Decoded text is DP-aligned to truth text; metrics
-        // on matched pairs + span/unmatched.
+        // 4 box variants each) x layout {legacy, snap} x uniform {off, on}.
+        // Decoded text is DP-aligned to truth text; metrics on matched pairs
+        // + span/unmatched + box-size variance (usize).
         val appContext = InstrumentationRegistry.getInstrumentation().targetContext
         // Synth set lives in the TEST apk (androidTest/assets/synth).
         val testAssets = InstrumentationRegistry.getInstrumentation().context.assets
@@ -382,6 +382,7 @@ class OcrBenchmarkTest {
         Log.i(TAG, "synthBox START lines=${lines.length()}")
         val eng = OcrEngine(appContext)
         assertTrue("engine ready", eng.isReady())
+        try {
         for (li in 0 until lines.length()) {
             val entry = lines.getJSONObject(li)
             val file = entry.getString("file")
@@ -454,6 +455,8 @@ class OcrBenchmarkTest {
                 val nMatch = pairs.size
                 for (mode in 0..1) {
                     OcrEngine.BOX_LAYOUT_MODE = mode
+                    for (uni in 0..1) {
+                    OcrEngine.BOX_UNIFORM_SIZE = uni == 1
                     // Snap mode needs crop pixels: re-extract from the
                     // source bitmap via the line's crop geometry.
                     var px: IntArray? = null
@@ -508,7 +511,14 @@ class OcrBenchmarkTest {
                         (tUnion[2] - tUnion[0]).toDouble() to
                             ((boxes.maxOf { it.right } - boxes.minOf { it.left }).toDouble())
                     }
-                    Log.i(TAG, "synthBox $file/$vtag mode=$mode iou=%.3f nT=%d nD=%d match=%d unT=%d unD=%d meanErr=%.1fpx(%.2fem) maxErr=%.1fpx off=(%.1f,%.1f) demean=%.1fpx(%.2fem) maxDm=%.1fpx spanT=%.0f spanO=%.0f fill=%.2f".format(
+                    val lens = boxes.map { b ->
+                        if (vertical) (b.bottom - b.top).toDouble() else (b.right - b.left).toDouble()
+                    }
+                    val meanLen = if (lens.isNotEmpty()) lens.sum() / lens.size else 0.0
+                    val sizeVar = if (lens.size > 1) {
+                        Math.sqrt(lens.map { (it - meanLen) * (it - meanLen) }.sum() / lens.size) / em
+                    } else 0.0
+                    Log.i(TAG, "synthBox $file/$vtag mode=$mode uni=$uni iou=%.3f nT=%d nD=%d match=%d unT=%d unD=%d meanErr=%.1fpx(%.2fem) maxErr=%.1fpx off=(%.1f,%.1f) demean=%.1fpx(%.2fem) maxDm=%.1fpx spanT=%.0f spanO=%.0f fill=%.2f usize=%.2f".format(
                         viou, tText.length, lr.text.length, nMatch,
                         tText.length - pairs.map { it.first }.toSet().size,
                         lr.text.length - pairs.map { it.second }.toSet().size,
@@ -517,8 +527,9 @@ class OcrBenchmarkTest {
                         errMax, mx, my,
                         if (nMatch > 0) dmSum / nMatch else -1.0,
                         if (nMatch > 0) dmSum / nMatch / em else -1.0,
-                        dmMax, tSpan, oSpan, oSpan / tSpan))
-            }
+                        dmMax, tSpan, oSpan, oSpan / tSpan, sizeVar))
+                    }
+                }
             } // end runVariant
             for ((vtag, vbox) in variants) {
                 val vx = maxOf(0, minOf(vbox.right, tUnion[2]) - maxOf(vbox.left, tUnion[0])).toFloat()
@@ -527,6 +538,10 @@ class OcrBenchmarkTest {
                 runVariant(vtag, vbox, viou)
             }
             bmp.recycle()
+        }
+        } finally {
+            OcrEngine.BOX_LAYOUT_MODE = OcrEngine.BOX_SNAP
+            OcrEngine.BOX_UNIFORM_SIZE = false
         }
     }
 

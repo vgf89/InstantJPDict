@@ -68,6 +68,11 @@ class OcrEngine(private val context: Context) {
         var BOX_LAYOUT_MODE = 1
         const val BOX_LEGACY = 0
         const val BOX_SNAP = 1
+        /** Uniform em sizing (#49, default): JP + fullwidth latin share one
+         * em box, em = median center-to-center distance; halfwidth = 0.5em.
+         * Widths-only pass over resolved centers (positions bit-identical to
+         * legacy path); punct expand runs after as before. Test-flippable. */
+        var BOX_UNIFORM_SIZE = true
         const val DEF_DET_THRESH = 0.3f
         const val DEF_DET_UNCLIP = 1.50f
         const val DEF_X_OVERLAP = 0.40f
@@ -1550,6 +1555,37 @@ class OcrEngine(private val context: Context) {
      *
      * @param pixels optional crop pixels (idea 4): snap box centers to ink
      * evidence when BOX_LAYOUT_MODE is BOX_SNAP; null/legacy skips snapping. */
+    private fun isHalfWidthEm(ch: Char): Boolean {
+        val cp = ch.code
+        return cp <= 0x7E || (cp in 0xFF61..0xFFDC)
+    }
+
+    /** Consistent em sizing (#49): uniform WIDTHS around existing centers
+     * (centers bit-identical to the resolve path — positioning untouched).
+     * em = median center-to-center distance (robust to dropped-char gaps and
+     * spaces); fullwidth = em, halfwidth = 0.5em; edges clamped legacy-style.
+     * Needs 2+ cells; otherwise returns input unchanged. */
+    private fun uniformCells(
+        cells: List<Pair<Float, Float>>,
+        text: String,
+        L: Float,
+    ): List<Pair<Float, Float>> {
+        if (cells.size < 2 || text.length != cells.size) return cells
+        val centers = cells.map { (a, b) -> (a + b) / 2f }
+        val gaps = centers.zipWithNext { a, b -> b - a }.filter { it > 0f }.sorted()
+        if (gaps.isEmpty()) return cells
+        val em = gaps[gaps.size / 2]
+        if (em <= 0f) return cells
+        return List(cells.size) { i ->
+            val w = (if (isHalfWidthEm(text[i])) 0.5f else 1.0f) * em
+            val half = w / 2f
+            // Clamp EDGES (legacy convention), never move centers: center
+            // coercion showed up as +0.7px demean on ground truth.
+            val c = centers[i]
+            (maxOf(c - half, 0f)) to (minOf(c + half, L))
+        }
+    }
+
     /** Legacy uniform column mapping (#49 verdict: gap surgery and affine
      * refits all lost to this on ground truth — model timing is uniform;
      * fractional charCols from peak interpolation flow here). */
@@ -1738,8 +1774,10 @@ class OcrEngine(private val context: Context) {
                 resolved[ci] = resolved[ci].first to (resolved[ci].second - half)
                 resolved[ci + 1] = (resolved[ci + 1].first + half) to resolved[ci + 1].second
             }
+            // Consistent widths around resolved centers (#49).
+            val sized = if (BOX_UNIFORM_SIZE) uniformCells(resolved, text, L) else resolved
 
-            return resolved.map { (xl, xr) ->
+            return sized.map { (xl, xr) ->
                 JpDictRect(
                     (cropX + xl).roundToInt(), cropY,
                     (cropX + xr).roundToInt(), cropY + cropH
@@ -1767,7 +1805,7 @@ class OcrEngine(private val context: Context) {
                 ch in "(（〔《「『【〘〖〝‘“［"
             }
 
-            // Resolve overlaps with punctuation rules
+            // Resolve overlaps with punctuation rules (always; positions).
             val resolved = cells.toMutableList()
             for (ci in 0 until n - 1) {
                 if (resolved[ci].second <= resolved[ci + 1].first) continue
@@ -1783,26 +1821,28 @@ class OcrEngine(private val context: Context) {
                     }
                 }
             }
-
-            // Expand punctuation cells to average non-punctuation height
-            val avgNpH = resolved.filterIndexed { i, _ -> !isCp[i] && !isOp[i] }
+            // Expand punctuation cells to average non-punctuation height.
+            // Runs on the uniform-sized list when enabled (avgNpH ~= em, so
+            // punct lands corner-placed at consistent size, as before).
+            val sized = if (BOX_UNIFORM_SIZE) uniformCells(resolved, text, L).toMutableList() else resolved
+            val avgNpH = sized.filterIndexed { i, _ -> !isCp[i] && !isOp[i] }
                 .let { hs -> if (hs.isEmpty()) cropW.toFloat() else hs.sumOf { (it.second - it.first).toDouble() }.toFloat() / hs.size }
             for (ci in 0 until n) {
-                val (yt, yb) = resolved[ci]
+                val (yt, yb) = sized[ci]
                 if (isCp[ci]) {
                     val nx = ((ci + 1) until n)
                         .firstOrNull { !isCp[it] && !isOp[it] }
-                        ?.let { resolved[it].first } ?: Float.POSITIVE_INFINITY
-                    resolved[ci] = yt to maxOf(yb, minOf(yt + avgNpH, nx))
+                        ?.let { sized[it].first } ?: Float.POSITIVE_INFINITY
+                    sized[ci] = yt to maxOf(yb, minOf(yt + avgNpH, nx))
                 } else if (isOp[ci]) {
                     val pl = (0 until ci)
                         .lastOrNull { !isCp[it] && !isOp[it] }
-                        ?.let { resolved[it].second } ?: Float.NEGATIVE_INFINITY
-                    resolved[ci] = minOf(yt, maxOf(pl, yb - avgNpH)) to yb
+                        ?.let { sized[it].second } ?: Float.NEGATIVE_INFINITY
+                    sized[ci] = minOf(yt, maxOf(pl, yb - avgNpH)) to yb
                 }
             }
 
-            return resolved.map { (yt, yb) ->
+            return sized.map { (yt, yb) ->
                 val ch = maxOf(yb - yt, 1f)
                 JpDictRect(
                     cropX, (cropY + yt).roundToInt(),
