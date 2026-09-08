@@ -123,10 +123,18 @@ class LineOverlayView(
             val maxW = boxW * 0.92f
             val maxH = boxH * 0.92f
             var scale = 1f
+            // Halfwidth ASCII sizing is driven
+            // by line height (#49): the 0.5em box is an advance for
+            // positioning/hit-testing, so fit against the full-em width and
+            // let ink overflow symmetric bearings instead of shrinking to the
+            // advance box (which halved cap height vs neighboring CJK).
+            val isHalf = OcrEngine.isHalfWidth(charStr[0])
             if (line.isVertical) {
-                if (glyphH > maxH) scale = maxH / glyphH.coerceAtLeast(1f)
+                val hLimit = if (isHalf) maxH * 2f else maxH
+                if (glyphH > hLimit) scale = hLimit / glyphH.coerceAtLeast(1f)
             } else {
-                if (glyphW > maxW) scale = maxW / glyphW.coerceAtLeast(1f)
+                val wLimit = if (isHalf) maxW * 2f else maxW
+                if (glyphW > wLimit) scale = wLimit / glyphW.coerceAtLeast(1f)
             }
 
             val isHighlighted = highlightedIndices.contains(i)

@@ -3,6 +3,9 @@ package com.holopengin.instantjpdict
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Rect
+import android.graphics.Typeface
 import android.util.Log
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
@@ -73,6 +76,12 @@ class OcrEngine(private val context: Context) {
          * Widths-only pass over resolved centers (positions bit-identical to
          * legacy path); punct expand runs after as before. Test-flippable. */
         var BOX_UNIFORM_SIZE = true
+        /** Halfwidth test shared with the overlay renderer (#49): ASCII +
+         * halfwidth katakana get 0.5em boxes and line-height-driven sizing. */
+        internal fun isHalfWidth(ch: Char): Boolean {
+            val cp = ch.code
+            return cp <= 0x7E || (cp in 0xFF61..0xFFDC)
+        }
         const val DEF_DET_THRESH = 0.3f
         const val DEF_DET_UNCLIP = 1.50f
         const val DEF_X_OVERLAP = 0.40f
@@ -1555,9 +1564,51 @@ class OcrEngine(private val context: Context) {
      *
      * @param pixels optional crop pixels (idea 4): snap box centers to ink
      * evidence when BOX_LAYOUT_MODE is BOX_SNAP; null/legacy skips snapping. */
-    private fun isHalfWidthEm(ch: Char): Boolean {
-        val cp = ch.code
-        return cp <= 0x7E || (cp in 0xFF61..0xFFDC)
+    private fun isHalfWidthEm(ch: Char): Boolean = isHalfWidth(ch)
+
+    /** Ink-aware overlap resolution for horizontal lines (#49): legacy code
+     * split every box overlap evenly, jittering centers even when glyph
+     * bearings absorb the touch. Measure each glyph's ink half-width at the
+     * render text size (mirrors LineOverlayView horizontal measuring config:
+     * DEFAULT typeface, ROOT locale, no features, per-char bounds) and move
+     * centers only on true ink collision, splitting just the collision.
+     * Widths are preserved; only centers move. Local Paint per call, so this
+     * is safe on any dispatcher. */
+    private fun resolveInkCollisions(
+        cells: MutableList<Pair<Float, Float>>,
+        text: String,
+        renderTextSize: Float,
+    ) {
+        val n = cells.size
+        if (n < 2) return
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            typeface = Typeface.DEFAULT
+            textSize = renderTextSize.coerceAtLeast(1f)
+            textLocale = java.util.Locale.ROOT
+        }
+        val bounds = Rect()
+        val centers = cells.map { (a, b) -> (a + b) / 2f }.toMutableList()
+        val inkHalf = FloatArray(n) { i ->
+            val s = text.getOrNull(i)?.toString() ?: ""
+            if (s.isEmpty()) 0f
+            else {
+                paint.getTextBounds(s, 0, s.length, bounds)
+                bounds.width() / 2f
+            }
+        }
+        for (ci in 0 until n - 1) {
+            val inkR = centers[ci] + inkHalf[ci]
+            val inkL = centers[ci + 1] - inkHalf[ci + 1]
+            if (inkR <= inkL) continue
+            val shift = (inkR - inkL) / 2f
+            centers[ci] -= shift
+            centers[ci + 1] += shift
+        }
+        for (i in 0 until n) {
+            val half = (cells[i].second - cells[i].first) / 2f
+            val c = centers[i]
+            cells[i] = (c - half) to (c + half)
+        }
     }
 
     /** Consistent em sizing (#49): uniform WIDTHS around existing centers
@@ -1766,14 +1817,13 @@ class OcrEngine(private val context: Context) {
                 snapCells(base, text, pixels, pixW, pixH, vertical = false, L)
             } else base
 
-            // Resolve overlaps
+            // Resolve overlaps, ink-aware (#49): boxes may touch — glyph
+            // bearings absorb it. Measure each glyph's ink half-width at the
+            // render text size (line height * 0.90, mirrors LineOverlayView
+            // horizontal config) and move centers only on true ink collision,
+            // splitting just the collision instead of the whole box overlap.
             val resolved = cells.toMutableList()
-            for (ci in 0 until n - 1) {
-                if (resolved[ci].second <= resolved[ci + 1].first) continue
-                val half = (resolved[ci].second - resolved[ci + 1].first) / 2f
-                resolved[ci] = resolved[ci].first to (resolved[ci].second - half)
-                resolved[ci + 1] = (resolved[ci + 1].first + half) to resolved[ci + 1].second
-            }
+            resolveInkCollisions(resolved, text, cropH.toFloat() * 0.90f)
             // Consistent widths around resolved centers (#49).
             val sized = if (BOX_UNIFORM_SIZE) uniformCells(resolved, text, L) else resolved
 

@@ -886,6 +886,63 @@ class OcrBenchmarkTest {
         assertTrue(r1.numBoxes > 0 && r2.numBoxes > 0)
     }
 
+    @Test
+    fun asciiRenderSizes() {
+        // #49: halfwidth ASCII must size from line height, not shrink to its
+        // 0.5em advance box. Render single-char lines headless and compare
+        // drawn ink heights against CJK in the same configuration.
+        val appContext = InstrumentationRegistry.getInstrumentation().targetContext
+        fun inkHeight(text: String, boxW: Int, boxH: Int, vertical: Boolean, fixedSize: Int): Int {
+            val line = LineResult(
+                text = text,
+                charBoxes = listOf(JpDictRect(0, 0, boxW, boxH)),
+                alternatives = emptyList(),
+                isVertical = vertical,
+            )
+            // Margin for legal ink overflow past the advance box.
+            val m = 20
+            val view = LineOverlayView(appContext, line, fixedSize, -m, -m) { _ -> }
+            val bmp = Bitmap.createBitmap(boxW + 2 * m, boxH + 2 * m, Bitmap.Config.ARGB_8888)
+            val canvas = android.graphics.Canvas(bmp)
+            view.layout(0, 0, bmp.width, bmp.height)
+            view.draw(canvas)
+            val px = IntArray(bmp.width * bmp.height)
+            bmp.getPixels(px, 0, bmp.width, 0, 0, bmp.width, bmp.height)
+            var top = bmp.height
+            var bottom = -1
+            for (y in 0 until bmp.height) {
+                for (x in 0 until bmp.width) {
+                    if ((px[y * bmp.width + x] ushr 24) and 0xFF > 0) {
+                        if (y < top) top = y
+                        if (y > bottom) bottom = y
+                    }
+                }
+            }
+            bmp.recycle()
+            val h = if (bottom < 0) 0 else bottom - top + 1
+            Log.i(TAG, "renderSize text='$text' vert=$vertical box=${boxW}x$boxH fixed=$fixedSize inkH=$h")
+            return h
+        }
+        // Horizontal: CJK box 44x60, ASCII box 22x60, shared fixedSize 60.
+        val hKan = inkHeight("漢", 44, 60, false, 60)
+        assertTrue("CJK sanity inkH=$hKan", hKan >= 30)
+        for (ch in listOf("A", "0", "W", "%")) {
+            val h = inkHeight(ch, 22, 60, false, 60)
+            val ratio = if (hKan > 0) h.toFloat() / hKan else -1f
+            Log.i(TAG, "renderSize ratio '$ch'=$ratio")
+            assertTrue("ASCII '$ch' inkH=$h too small vs CJK $hKan", hKan <= 0 || ratio >= 0.65f)
+        }
+        // Vertical: thickness 60, CJK box 60x44, ASCII box 60x22, shared fixedSize 44.
+        val vKan = inkHeight("漢", 60, 44, true, 44)
+        assertTrue("CJK vertical sanity inkH=$vKan", vKan >= 20)
+        for (ch in listOf("0", "A")) {
+            val h = inkHeight(ch, 60, 22, true, 44)
+            val ratio = if (vKan > 0) h.toFloat() / vKan else -1f
+            Log.i(TAG, "renderSize vertical ratio '$ch'=$ratio")
+            assertTrue("vertical ASCII '$ch' inkH=$h too small vs CJK $vKan", vKan <= 0 || ratio >= 0.65f)
+        }
+    }
+
     /**
      * ncnn correctness gate + image bench (was dual-backend A/B for #14;
      * ncnn-only since #15). Single-pass per image (Screenshot 2400x1080 +
