@@ -842,6 +842,7 @@ class OcrEngine(private val context: Context) {
                     charCols = result.charCols,
                 )
                 doneLines++
+                InferLog.add("line idx=${job.idx} len=${lineResult.text.length} vert=${lineResult.isVertical}")
                 mainHandler.post { onLinesRecognized(listOf(job.idx to lineResult)) }
             }
             recognizePpocrBatch(crops, engine, fanout) { index, result -> emitLine(index, result) }
@@ -1840,7 +1841,10 @@ class OcrEngine(private val context: Context) {
         if (jobs.isEmpty()) return@coroutineScope
 
         Log.d(TAG, "Processing ${jobs.size} boxes in batches of $BATCH_SIZE")
-        InferLog.add("stream start boxes=${jobs.size} batch=$BATCH_SIZE squish=$recSquish")
+        val vkTwin = try {
+            context.assets.list("PP-OCRv6_small_ncnn")?.contains("rec_dyn_vk.bin") == true
+        } catch (_: Exception) { false }
+        InferLog.add("stream start boxes=${jobs.size} batch=$BATCH_SIZE squish=$recSquish blob=${if (vkTwin) "old-vk" else "new-cpu"}")
 
         // Reading order: vertical lines right-to-left first, then horizontal
         // lines top-to-bottom (same per-group comparators as sortDetectedBoxes).
