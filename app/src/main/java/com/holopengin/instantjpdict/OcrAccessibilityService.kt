@@ -58,6 +58,8 @@ class OcrAccessibilityService : AccessibilityService() {
     private var floatingView: View? = null
     private var floatingParams: WindowManager.LayoutParams? = null
     private var ocrButton: Button? = null
+    /** Set in onDestroy so restore paths never re-add windows during teardown. (#60) */
+    private var isDestroyed = false
     private var screenshotOverlay: View? = null
     private var screenshotBitmap: Bitmap? = null
     private lateinit var ocrEngine: OcrEngine
@@ -94,6 +96,7 @@ class OcrAccessibilityService : AccessibilityService() {
                     }
                 }
                 Intent.ACTION_USER_PRESENT -> {
+                    ensureFloatingButton()
                     floatingView?.visibility = View.VISIBLE
                 }
             }
@@ -153,10 +156,12 @@ class OcrAccessibilityService : AccessibilityService() {
                 AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS or
                 AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS
         serviceInfo = info
-        addFloatingButton()
+        // Reconnects must not duplicate the button; creation happens once. (#60)
+        if (floatingView == null) addFloatingButton() else ensureFloatingButton()
     }
 
     private fun addFloatingButton() {
+        if (floatingView?.isAttachedToWindow == true) return
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         
         floatingParams = WindowManager.LayoutParams().apply {
@@ -252,6 +257,25 @@ class OcrAccessibilityService : AccessibilityService() {
         
         floatingView = frameLayout
         windowManager?.addView(floatingView, floatingParams)
+    }
+
+    /**
+     * Re-add the floating button's existing view (with its visibility and
+     * dragged position intact) if the system dropped its window without
+     * telling us — e.g. the secure camera from double-tap power. (#60)
+     * Cheap no-op when attached, so it is safe to call from every
+     * window-state change. Never creates a second view.
+     */
+    private fun ensureFloatingButton() {
+        val fv = floatingView ?: return
+        if (!shouldReattachFloatingButton(true, fv.isAttachedToWindow, isDestroyed)) return
+        try {
+            val wm = windowManager ?: getSystemService(WINDOW_SERVICE) as WindowManager
+            windowManager = wm
+            wm.addView(fv, floatingParams)
+        } catch (e: Exception) {
+            Log.e("OcrAccessibilityService", "Error restoring floating button", e)
+        }
     }
 
     private fun triggerCapture(onSuccessAction: (Bitmap) -> Unit) {
@@ -1787,28 +1811,36 @@ class OcrAccessibilityService : AccessibilityService() {
         screenshotOverlay = null; screenshotBitmap = null; floatingView?.visibility = View.VISIBLE
         controller.resetState()
         dictionaryViewCache.clear()
-        try { windowManager?.updateViewLayout(floatingView, floatingParams) } catch (e: Exception) { Log.e("OcrAccessibilityService", "Error removing overlay", e) }
+        ensureFloatingButton()
+        floatingView?.let { fv ->
+            if (fv.isAttachedToWindow) try { windowManager?.updateViewLayout(fv, floatingParams) } catch (e: Exception) { Log.e("OcrAccessibilityService", "Error syncing floating button layout", e) }
+        }
         textViews.clear()
         lineViews.clear()
         cursorView = null
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        if (screenshotOverlay == null) return
-        if (event?.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
-            val eventPackage = event.packageName?.toString()
-            if (eventPackage == null || eventPackage == packageName) return
-            val root = screenshotOverlay as? FrameLayout
-            if (root?.findViewWithTag<View>("manual_input_blocker") != null) return
-            if (System.currentTimeMillis() - controller.lastManualInputCloseTime < 1000) return
-            if (event.isFullScreen != true) return
-            hideScreenshotOverlay()
+        if (event?.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
+        if (screenshotOverlay == null) {
+            // No overlay open: restore the floating button if the system
+            // dropped its window (e.g. returning from the camera). (#60)
+            ensureFloatingButton()
+            return
         }
+        val eventPackage = event.packageName?.toString()
+        if (eventPackage == null || eventPackage == packageName) return
+        val root = screenshotOverlay as? FrameLayout
+        if (root?.findViewWithTag<View>("manual_input_blocker") != null) return
+        if (System.currentTimeMillis() - controller.lastManualInputCloseTime < 1000) return
+        if (event.isFullScreen != true) return
+        hideScreenshotOverlay()
     }
 
     override fun onInterrupt() {}
 
     override fun onDestroy() { 
+        isDestroyed = true
         super.onDestroy()
         try { unregisterReceiver(overlayControllerReceiver) } catch (e: Exception) {} 
         hideScreenshotOverlay()
