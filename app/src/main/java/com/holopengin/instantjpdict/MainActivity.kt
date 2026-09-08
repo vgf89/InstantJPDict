@@ -344,43 +344,12 @@ class MainActivity : AppCompatActivity() {
         addTunable("X_OVERLAP_THRESHOLD", OcrEngine.PREF_X_OVERLAP, OcrEngine.DEF_X_OVERLAP, 0.0f, 1.0f, 0.01f, false)
         addTunable("REC_SQUISH_FACTOR", OcrEngine.PREF_REC_SQUISH, OcrEngine.DEF_REC_SQUISH, 0.2f, 1.0f, 0.1f, false)
 
-        // Rec backend radio: CPU-only / Vulkan-only / parallel split (#42, experimental).
-        // Takes effect on re-run (engines load at init); Vulkan needs the GPU build.
-        val backendLabels = listOf("CPU-only", "Vulkan-only", "Parallel CPU+GPU")
-        val backendGroup = android.widget.RadioGroup(this).apply {
-            orientation = android.widget.RadioGroup.VERTICAL
-            setPadding(0, 8, 0, 8)
-        }
-        val backendTitle = TextView(this).apply {
-            text = "REC_BACKEND (experimental — Vulkan ~2x slower solo; parallel splits lines)"
-            textSize = 13f
-            setTypeface(null, android.graphics.Typeface.BOLD)
-        }
-        tuningContainer.addView(backendTitle)
-        val currentBackend = prefs.getInt(OcrEngine.PREF_REC_BACKEND, OcrEngine.DEF_REC_BACKEND)
-            .coerceIn(0, backendLabels.size - 1)
-        backendLabels.forEachIndexed { i, label ->
-            val rb = android.widget.RadioButton(this).apply {
-                text = label
-                isChecked = i == currentBackend
-                setOnCheckedChangeListener { _, checked ->
-                    if (checked) {
-                        prefs.edit().putInt(OcrEngine.PREF_REC_BACKEND, i).apply()
-                        Toast.makeText(this@MainActivity, "Backend → $label (engine rebuilds on next OCR run)", Toast.LENGTH_SHORT).show()
-                    }
-                }
-            }
-            backendGroup.addView(rb)
-        }
-        tuningContainer.addView(backendGroup)
-
         addButton(tuningContainer, "Reset all tuning to defaults") {
             prefs.edit()
                 .putFloat(OcrEngine.PREF_DET_THRESH, OcrEngine.DEF_DET_THRESH)
                 .putFloat(OcrEngine.PREF_DET_UNCLIP, OcrEngine.DEF_DET_UNCLIP)
                 .putFloat(OcrEngine.PREF_X_OVERLAP, OcrEngine.DEF_X_OVERLAP)
                 .putFloat(OcrEngine.PREF_REC_SQUISH, OcrEngine.DEF_REC_SQUISH)
-                .putInt(OcrEngine.PREF_REC_BACKEND, OcrEngine.DEF_REC_BACKEND)
                 .apply()
             Toast.makeText(this, "All tuning reset to defaults — reopen screen to refresh", Toast.LENGTH_LONG).show()
             Log.d("MainActivity", "all tuning reset to defaults")

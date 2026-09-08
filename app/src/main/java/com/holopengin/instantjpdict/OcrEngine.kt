@@ -10,9 +10,6 @@ import java.io.File
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
@@ -42,16 +39,9 @@ class OcrEngine(private val context: Context) {
     private var ppocrVocab: List<String> = emptyList()
     private var classRemap: IntArray = IntArray(0) // pruned-out -> orig class id (#39)
     private var recDynNcnn: RecNcnn? = null
-    private var recVkNcnn: RecNcnn? = null // IP-swapped twin graph, created only for Vulkan use (#42)
 
     // One line awaiting recognition; results stay keyed by idx.
     private data class Job(val idx: Int, val bbox: JpDictRect, val isVertical: Boolean)
-    val recBackend: Int
-        get() = prefs.getInt(PREF_REC_BACKEND, DEF_REC_BACKEND).coerceIn(0, 2)
-    // Backend this engine's handles were built for; the service recreates the
-    // engine when the pref moves (handles load at init, #42).
-    var builtBackend: Int = DEF_REC_BACKEND
-        private set
 
     companion object {
         private const val TAG = "PPOCREngine"
@@ -125,12 +115,6 @@ class OcrEngine(private val context: Context) {
         private const val REC_NUM_CLASSES = 18710  // 0=blank, 1..18708=chars, 18709=space (orig id space)
         // Pruned CTC-head width (#39): gemm_8 emits 13193 outs; CLASS_REMAP[new] = orig id.
         private const val REC_NUM_OUTPUTS = 13193
-        // Rec backend (#42): 0 = CPU-only, 1 = Vulkan-only, 2 = parallel split.
-        const val PREF_REC_BACKEND = "rec_backend"
-        const val DEF_REC_BACKEND = 0
-        const val BACKEND_CPU = 0
-        const val BACKEND_VULKAN = 1
-        const val BACKEND_PARALLEL = 2
         private const val BATCH_SIZE = 4
         private const val REC_STRIDE = 8
         /** Alternative-list cap everywhere (per-timestep top-K, per-char alts, stitch merges). */
@@ -241,17 +225,6 @@ class OcrEngine(private val context: Context) {
                 Log.e(TAG, "RecNcnn dyn failed", e)
             }
 
-            // ── Vulkan twin, only when selected (saves ~10MB RAM + GPU init otherwise) ──
-            if (prefs.getInt(PREF_REC_BACKEND, DEF_REC_BACKEND) != BACKEND_CPU) {
-                try {
-                    recVkNcnn = RecNcnn.create(context, 64, true)
-                    Log.d(TAG, "RecNcnn vulkan loaded: $recVkNcnn")
-                } catch (e: Exception) {
-                    Log.e(TAG, "RecNcnn vulkan failed", e)
-                }
-            }
-            builtBackend = prefs.getInt(PREF_REC_BACKEND, DEF_REC_BACKEND).coerceIn(0, 2)
-
             // ── Load vocabulary ──
             val vocabJson = context.assets.open("PP-OCRv6_small_ncnn/vocab.json")
                 .bufferedReader().use { it.readText() }
@@ -273,8 +246,7 @@ class OcrEngine(private val context: Context) {
     }
 
     fun isReady(): Boolean =
-        detNcnn != null && recDynNcnn != null && ppocrVocab.isNotEmpty() && classRemap.size == REC_NUM_OUTPUTS &&
-            (recBackend == BACKEND_CPU || recVkNcnn != null)
+        detNcnn != null && recDynNcnn != null && ppocrVocab.isNotEmpty() && classRemap.size == REC_NUM_OUTPUTS
 
     // ═════════════════════════════════════════════════════════════════════════
     //  Detect — DB segmentation → contours → boxes (#28 furigana, unclip)
@@ -817,9 +789,6 @@ class OcrEngine(private val context: Context) {
             // batch order) — same 4-concurrent throughput, faster first
             // result. Results stay keyed by job idx. #21
             var doneLines = 0
-            // Backend routing (#42): one engine per whole batch; parallel
-            // mode deals batches to both backends from a shared queue and
-            // everything merges by job idx below.
             val emitLine = emit@{ index: Int, result: PPOcrResult ->
                 val job = batch.getOrNull(index) ?: return@emit
                 if (result.text.isEmpty()) return@emit
@@ -869,11 +838,9 @@ class OcrEngine(private val context: Context) {
                 doneLines++
                 mainHandler.post { onLinesRecognized(listOf(job.idx to lineResult)) }
             }
-            // Single engine for the whole batch; the caller parallelizes across batches.
             recognizePpocrBatch(crops, engine, fanout) { index, result -> emitLine(index, result) }
             val elapsed = (System.nanoTime() - tBatch) / 1_000_000
-            val engTag = if (engine === recDynNcnn) "cpu" else "vk"
-            Log.d(TAG, "Batch $batchIdx [$engTag] ${batch.size} jobs → $doneLines lines in ${elapsed}ms")
+            Log.d(TAG, "Batch $batchIdx ${batch.size} jobs → $doneLines lines in ${elapsed}ms")
             // Per-batch recycle.
             crops.forEach { try { it.recycle() } catch (_: Exception) {} }
         } catch (e: Exception) {
@@ -884,10 +851,8 @@ class OcrEngine(private val context: Context) {
     }
 
     /**
-     * @param fanout max concurrent line infers in this batch. Single-backend
-     * modes use 4; parallel-mode workers use 2 each (2 workers x 2 = 4 total,
-     * same core pressure as single modes but spread over both backends, #42).
-     * Waves run sequentially; completion-order streaming holds within a wave.
+     * @param fanout max concurrent line infers in this batch (waves run
+     * sequentially; completion-order streaming holds within a wave).
      */
     private suspend fun recognizePpocrBatch(
         crops: List<Bitmap>,
@@ -1880,35 +1845,11 @@ class OcrEngine(private val context: Context) {
         val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
         // Process in batches — cooperative cancellation for #18 (overlay closed → cancel).
-        // PARALLEL mode work-steals whole batches across both backends (#42):
-        // no speed model needed, faster backend simply takes more batches.
         val batches = sortedJobs.chunked(BATCH_SIZE)
-        val useParallel = recBackend == BACKEND_PARALLEL && recDynNcnn != null && recVkNcnn != null
-        if (useParallel) {
-            val queue = ArrayDeque(batches.indices.toList())
-            val mutex = Mutex()
-            suspend fun worker(engine: RecNcnn) {
-                while (true) {
-                    coroutineContext.ensureActive()
-                    val bi = mutex.withLock { if (queue.isEmpty()) null else queue.removeFirst() }
-                        ?: break
-                    processOneBatch(bi, batches[bi], engine, bitmap, mainHandler, onLinesRecognized)
-                }
-            }
-            coroutineScope {
-                launch { worker(recDynNcnn!!) }
-                launch { worker(recVkNcnn!!) }
-            }
-        } else {
-            val engine = if (recBackend == BACKEND_VULKAN) recVkNcnn ?: recDynNcnn else recDynNcnn
-            if (engine == null) return@coroutineScope
-            if (recBackend == BACKEND_VULKAN && recVkNcnn == null) {
-                Log.w(TAG, "Vulkan backend selected but handle missing — falling back to CPU")
-            }
-            for ((batchIdx, batch) in batches.withIndex()) {
-                coroutineContext.ensureActive()
-                processOneBatch(batchIdx, batch, engine, bitmap, mainHandler, onLinesRecognized)
-            }
+        val engine = recDynNcnn ?: return@coroutineScope
+        for ((batchIdx, batch) in batches.withIndex()) {
+            coroutineContext.ensureActive()
+            processOneBatch(batchIdx, batch, engine, bitmap, mainHandler, onLinesRecognized)
         }
 
         Log.d(TAG, "All batches finished")
@@ -2014,7 +1955,6 @@ class OcrEngine(private val context: Context) {
     fun close() {
         try { detNcnn?.close() } catch (_: Exception) {}
         try { recDynNcnn?.close() } catch (_: Exception) {}
-        try { recVkNcnn?.close() } catch (_: Exception) {}
     }
 }
 
