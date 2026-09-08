@@ -79,6 +79,25 @@ dependencies {
     androidTestImplementation(libs.androidx.junit)
 }
 
+// Guard: the vendored libncnn.a must contain the fused-GELU code required by
+// rec_dyn.param's 13x `9=7` conv layers (#41). A lib without it links fine
+// but silently mis-infers rec (dense garbage, blank collapse — caught
+// 2026-09 after a fresh-tree rebuild silently dropped the patch). Rebuild it with
+// tools/build_ncnn.sh (marker + artifact gates enforced there too).
+tasks.register<Exec>("verifyNcnnBlob") {
+    workingDir = file("src/main/cpp/ncnn/lib/arm64-v8a")
+    commandLine(
+        "bash", "-c",
+        "grep -q activation_ss libncnn.a || " +
+            "(echo 'ERROR: libncnn.a lacks fused GELU (activation_ss); rebuild with tools/build_ncnn.sh' >&2; exit 1)"
+    )
+}
+
+// Fail fast on a bad blob before any native build
+tasks.named("preBuild") {
+    dependsOn("verifyNcnnBlob")
+}
+
 // Build nav_graph_core Rust library for Android (only if NDK available)
 tasks.register<Exec>("buildNavGraphCore") {
     workingDir = file("${project.rootDir}/nav_graph_core")
