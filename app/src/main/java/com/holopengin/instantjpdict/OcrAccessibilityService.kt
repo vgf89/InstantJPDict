@@ -42,6 +42,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.isVisible
 import com.google.gson.Gson
 import com.holopengin.instantjpdict.util.Deinflector
+import com.holopengin.instantjpdict.util.FuriganaAligner
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -1379,20 +1380,43 @@ class OcrAccessibilityService : AccessibilityService() {
 
     private fun createRubyView(term: String, reading: String, isMini: Boolean = false): View {
         if (term == reading) {
-            return TextView(this).apply {
-                text = term
-                setTextColor(Color.CYAN)
-                textSize = if (isMini) 15f else 32f
-                typeface = android.graphics.Typeface.DEFAULT_BOLD
-                includeFontPadding = false
-                setPadding(0, 0, 0, 0)
+            return createBaseTextView(term, isMini)
+        }
+        // Minimal furigana (#55): ruby only over kanji spans, okurigana as
+        // plain base text. Falls back to full-reading ruby when unalignable.
+        val segments = FuriganaAligner.align(term, reading)
+        if (segments == null || segments.none { it.ruby != null }) {
+            return createFullRubyView(term, reading, isMini)
+        }
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            segments.forEach { seg ->
+                if (seg.ruby == null) {
+                    addView(createBaseTextView(seg.base, isMini))
+                } else {
+                    addView(createRubyStackView(seg.base, seg.ruby, isMini))
+                }
             }
         }
+    }
+
+    private fun createBaseTextView(term: String, isMini: Boolean): TextView {
+        return TextView(this).apply {
+            text = term
+            setTextColor(Color.CYAN)
+            textSize = if (isMini) 15f else 32f
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            includeFontPadding = false
+            setPadding(0, 0, 0, 0)
+        }
+    }
+
+    private fun createFullRubyView(term: String, reading: String, isMini: Boolean): View {
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
             isBaselineAligned = true
-            
+
             addView(TextView(this@OcrAccessibilityService).apply {
                 text = reading
                 setTextColor(Color.LTGRAY)
@@ -1400,14 +1424,25 @@ class OcrAccessibilityService : AccessibilityService() {
                 gravity = Gravity.CENTER
                 includeFontPadding = false
             })
+            addView(createBaseTextView(term, isMini).apply { gravity = Gravity.CENTER })
+            baselineAlignedChildIndex = 1
+        }
+    }
+
+    private fun createRubyStackView(base: String, ruby: String, isMini: Boolean): View {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            isBaselineAligned = true
+
             addView(TextView(this@OcrAccessibilityService).apply {
-                text = term
-                setTextColor(Color.CYAN)
-                textSize = if (isMini) 15f else 32f
-                typeface = android.graphics.Typeface.DEFAULT_BOLD
+                text = ruby
+                setTextColor(Color.LTGRAY)
+                textSize = if (isMini) 9f else 13f
                 gravity = Gravity.CENTER
                 includeFontPadding = false
             })
+            addView(createBaseTextView(base, isMini).apply { gravity = Gravity.CENTER })
             baselineAlignedChildIndex = 1
         }
     }
