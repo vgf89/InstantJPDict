@@ -21,7 +21,7 @@ struct RecNcnn {
 extern "C" {
 
 JNIEXPORT jlong JNICALL
-Java_com_holopengin_instantjpdict_RecNcnn_create(JNIEnv *env, jclass, jstring paramPath_, jstring binPath_, jint targetW) {
+Java_com_holopengin_instantjpdict_RecNcnn_create(JNIEnv *env, jclass, jstring paramPath_, jstring binPath_, jint targetW, jint numThreads) {
     const char *paramPath = env->GetStringUTFChars(paramPath_, 0);
     const char *binPath = env->GetStringUTFChars(binPath_, 0);
 
@@ -30,11 +30,9 @@ Java_com_holopengin_instantjpdict_RecNcnn_create(JNIEnv *env, jclass, jstring pa
     rec->seqLen = targetW / 8;
 
     ncnn::Option opt;
-    // Single thread wins on every bucket (Pixel 7a, same-session bracketed micro-bench):
-    // w64 10 vs 65ms, w128 19 vs 99ms, w256 39 vs 129ms, w480 72 vs 235ms.
-    // These narrow seq models are sync-overhead-dominated — extra threads only add
-    // barrier cost (and heat: multi-thread runs drifted up in-session, 1-thread flat). #20
-    opt.num_threads = 1;
+    // Thread count is a runtime tunable (#58); 1 won on every bucket back in
+    // #20 (w64 10 vs 65ms …), narrow seq models being sync-overhead-dominated.
+    opt.num_threads = numThreads > 0 ? numThreads : 1;
     opt.use_fp16_packed = false;
     opt.use_fp16_storage = false;
     opt.use_fp16_arithmetic = false;

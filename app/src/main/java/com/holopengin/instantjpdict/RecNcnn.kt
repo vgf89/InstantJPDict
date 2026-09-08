@@ -79,7 +79,7 @@ class RecNcnn private constructor(private val handle: Long, val targetW: Int) {
             }
         }
 
-        fun create(context: Context, targetW: Int = 64): RecNcnn? {
+        fun create(context: Context, targetW: Int = 64, numThreads: Int = 1): RecNcnn? {
             ensureLoaded()
             val cache = File(context.cacheDir, "ncnn")
             cache.mkdirs()
@@ -95,7 +95,7 @@ class RecNcnn private constructor(private val handle: Long, val targetW: Int) {
                 Log.e(TAG, "copy asset PP-OCRv6_small_ncnn/$paramName failed", e)
                 return null
             }
-            val h = create(paramFile.absolutePath, binFile.absolutePath, targetW)
+            val h = create(paramFile.absolutePath, binFile.absolutePath, targetW, numThreads)
             if (h == 0L) {
                 Log.e(TAG, "RecNcnn.create failed for W=$targetW")
                 return null
@@ -104,7 +104,7 @@ class RecNcnn private constructor(private val handle: Long, val targetW: Int) {
             return RecNcnn(h, targetW)
         }
 
-        @JvmStatic private external fun create(paramPath: String, binPath: String, targetW: Int): Long
+        @JvmStatic private external fun create(paramPath: String, binPath: String, targetW: Int, numThreads: Int): Long
         @JvmStatic private external fun destroy(handle: Long)
         @JvmStatic private external fun inferNative(handle: Long, buffer: ByteBuffer, w: Int, h: Int): FloatArray?
         @JvmStatic private external fun inferTopKNative(handle: Long, buffer: ByteBuffer, w: Int, h: Int): FloatArray?

@@ -116,8 +116,12 @@ class OcrEngine(private val context: Context) {
         private const val REC_NUM_CLASSES = 18710  // 0=blank, 1..18708=chars, 18709=space (orig id space)
         // Pruned CTC-head width (#39): gemm_8 emits 13193 outs; CLASS_REMAP[new] = orig id.
         private const val REC_NUM_OUTPUTS = 13193
-        private const val BATCH_SIZE = 4
         private const val REC_STRIDE = 8
+        /** Streaming batch size (#58 retune knob; was const 4). Batches of line
+         * crops created/recycled per batch; per-batch concurrency = fanout. */
+        var REC_BATCH_SIZE = 4
+        /** Rec ncnn thread count (#58 retune knob; was hardcoded 1, #20). */
+        var REC_THREADS = 1
         /** Alternative-list cap everywhere (per-timestep top-K, per-char alts, stitch merges). */
         private const val TOP_K = 15
         /** Single-pass targetW cap and stitch entry gate (targetW = rw*48/rh). #24 */
@@ -220,7 +224,7 @@ class OcrEngine(private val context: Context) {
 
             // ── Load PP-OCRv6 recognition model (single dynamic-width ncnn, #23) ──
             try {
-                recDynNcnn = RecNcnn.create(context)
+                recDynNcnn = RecNcnn.create(context, numThreads = REC_THREADS)
                 Log.d(TAG, "RecNcnn dyn loaded: $recDynNcnn")
             } catch (e: Exception) {
                 Log.e(TAG, "RecNcnn dyn failed", e)
@@ -1818,7 +1822,7 @@ class OcrEngine(private val context: Context) {
      * 270° pre-inference, char boxes compute on the x- vs y-axis post-inference.
      * Jobs sort into reading order (vertical right-to-left, then horizontal
      * top-to-bottom; results stay keyed by job idx so only arrival order
-     * changes), run in batches of [BATCH_SIZE] with crops created per batch
+     * changes), run in batches of [REC_BATCH_SIZE] with crops created per batch
      * (4 bitmaps pinned at a time) and recycled after each batch. Within a
      * batch, [recognizePpocrBatch] awaits via `select` over the deferreds so
      * each line emits as its infer completes; the callback re-posts to the main
@@ -1840,11 +1844,8 @@ class OcrEngine(private val context: Context) {
         }
         if (jobs.isEmpty()) return@coroutineScope
 
-        Log.d(TAG, "Processing ${jobs.size} boxes in batches of $BATCH_SIZE")
-        val vkTwin = try {
-            context.assets.list("PP-OCRv6_small_ncnn")?.contains("rec_dyn_vk.bin") == true
-        } catch (_: Exception) { false }
-        InferLog.add("stream start boxes=${jobs.size} batch=$BATCH_SIZE squish=$recSquish blob=${if (vkTwin) "old-vk" else "new-cpu"}")
+        Log.d(TAG, "Processing ${jobs.size} boxes in batches of $REC_BATCH_SIZE")
+        InferLog.add("stream start boxes=${jobs.size} batch=$REC_BATCH_SIZE squish=$recSquish")
 
         // Reading order: vertical lines right-to-left first, then horizontal
         // lines top-to-bottom (same per-group comparators as sortDetectedBoxes).
@@ -1858,13 +1859,12 @@ class OcrEngine(private val context: Context) {
         val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
         // Process in batches — cooperative cancellation for #18 (overlay closed → cancel).
-        val batches = sortedJobs.chunked(BATCH_SIZE)
+        val batches = sortedJobs.chunked(REC_BATCH_SIZE.coerceAtLeast(1))
         val engine = recDynNcnn ?: return@coroutineScope
         for ((batchIdx, batch) in batches.withIndex()) {
             coroutineContext.ensureActive()
             processOneBatch(batchIdx, batch, engine, bitmap, mainHandler, onLinesRecognized)
         }
-
         Log.d(TAG, "All batches finished")
 
         val elapsed = System.currentTimeMillis() - startTime

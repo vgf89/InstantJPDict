@@ -697,6 +697,77 @@ class OcrBenchmarkTest {
     }
 
     @Test
+    fun threadBatchSweep() {
+        // #58: re-sweep rec threads x streaming batch size on the quest image
+        // (CPU-only tree, deterministic collection). One cell = fresh engine +
+        // warmup + min-of-3 det/rec walls. Quiescence floor (~2.6s) is constant
+        // across cells, so deltas are compute.
+        val appContext = InstrumentationRegistry.getInstrumentation().targetContext
+        try {
+            val bmp = loadBenchmarkBitmap("Screenshot_20260905-093821.png")
+            val summary = mutableListOf<String>()
+            for (threads in listOf(1, 2, 4)) {
+                for (batch in listOf(2, 4, 8)) {
+                    OcrEngine.REC_THREADS = threads
+                    OcrEngine.REC_BATCH_SIZE = batch
+                    val eng = OcrEngine(appContext)
+                    assertTrue("engine ready t=$threads b=$batch", eng.isReady())
+                    val boxes = eng.detect(bmp)
+                    assertTrue("expected 20+ lines", boxes.size >= 20)
+                    // Warmup.
+                    runBlocking {
+                        eng.recognizeStreaming(bmp, boxes) { _ -> }
+                        kotlinx.coroutines.delay(500)
+                    }
+                    fun timeDetect(): Long {
+                        var best = Long.MAX_VALUE
+                        repeat(3) {
+                            val t0 = System.nanoTime()
+                            eng.detect(bmp)
+                            best = minOf(best, (System.nanoTime() - t0) / 1_000_000)
+                        }
+                        return best
+                    }
+                    fun timeRec(): Long {
+                        var best = Long.MAX_VALUE
+                        repeat(3) {
+                            val collected = mutableListOf<Pair<Int, LineResult>>()
+                            val t0 = System.nanoTime()
+                            runBlocking {
+                                eng.recognizeStreaming(bmp, boxes) { pairs ->
+                                    synchronized(collected) { collected.addAll(pairs) }
+                                }
+                                var waited = 0; var last = -1; var still = 0
+                                while (collected.size < boxes.size && waited < 120000) {
+                                    kotlinx.coroutines.delay(200); waited += 200
+                                    synchronized(collected) {
+                                        if (collected.size == last) still += 200 else { still = 0; last = collected.size }
+                                    }
+                                    if (still >= 1500 && waited > 2500) break
+                                }
+                            }
+                            best = minOf(best, (System.nanoTime() - t0) / 1_000_000)
+                        }
+                        return best
+                    }
+                    val detMs = timeDetect()
+                    val recMs = timeRec()
+                    Log.i(TAG, "sweepCfg threads=$threads batch=$batch boxes=${boxes.size} detMs=$detMs recMs=$recMs")
+                    summary.add("t$threads/b$batch det=$detMs rec=$recMs")
+                    eng.close()
+                }
+            }
+            val bundle = android.os.Bundle().apply {
+                putString("sweep", summary.joinToString(" | "))
+            }
+            InstrumentationRegistry.getInstrumentation().sendStatus(0, bundle)
+        } finally {
+            OcrEngine.REC_THREADS = 1
+            OcrEngine.REC_BATCH_SIZE = 4
+        }
+    }
+
+    @Test
     fun detInputSizeAB() {
         // Det input-size A/B (#51): 960 vs 896 box counts + walls on real
         // images. Host study predicts counts within ±4% and ~13% less
