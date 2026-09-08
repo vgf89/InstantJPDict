@@ -6,6 +6,7 @@ import android.graphics.Color
 import android.util.Log
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
+import com.holopengin.instantjpdict.util.InferLog
 import java.io.File
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -342,6 +343,7 @@ class OcrEngine(private val context: Context) {
             }
         }
         Log.d(TAG, "detect: output size=${probArrNorm.size} expected=${modelSize * modelSize} out=${outW}x${outH}")
+        InferLog.add("detect out=${outW}x${outH} size=${probArrNorm.size}")
 
         val probArrFinal = probArrNorm
 
@@ -508,6 +510,7 @@ class OcrEngine(private val context: Context) {
         // 11. Sort: horizontal top-bottom/left-right, vertical right-left/top-bottom
         val sorted = sortDetectedBoxes(splitBoxes)
         Log.d(TAG, "detect: final ${sorted.size} boxes")
+        InferLog.add("detect final=${sorted.size} boxes")
         return sorted
     }
 
@@ -722,12 +725,15 @@ class OcrEngine(private val context: Context) {
             return decoded.copy(rawAlternatives = rawAlts)
         }
         if (packed != null) Log.w(TAG, "recNcnn w$modelW topK bad size ${packed.size} — full-logits fallback")
+        if (packed != null) InferLog.add("rec w=$modelW topK BAD size=${packed.size} expect=${seqLen * TOP_K * 2}")
         val flatOutput = recNcnn.infer(inputFloats, modelW, targetH) ?: run {
             Log.e(TAG, "recNcnn w$modelW infer null")
+            InferLog.add("rec w=$modelW infer NULL")
             return null
         }
         if (flatOutput.size != seqLen * REC_NUM_OUTPUTS) {
             Log.e(TAG, "recNcnn w$modelW bad output ${flatOutput.size} vs ${seqLen * REC_NUM_OUTPUTS}")
+            InferLog.add("rec w=$modelW BAD out=${flatOutput.size} expect=${seqLen * REC_NUM_OUTPUTS}")
             return null
         }
         val cropLogits = Array(actualSeqLen) { t ->
@@ -841,6 +847,7 @@ class OcrEngine(private val context: Context) {
             recognizePpocrBatch(crops, engine, fanout) { index, result -> emitLine(index, result) }
             val elapsed = (System.nanoTime() - tBatch) / 1_000_000
             Log.d(TAG, "Batch $batchIdx ${batch.size} jobs → $doneLines lines in ${elapsed}ms")
+            InferLog.add("batch $batchIdx jobs=${batch.size} lines=$doneLines ${elapsed}ms")
             // Per-batch recycle.
             crops.forEach { try { it.recycle() } catch (_: Exception) {} }
         } catch (e: Exception) {
@@ -914,6 +921,7 @@ class OcrEngine(private val context: Context) {
                 // -> 23 steps for 16 chars) keep full resolution instead.
                 if (it / REC_STRIDE < 32) targetW else it
             }
+            InferLog.add("crop rw=$rw rh=$rh targetW=$targetW sq=$sqTarget seq=${sqTarget / REC_STRIDE}")
             val result = inferResizedRec(rotated, sqTarget, targetH, engine)
             if (rotated !== crop) rotated.recycle()
             if (result == null) {
@@ -1832,6 +1840,7 @@ class OcrEngine(private val context: Context) {
         if (jobs.isEmpty()) return@coroutineScope
 
         Log.d(TAG, "Processing ${jobs.size} boxes in batches of $BATCH_SIZE")
+        InferLog.add("stream start boxes=${jobs.size} batch=$BATCH_SIZE squish=$recSquish")
 
         // Reading order: vertical lines right-to-left first, then horizontal
         // lines top-to-bottom (same per-group comparators as sortDetectedBoxes).
@@ -1856,6 +1865,7 @@ class OcrEngine(private val context: Context) {
 
         val elapsed = System.currentTimeMillis() - startTime
         Log.d(TAG, "Streaming recognition for ${lineBoxes.size} lines took ${elapsed}ms")
+        InferLog.add("stream done lines=${lineBoxes.size} total=${elapsed}ms")
     }
 
     // ═════════════════════════════════════════════════════════════════════════

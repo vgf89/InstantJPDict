@@ -2,6 +2,7 @@ package com.holopengin.instantjpdict
 
 import android.content.Context
 import android.util.Log
+import com.holopengin.instantjpdict.util.InferLog
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -28,7 +29,9 @@ class RecNcnn private constructor(private val handle: Long, val targetW: Int) {
         }
         bb.asFloatBuffer().put(floats)
         bb.position(0)
-        val out = inferNative(handle, bb, w, h) ?: return null
+        val t0 = System.nanoTime()
+        val out = inferNative(handle, bb, w, h)
+        InferLog.add("rec infer w=$w seq=${w / 8} out=${out?.size ?: "null"} ${(System.nanoTime() - t0) / 1_000_000}ms")
         return out
     }
 
@@ -50,7 +53,10 @@ class RecNcnn private constructor(private val handle: Long, val targetW: Int) {
         }
         bb.asFloatBuffer().put(floats)
         bb.position(0)
-        return inferTopKNative(handle, bb, w, h)
+        val t0 = System.nanoTime()
+        val out = inferTopKNative(handle, bb, w, h)
+        InferLog.add("rec topk w=$w seq=${w / 8} out=${out?.size ?: "null"} expect=${w / 8 * 15 * 2} ${(System.nanoTime() - t0) / 1_000_000}ms")
+        return out
     }
 
     fun close() {
