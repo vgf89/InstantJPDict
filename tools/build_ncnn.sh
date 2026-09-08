@@ -4,6 +4,9 @@
 # Reproduces vgf89/ncnn @ 0c9625b0 from pinned upstream + vendored patches:
 #   1. Tencent/ncnn @ 6a1bf000 (upstream master tip, PR #6960)
 #   2. third_party/ncnn-patches/ncnn-int8-fixes.mbox (2 no-PR int8 fixes)
+#   3. third_party/ncnn-patches/gelu-fused-activation.mbox (fused GELU
+#      activation type 7 for int8 epilogues — required by rec_dyn.param's
+#      13x `9=7` conv layers; a tree without it mis-infers)
 #
 # Outputs:
 #   <out>/host/bin/{ncnn2table,ncnn2int8,ncnnoptimize}  (host quantization tools)
@@ -21,6 +24,10 @@ BASE=6a1bf000   # Tencent/ncnn base == vgf89/ncnn fork point
 UPSTREAM=https://github.com/Tencent/ncnn.git
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 MBOX="$HERE/third_party/ncnn-patches/ncnn-int8-fixes.mbox"
+# Fused GELU activation type 7 (tanh approx) for int8 epilogue fusion.
+# REQUIRED by rec_dyn.param's 13x `9=7` conv layers (#41); without it a
+# fresh tree silently mis-infers (dense garbage, blank collapse).
+MBOX_GELU="$HERE/third_party/ncnn-patches/gelu-fused-activation.mbox"
 
 OUT=""
 SKIP_HOST=0
@@ -35,6 +42,7 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$OUT" ] || { echo "--out required" >&2; exit 1; }
 [ -f "$MBOX" ] || { echo "missing $MBOX" >&2; exit 1; }
+[ -f "$MBOX_GELU" ] || { echo "missing $MBOX_GELU" >&2; exit 1; }
 
 SRC="$OUT/src"
 if [ ! -d "$SRC" ]; then
@@ -49,15 +57,19 @@ git -C "$SRC" config user.email "repro@instantjpdict.local"
 git -C "$SRC" config user.name "InstantJPDict repro"
 git -C "$SRC" apply --check "$MBOX"
 git -C "$SRC" am --quiet "$MBOX"
+git -C "$SRC" apply --check "$MBOX_GELU"
+git -C "$SRC" am --quiet "$MBOX_GELU"
 echo "tree: $(git -C "$SRC" log --oneline -1)"
 # am rewrites committer identity, so SHAs differ from the fork; check subjects instead.
 # (Compared as variables, not `git log | grep -q`: grep -q can SIGPIPE git
 # and trip `pipefail` nondeterministically.)
 EXPECT1="fix int8 1x1 conv on flattened 1D blobs (SE branches)"
 EXPECT2="fix ConvolutionDepthWise int8 load for scale terms 201/202"
-SUBJECTS=$(git -C "$SRC" log --format=%s -2)
+EXPECT3="fused GELU activation type 7 (tanh approx) for int8 epilogue fusion"
+SUBJECTS=$(git -C "$SRC" log --format=%s -3)
 echo "$SUBJECTS" | grep -qxF "$EXPECT1" \
   && echo "$SUBJECTS" | grep -qxF "$EXPECT2" \
+  && echo "$SUBJECTS" | grep -qxF "$EXPECT3" \
   && echo "patches applied (subjects verified)" \
   || { echo "ERROR: applied subjects do not match" >&2; exit 1; }
 

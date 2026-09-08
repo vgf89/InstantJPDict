@@ -13,8 +13,17 @@ The two no-PR int8 fixes that lived only in the local tree at
      misread pack groups as spatial width; mirror the float path's
      reshape-to-3D-and-recurse detour in x86/arm/base `forward_int8`.
 
-Rebuild the exact tree with `tools/build_ncnn.sh` (clone base, `am` the mbox,
+Rebuild the exact tree with `tools/build_ncnn.sh` (clone base, `am` the mboxes,
 verify subjects, build host `ncnn2table`/`ncnn2int8` + `arm64-v8a libncnn.a`
 with `NCNN_VULKAN=OFF`). Verified here: script output `src/` is byte-identical
 (`diff -r`) to the fork working tree. Compile leg not yet run on this machine
 (no cmake) — first full build happens with the nuke-and-pave run.
+
+## Fused GELU activation type 7 (required by rec models, #41)
+
+`gelu-fused-activation.mbox` adds int8-epilogue GELU (activation `9=7`,
+tanh approx). `rec_dyn.param` carries 13 `9=7` conv layers; a tree built
+without this mbox silently mis-infers them (dense garbage, blank collapse
+— diagnosed host-side via `synth/` ground truth, 2026-09). `det.param`
+uses plain `GELU … 0=1` (upstream fast mode) and needs no lib patch.
+`tools/build_ncnn.sh` applies both mboxes and verifies all three subjects.
