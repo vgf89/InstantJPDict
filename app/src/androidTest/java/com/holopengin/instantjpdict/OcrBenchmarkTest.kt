@@ -683,6 +683,16 @@ class OcrBenchmarkTest {
         assertTrue("engine ready", eng.isReady())
         val boxes = eng.detect(bmp)
         assertTrue("expected boxes", boxes.isNotEmpty())
+        // #48 geometric-trim invariant: no vertical box may leave detect()
+        // ruby-widened (~2x median column width) — the trim runs inside
+        // detect() so nothing downstream can re-expand to furigana size.
+        val vertW = boxes.filter { it.height() >= it.width() }.map { it.width() }.sorted()
+        if (vertW.size >= 2) {
+            val medW = vertW[vertW.size / 2]
+            val maxW = vertW.last()
+            Log.i(TAG, "rubyWidths medW=$medW maxW=$maxW n=${vertW.size}")
+            assertTrue("vertical box left ruby-widened: maxW=$maxW medW=$medW", maxW <= medW * 1.35f)
+        }
         val collected = mutableListOf<Pair<Int, LineResult>>()
         runBlocking {
             eng.recognizeStreaming(bmp, boxes) { pairs ->
@@ -709,6 +719,9 @@ class OcrBenchmarkTest {
         Log.i(TAG, "rubyBest dist=$d text='$best' truth='$truth'")
         assertTrue("ruby line misread: '$best' vs '$truth' (dist $d)", d <= 4)
         assertTrue("reported failure: じ read as わ-side kana in '$best'", 'じ' in best)
+        // #48 touching-ruby acceptance: the geometric right-side trim must
+        // recover the trailing 汗 that ruby あせ blanked.
+        assertTrue("trailing 汗 still lost to ruby in '$best'", '汗' in best)
     }
 
     @Test

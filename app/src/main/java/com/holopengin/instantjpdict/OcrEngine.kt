@@ -30,7 +30,7 @@ import kotlin.math.sqrt
 /** PP-OCRv6 [OcrEngine] — ncnn detect (DB, DET_MODEL_SIZE²) + dynamic-width rec (48×W) + CTC.
  *
  * Seams (single file by decision, #29): Detect §§ (detect + unclip + furigana +
- * merge/split/sort) → Rec batch/stream §§ (recognizePpocrBatch + recognizeStreaming,
+ * merge/split/ruby-trim/sort) → Rec batch/stream §§ (recognizePpocrBatch + recognizeStreaming,
  * completion-order select emit) → Stitch §§ (long-line horiz/vert chunk + anchor
  * stitch) → CTC + CharBox §§ (ctcDecode, computeCharBoxes, vertical glyphs) →
  * Tunables + init §§ (SharedPreferences, vocab). Stitch chunks run unsquished
@@ -76,6 +76,12 @@ class OcrEngine(private val context: Context) {
          * Widths-only pass over resolved centers (positions bit-identical to
          * legacy path); punct expand runs after as before. Test-flippable. */
         var BOX_UNIFORM_SIZE = true
+        /** Ruby-gutter trim for vertical lines (#48, default): detector boxes
+         * that swallowed the furigana strip (~2x normal column width) are cut
+         * back to the main column geometrically — crops, char boxes and overlay
+         * all derive from the trimmed box, so the ruby width never re-enters.
+         * Test-flippable for A/B walls. */
+        var RUBY_TRIM_VERTICAL = true
         /** Halfwidth test shared with the overlay renderer (#49): ASCII +
          * halfwidth katakana get 0.5em boxes and line-height-driven sizing. */
         internal fun isHalfWidth(ch: Char): Boolean {
@@ -493,11 +499,17 @@ class OcrEngine(private val context: Context) {
             } else box
         }
 
+        // 9b. Ruby-gutter trim (#48): furigana-widened vertical boxes are cut
+        // back to the main column HERE. Jobs, crops, char boxes, LineResult
+        // and overlay all derive from the returned boxes, so the ruby width
+        // can never re-enter downstream (no mask-then-keep-geometry).
+        val trimmed = if (RUBY_TRIM_VERTICAL) trimRubyGutterVertical(shrunk, bitmap) else shrunk
+
         // 10. Split overlapping horizontal boxes at overlap midpoint
-        val horizontals = shrunk.mapIndexedNotNull { i, b ->
+        val horizontals = trimmed.mapIndexedNotNull { i, b ->
             if (b.width() >= b.height()) i to b else null
         }
-        val splitBoxes = shrunk.toMutableList()
+        val splitBoxes = trimmed.toMutableList()
         for (i in horizontals.indices) {
             for (j in (i + 1) until horizontals.size) {
                 val ai = horizontals[i].first
@@ -656,6 +668,100 @@ class OcrEngine(private val context: Context) {
                 )
             })
         }
+    }
+
+    /** Ruby-gutter trim for vertical lines (#48): detector boxes that swallowed
+     * the furigana strip come out ~2x normal column width (measured 127px vs
+     * 61px median on ruby_ebook). The trim is GEOMETRIC — the right side of
+     * the box is cut off here in detect(), so jobs, crops, char boxes,
+     * LineResult and overlay all derive from the trimmed box and the ruby
+     * width can never re-enter. (Masking pixels while keeping the wide box
+     * keeps the bad geometry and its timestep crush — rejected per owner.)
+     *
+     * A vertical box is a candidate when wider than 1.35x the median vertical
+     * width with a removable strip >= 12px. The cut is image-evidence:
+     * per-column ink profile over the full box height (polarity + thresholds
+     * shared with snapping); the leftmost run of >= 3 near-empty (< 4%) columns
+     * inside [L+0.40W, L+0.80W] with ink following it is the main/ruby gutter —
+     * cut at its start. Touching ruby with no clean gutter but a thin spot
+     * (window minimum < 6%) falls back to half width ("remove the right
+     * half"); solid-wide boxes (headings) are left alone. */
+    private fun trimRubyGutterVertical(boxes: List<JpDictRect>, bitmap: Bitmap): List<JpDictRect> {
+        val vertW = boxes.filter { isVerticalBox(it) }.map { it.width() }.sorted()
+        if (vertW.size < 2) return boxes
+        val medW = vertW[vertW.size / 2]
+        if (medW <= 0) return boxes
+        return boxes.map { box ->
+            if (!isVerticalBox(box)) return@map box
+            val w = box.width()
+            if (w <= medW * 1.35f || w - medW < 12) return@map box
+            val cut = findRubyGutterCut(box, bitmap) ?: return@map box
+            if (cut <= box.left + 20 || cut >= box.right - 8) return@map box
+            if (cut - box.left < (w * 0.4f).roundToInt()) return@map box
+            Log.d(TAG, "detect: rubyTrim ${box.width()}x${box.height()}@${box.left},${box.top} → w=${cut - box.left} (medW=$medW)")
+            InferLog.add("rubyTrim w=$w→${cut - box.left} @${box.left},${box.top}")
+            JpDictRect(box.left, box.top, cut, box.bottom)
+        }
+    }
+
+    /** Cut x (global coords) for a ruby-widened vertical box, or null to keep.
+     * Gutter cut preferred; half-width fallback only on a thin spot. */
+    private fun findRubyGutterCut(box: JpDictRect, bitmap: Bitmap): Int? {
+        val x0 = box.left.coerceIn(0, bitmap.width - 1)
+        val x1 = box.right.coerceIn(1, bitmap.width)
+        val y0 = box.top.coerceIn(0, bitmap.height - 1)
+        val y1 = box.bottom.coerceIn(1, bitmap.height)
+        val bw = x1 - x0
+        val bh = y1 - y0
+        if (bw < 24 || bh < 64) return null
+        val px = IntArray(bw * bh)
+        try {
+            bitmap.getPixels(px, 0, bw, x0, y0, bw, bh)
+        } catch (_: Exception) {
+            return null
+        }
+        val lum = FloatArray(bw * bh) { i ->
+            (((px[i] shr 16) and 0xFF) + (((px[i] shr 8) and 0xFF)) + (px[i] and 0xFF)) / 3f
+        }
+        // Background polarity from border samples (shared with snapping).
+        val border = mutableListOf<Float>()
+        var bi = 0
+        while (bi < bw) {
+            border.add(lum[bi]); border.add(lum[(bh - 1) * bw + bi]); bi += 7
+        }
+        bi = 0
+        while (bi < bh) {
+            border.add(lum[bi * bw]); border.add(lum[bi * bw + bw - 1]); bi += 7
+        }
+        border.sort()
+        if (border.isEmpty()) return null
+        val bgLight = border[border.size / 2] > 128f
+        fun isInk(v: Float) = if (bgLight) v < 110f else v > 145f
+        // Per-column ink fraction over the full box height.
+        val frac = FloatArray(bw) { x ->
+            var m = 0
+            for (y in 0 until bh) if (isInk(lum[y * bw + x])) m++
+            m.toFloat() / bh.toFloat()
+        }
+        val lo = (bw * 0.40f).toInt().coerceIn(0, bw - 1)
+        val hi = (bw * 0.80f).toInt().coerceIn(lo + 1, bw)
+        // Leftmost clean gutter with ink following it (not trailing padding).
+        var x = lo
+        while (x + 2 < hi) {
+            if (frac[x] < 0.04f && frac[x + 1] < 0.04f && frac[x + 2] < 0.04f) {
+                var follows = false
+                for (k in x + 3 until minOf(x + 11, bw)) {
+                    if (frac[k] >= 0.04f) { follows = true; break }
+                }
+                if (follows) return x0 + x
+                x += 3
+            } else x++
+        }
+        // Touching-ruby fallback: thin spot → half width ("remove the right half").
+        var minF = Float.MAX_VALUE
+        for (k in lo until hi) minF = minOf(minF, frac[k])
+        if (minF < 0.06f) return x0 + bw / 2
+        return null
     }
 
     private fun sortDetectedBoxes(boxes: List<JpDictRect>): List<JpDictRect> {
