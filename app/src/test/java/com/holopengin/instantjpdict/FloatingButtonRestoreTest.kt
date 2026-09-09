@@ -33,4 +33,10 @@ class FloatingButtonRestoreTest {
         assertFalse(shouldReattachFloatingButton(
             viewExists = true, isAttachedToWindow = true, serviceDestroyed = true))
     }
+
+    @Test
+    fun screenOn_showsOnlyWhenUnlocked() {
+        assertTrue(shouldShowOnScreenOn(isKeyguardLocked = false))
+        assertFalse(shouldShowOnScreenOn(isKeyguardLocked = true))
+    }
 }

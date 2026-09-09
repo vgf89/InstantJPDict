@@ -95,6 +95,15 @@ class OcrAccessibilityService : AccessibilityService() {
                         floatingView?.visibility = View.GONE
                     }
                 }
+                Intent.ACTION_SCREEN_ON -> {
+                    // Double-tap power to camera turns the screen off and on
+                    // without locking: USER_PRESENT never follows, so the
+                    // button would stay GONE until the next unlock. (#60)
+                    // Stay hidden on the keyguard itself; USER_PRESENT shows it.
+                    ensureFloatingButton()
+                    val km = getSystemService(KEYGUARD_SERVICE) as android.app.KeyguardManager
+                    if (!km.isKeyguardLocked) floatingView?.visibility = View.VISIBLE
+                }
                 Intent.ACTION_USER_PRESENT -> {
                     ensureFloatingButton()
                     floatingView?.visibility = View.VISIBLE
@@ -129,6 +138,7 @@ class OcrAccessibilityService : AccessibilityService() {
 
         val filter = IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_SCREEN_ON)
             addAction(Intent.ACTION_USER_PRESENT)
             @Suppress("DEPRECATION")
             addAction(Intent.ACTION_CLOSE_SYSTEM_DIALOGS)

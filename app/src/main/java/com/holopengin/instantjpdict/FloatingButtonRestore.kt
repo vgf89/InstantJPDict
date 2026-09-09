@@ -19,3 +19,10 @@ internal fun shouldReattachFloatingButton(
     isAttachedToWindow: Boolean,
     serviceDestroyed: Boolean,
 ): Boolean = viewExists && !isAttachedToWindow && !serviceDestroyed
+
+/**
+ * SCREEN_ON visibility rule (refs #60): re-show the button when the screen
+ * comes back on an unlocked phone (power-double-tap camera gesture), but
+ * stay hidden on the keyguard — USER_PRESENT handles the unlock path.
+ */
+internal fun shouldShowOnScreenOn(isKeyguardLocked: Boolean): Boolean = !isKeyguardLocked
