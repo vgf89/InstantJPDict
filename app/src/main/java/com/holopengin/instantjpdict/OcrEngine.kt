@@ -89,6 +89,29 @@ class OcrEngine(private val context: Context) {
             val cp = ch.code
             return cp <= 0x7E || (cp in 0xFF61..0xFFDC)
         }
+
+        /** Consistent em from width-normalized pitches (#49): raw median
+         * center distance collapses in mixed JP/ASCII lines (ASCII sits
+         * ~0.5em apart, so an ASCII majority drags em to ~0.5x and kanji
+         * boxes shrink to half width, rendering tiny). Each gap is divided
+         * by the mean advance of its two chars in em units (0.5 halfwidth,
+         * 1.0 fullwidth), so every normalized gap estimates one full em
+         * regardless of script mix; em is the median of those. Pure
+         * function for JVM unit tests. Returns 0f when unestimable. */
+        internal fun estimateEm(text: String, centers: List<Float>): Float {
+            if (text.length != centers.size || centers.size < 2) return 0f
+            val norm = mutableListOf<Float>()
+            for (i in 0 until centers.size - 1) {
+                val gap = centers[i + 1] - centers[i]
+                if (gap <= 0f) continue
+                val units = ((if (isHalfWidth(text[i])) 0.5f else 1.0f) +
+                        (if (isHalfWidth(text[i + 1])) 0.5f else 1.0f)) / 2f
+                norm.add(gap / units)
+            }
+            if (norm.isEmpty()) return 0f
+            norm.sort()
+            return norm[norm.size / 2]
+        }
         const val DEF_DET_THRESH = 0.3f
         const val DEF_DET_UNCLIP = 1.50f
         const val DEF_X_OVERLAP = 0.40f
@@ -1741,9 +1764,11 @@ class OcrEngine(private val context: Context) {
 
     /** Consistent em sizing (#49): uniform WIDTHS around existing centers
      * (centers bit-identical to the resolve path — positioning untouched).
-     * em = median center-to-center distance (robust to dropped-char gaps and
-     * spaces); fullwidth = em, halfwidth = 0.5em; edges clamped legacy-style.
-     * Needs 2+ cells; otherwise returns input unchanged. */
+     * em = median WIDTH-NORMALIZED pitch ([estimateEm]: each gap divided by
+     * its chars' mean advance, so ASCII-majority mixed lines no longer drag
+     * em to ~0.5x and shrink kanji); fullwidth = em, halfwidth = 0.5em;
+     * edges clamped legacy-style. Needs 2+ cells; otherwise returns input
+     * unchanged. */
     private fun uniformCells(
         cells: List<Pair<Float, Float>>,
         text: String,
@@ -1751,9 +1776,7 @@ class OcrEngine(private val context: Context) {
     ): List<Pair<Float, Float>> {
         if (cells.size < 2 || text.length != cells.size) return cells
         val centers = cells.map { (a, b) -> (a + b) / 2f }
-        val gaps = centers.zipWithNext { a, b -> b - a }.filter { it > 0f }.sorted()
-        if (gaps.isEmpty()) return cells
-        val em = gaps[gaps.size / 2]
+        val em = estimateEm(text, centers)
         if (em <= 0f) return cells
         return List(cells.size) { i ->
             val w = (if (isHalfWidthEm(text[i])) 0.5f else 1.0f) * em
