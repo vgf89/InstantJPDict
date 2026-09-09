@@ -8,14 +8,31 @@ data class DeinflectionRule(
     val kanaIn: String,
     val kanaOut: String,
     val rulesIn: List<String>,
-    val rulesOut: List<String>
+    val rulesOut: List<String>,
+    /** Top-level deinflect.json group key (e.g. "past", "causative passive").
+     *  Not in the JSON payloads — filled in at load time from the map key. */
+    val reason: String = ""
 )
 
 data class DeinflectionResult(
     val term: String,
+    /** Human-readable reason labels, outermost step first (e.g. ["past"]). */
     val reasons: List<String>,
     val type: List<String>
 )
+
+/** Surface form plus the deinflection steps that produced a dictionary term.
+ *  Carried alongside lookup candidates so the popup can show the chain
+ *  (e.g. 食べた → 食べる · past) without extra deinflect runs. */
+data class DeinflectionChain(
+    val surface: String,
+    val steps: List<String>
+) {
+    /** Compact one-line rendering: "surface → term · step1 · step2". */
+    fun label(term: String): String =
+        if (steps.isEmpty()) "$surface → $term"
+        else "$surface → $term · " + steps.joinToString(" · ")
+}
 
 class Deinflector(reader: Reader) {
     private val rules: List<DeinflectionRule>
@@ -25,9 +42,9 @@ class Deinflector(reader: Reader) {
         try {
             val type = object : TypeToken<Map<String, List<DeinflectionRule>>>() {}.type
             val rawRules: Map<String, List<DeinflectionRule>> = Gson().fromJson(reader, type)
-            
-            rawRules.forEach { (_, ruleList) ->
-                loadedRules.addAll(ruleList)
+
+            rawRules.forEach { (reason, ruleList) ->
+                loadedRules.addAll(ruleList.map { it.copy(reason = reason) })
             }
         } catch (e: Exception) {
             // Simplified logging or pass a logger
@@ -50,14 +67,14 @@ class Deinflector(reader: Reader) {
             for (rule in rules) {
                 if (current.term.endsWith(rule.kanaIn)) {
                     val root = current.term.substring(0, current.term.length - rule.kanaIn.length) + rule.kanaOut
-                    
+
                     if (root.isNotEmpty()) {
                         val newResult = DeinflectionResult(
                             term = root,
-                            reasons = current.reasons + listOf(rule.kanaIn),
+                            reasons = current.reasons + rule.reason,
                             type = rule.rulesOut
                         )
-                        
+
                         if (!results.any { it.term == newResult.term }) {
                             results.add(newResult)
                         }

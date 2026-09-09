@@ -42,6 +42,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.isVisible
 import com.google.gson.Gson
 import com.holopengin.instantjpdict.util.Deinflector
+import com.holopengin.instantjpdict.util.DeinflectionChain
 import com.holopengin.instantjpdict.util.FuriganaAligner
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -986,6 +987,13 @@ class OcrAccessibilityService : AccessibilityService() {
                 orientation = LinearLayout.VERTICAL
                 setPadding(0, 10, 0, 40)
             }
+            // #62: one chain row per deinflected entry, above its reading
+            // groups. Direct matches (deinflection == null) render as before.
+            entry.deinflection?.let { chain ->
+                if (chain.steps.isNotEmpty()) {
+                    termSection.addView(createDeinflectionRow(chain, entry.term))
+                }
+            }
             // #65: entries reached via a JMdict redirect say where they came from.
             entry.redirectVia?.let { via ->
                 termSection.addView(TextView(this).apply {
@@ -995,7 +1003,6 @@ class OcrAccessibilityService : AccessibilityService() {
                     setPadding(0, 0, 0, 4)
                 })
             }
-            
             entry.readingGroups.forEach { group ->
                 renderHeadwordSection(termSection, group)
                 renderSensesForReading(termSection, group)
@@ -1018,6 +1025,23 @@ class OcrAccessibilityService : AccessibilityService() {
         container.addView(scrollView)
         if (cacheKey != null) {
             dictionaryViewCache[cacheKey] = scrollView
+        }
+    }
+
+    /** #62: compact deinflection chain row, e.g. "食べた → 食べる" + past chip.
+     *  Pure view construction (no Android-string resources) so the label
+     *  logic stays unit-testable via [DeinflectionChain.label]. */
+    private fun createDeinflectionRow(chain: DeinflectionChain, term: String): View {
+        return FlowLayout(this).apply {
+            setPadding(0, 5, 0, 5)
+            addView(TextView(this@OcrAccessibilityService).apply {
+                text = "${chain.surface} → $term"
+                setTextColor(Color.LTGRAY)
+                textSize = 12f
+                setPadding(0, 0, 12, 0)
+                includeFontPadding = false
+            })
+            chain.steps.forEach { step -> addView(createTagView(step)) }
         }
     }
 
