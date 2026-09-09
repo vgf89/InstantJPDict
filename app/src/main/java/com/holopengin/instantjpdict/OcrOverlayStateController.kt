@@ -2,6 +2,7 @@ package com.holopengin.instantjpdict
 
 import com.holopengin.instantjpdict.util.JapaneseUtil
 import com.holopengin.instantjpdict.util.Deinflector
+import com.holopengin.instantjpdict.util.DictionaryRedirects
 import com.holopengin.instantjpdict.data.DictionaryEntry
 import com.google.gson.Gson
 import uniffi.nav_graph_core.*
@@ -60,7 +61,10 @@ data class FormattedReadingGroup(
 
 data class FormattedEntry(
     val term: String,
-    val readingGroups: List<FormattedReadingGroup>
+    val readingGroups: List<FormattedReadingGroup>,
+    /** #65: set when this entry was reached by following a JMdict redirect
+     * from another headword (null = direct match). */
+    val redirectVia: String? = null
 )
 
 data class NeighborChar(
@@ -349,8 +353,43 @@ class OcrOverlayStateController {
         val (allTermsToSearch, candidatesByLength) = prepareSearchCandidates(followingText, deinf)
         val dbResults = provider.findByTexts(allTermsToSearch.toList())
         val (uniqueMatches, maxLen) = processResults(dbResults, candidatesByLength, allTermsToSearch, followingText)
-        
-        val formatted = formatDictionaryResults(uniqueMatches, g).toMutableList()
+
+        // ── Redirect pass (#65): JMdict pointer entries (variant spellings)
+        // carry only ?query= links and render as dead "⟶, X" text. Resolve
+        // them breadth-first (visited set + hop cap, so A→B→A cycles always
+        // terminate) and append the target entries after the direct matches.
+        val resolvedMatches = uniqueMatches.toMutableList()
+        val redirectVia = mutableMapOf<String, String>()
+        if (uniqueMatches.isNotEmpty()) {
+            val visited = uniqueMatches.map { it.first }.toMutableSet()
+            val queue = ArrayDeque<Pair<String, List<DictionaryEntry>>>()
+            uniqueMatches.forEach { queue.add(it) }
+            var hops = 0
+            while (queue.isNotEmpty() && hops < 3) {
+                repeat(queue.size) {
+                    val (viaTerm, entries) = queue.removeFirst()
+                    for (entry in entries) {
+                        for (target in DictionaryRedirects.extractTargets(entry.definitions)) {
+                            if (!visited.add(target)) continue
+                            val targetResults = provider.findByTexts(listOf(target))
+                            if (targetResults.isEmpty()) continue
+                            redirectVia[target] = viaTerm
+                            val distinct = targetResults.distinctBy { it.id }
+                            resolvedMatches.add(target to distinct)
+                            queue.add(target to distinct)
+                        }
+                    }
+                }
+                hops++
+            }
+        }
+
+        val formatted = formatDictionaryResults(resolvedMatches, g).toMutableList()
+        for (i in formatted.indices) {
+            redirectVia[formatted[i].term]?.let { via ->
+                formatted[i] = formatted[i].copy(redirectVia = via)
+            }
+        }
         currentWordLength = maxLen
 
         // ── Second pass: look up each individual kanji in the matched term ──
