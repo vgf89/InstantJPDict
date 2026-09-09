@@ -2,6 +2,7 @@ package com.holopengin.instantjpdict
 
 import com.holopengin.instantjpdict.util.JapaneseUtil
 import com.holopengin.instantjpdict.util.Deinflector
+import com.holopengin.instantjpdict.util.DeinflectionChain
 import com.holopengin.instantjpdict.data.DictionaryEntry
 import com.google.gson.Gson
 import uniffi.nav_graph_core.*
@@ -60,7 +61,26 @@ data class FormattedReadingGroup(
 
 data class FormattedEntry(
     val term: String,
-    val readingGroups: List<FormattedReadingGroup>
+    val readingGroups: List<FormattedReadingGroup>,
+    /** Non-null when this entry matched via deinflection; null for direct
+     *  surface matches (which render exactly as before). */
+    val deinflection: DeinflectionChain? = null
+)
+
+/** One lookup candidate: a dictionary-form term plus how it was reached.
+ *  [requiredTypes] is null for direct surface variants; [chain] is null
+ *  for direct matches and set for deinflected ones. */
+data class SearchCandidate(
+    val term: String,
+    val requiredTypes: List<String>?,
+    val chain: DeinflectionChain?
+)
+
+/** Dictionary entries for one matched term plus its deinflection chain. */
+data class TermMatch(
+    val term: String,
+    val entries: List<DictionaryEntry>,
+    val chain: DeinflectionChain? = null
 )
 
 data class NeighborChar(
@@ -370,7 +390,7 @@ class OcrOverlayStateController {
             val kanjiResults = provider.findByTexts(listOf(kanjiStr))
             val kanjiOnly = kanjiResults.filter { it.onyomi != null || it.kunyomi != null }
             if (kanjiOnly.isNotEmpty()) {
-                val formattedKanji = formatDictionaryResults(listOf(kanjiStr to kanjiOnly), g)
+                val formattedKanji = formatDictionaryResults(listOf(TermMatch(kanjiStr, kanjiOnly)), g)
                 appendKanji.addAll(formattedKanji)
             }
         }
@@ -537,9 +557,9 @@ class OcrOverlayStateController {
     fun prepareSearchCandidates(
         followingText: String,
         deinflector: Deinflector
-    ): Pair<Set<String>, List<Pair<Int, List<Pair<String, List<String>?>>>>> {
+    ): Pair<Set<String>, List<Pair<Int, List<SearchCandidate>>>> {
         val allTermsToSearch = mutableSetOf<String>()
-        val candidatesByLength = mutableListOf<Pair<Int, List<Pair<String, List<String>?>>>>()
+        val candidatesByLength = mutableListOf<Pair<Int, List<SearchCandidate>>>()
 
         for (len in followingText.length downTo 1) {
             val queryTextRaw = followingText.substring(0, len)
@@ -552,9 +572,14 @@ class OcrOverlayStateController {
             ).distinct()
 
             val deinflections = deinflector.deinflect(queryText)
-            val lengthCandidates = mutableListOf<Pair<String, List<String>?>>()
-            variants.forEach { lengthCandidates.add(it to null); allTermsToSearch.add(it) }
-            deinflections.forEach { if (it.term != queryText) { lengthCandidates.add(it.term to it.type); allTermsToSearch.add(it.term) } }
+            val lengthCandidates = mutableListOf<SearchCandidate>()
+            variants.forEach { lengthCandidates.add(SearchCandidate(it, null, null)); allTermsToSearch.add(it) }
+            deinflections.forEach {
+                if (it.term != queryText && it.reasons.isNotEmpty()) {
+                    lengthCandidates.add(SearchCandidate(it.term, it.type, DeinflectionChain(queryTextRaw, it.reasons)))
+                    allTermsToSearch.add(it.term)
+                }
+            }
             candidatesByLength.add(len to lengthCandidates)
         }
         return Pair(allTermsToSearch, candidatesByLength)
@@ -562,21 +587,21 @@ class OcrOverlayStateController {
 
     fun processResults(
         dbResults: List<DictionaryEntry>,
-        candidatesByLength: List<Pair<Int, List<Pair<String, List<String>?>>>>,
+        candidatesByLength: List<Pair<Int, List<SearchCandidate>>>,
         allTermsToSearch: Set<String>,
         followingText: String
-    ): Pair<List<Pair<String, List<DictionaryEntry>>>, Int> {
+    ): Pair<List<TermMatch>, Int> {
         val resultsByTerm = mutableMapOf<String, MutableList<DictionaryEntry>>()
         dbResults.forEach { entry ->
             if (entry.kanji in allTermsToSearch) resultsByTerm.getOrPut(entry.kanji) { mutableListOf() }.add(entry)
             if (entry.reading in allTermsToSearch) resultsByTerm.getOrPut(entry.reading) { mutableListOf() }.add(entry)
         }
 
-        val matches = mutableListOf<Pair<String, List<DictionaryEntry>>>()
+        val matches = mutableListOf<TermMatch>()
         var maxLen = 0
         for ((len, candidates) in candidatesByLength) {
             var found = false
-            for ((term, requiredTypes) in candidates) {
+            for ((term, requiredTypes, chain) in candidates) {
                 val termEntries = resultsByTerm[term] ?: continue
                 val filteredResults = if (requiredTypes == null) {
                     val queryText = JapaneseUtil.normalize(followingText.substring(0, len))
@@ -592,13 +617,13 @@ class OcrOverlayStateController {
                     }
                 }
                 if (filteredResults.isNotEmpty()) {
-                    matches.add(term to filteredResults.distinctBy { it.id })
+                    matches.add(TermMatch(term, filteredResults.distinctBy { it.id }, chain))
                     found = true
                 }
             }
             if (found && maxLen == 0) maxLen = len
         }
-        return matches.distinctBy { it.first } to maxLen
+        return matches.distinctBy { it.term } to maxLen
     }
 
     fun resolveGamepadAction(keyCode: Int, layoutSwap: Boolean): GamepadAction {
@@ -684,10 +709,10 @@ class OcrOverlayStateController {
     }
 
     fun formatDictionaryResults(
-        matches: List<Pair<String, List<DictionaryEntry>>>,
+        matches: List<TermMatch>,
         gson: Gson
     ): List<FormattedEntry> {
-        return matches.map { (term, entries) ->
+        return matches.map { (term, entries, chain) ->
             val readingGroups = entries.groupBy { it.reading }.map { (reading, readingEntries) ->
                 val isKanjiEntry = readingEntries.firstOrNull()?.let { it.onyomi != null || it.kunyomi != null } ?: false
                 val kanjiVariants = readingEntries.map { it.kanji }.distinct()
@@ -748,7 +773,7 @@ class OcrOverlayStateController {
 
                 FormattedReadingGroup(reading, headwords, senseGroups, isKanjiEntry)
             }
-            FormattedEntry(term, readingGroups)
+            FormattedEntry(term, readingGroups, chain)
         }
     }
 
