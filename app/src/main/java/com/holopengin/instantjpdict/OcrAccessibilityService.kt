@@ -1040,8 +1040,12 @@ class OcrAccessibilityService : AccessibilityService() {
             }
         } else {
             val flow = FlowLayout(this).apply { setPadding(0, 5, 0, 5) }
+            // #68: if any headword renders a ruby row, reserve the same ruby
+            // space for all of them so baselines align in the shared flow.
+            // All-ruby and no-ruby groups behave exactly as before.
+            val reserveRubySpace = group.headwords.any { hw -> hw.kanji != group.reading }
             group.headwords.forEachIndexed { i, hw ->
-                flow.addView(createRubyView(hw.kanji, group.reading))
+                flow.addView(createRubyView(hw.kanji, group.reading, reserveRubySpace = reserveRubySpace))
                 if (i < group.headwords.size - 1) {
                     flow.addView(TextView(this).apply { text = "、"; setTextColor(Color.GRAY); textSize = 24f; setPadding(5, 0, 5, 0) })
                 }
@@ -1406,9 +1410,14 @@ class OcrAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun createRubyView(term: String, reading: String, isMini: Boolean = false): View {
+    private fun createRubyView(term: String, reading: String, isMini: Boolean = false, reserveRubySpace: Boolean = false): View {
         if (term == reading) {
-            return createBaseTextView(term, isMini)
+            if (!reserveRubySpace) return createBaseTextView(term, isMini)
+            // #68: mixed group — reserve the same ruby row a furigana-bearing
+            // sibling has (empty, identical metrics) so baselines align.
+            // Widths are unchanged (stack width = base width either way), so
+            // FlowLayout line-wrapping is unaffected.
+            return createSpacerRubyView(term, isMini)
         }
         // Minimal furigana (#55): ruby only over kanji spans, okurigana as
         // plain base text. Falls back to full-reading ruby when unalignable.
@@ -1418,13 +1427,21 @@ class OcrAccessibilityService : AccessibilityService() {
         }
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
+            var firstRubyIndex = -1
             segments.forEach { seg ->
                 if (seg.ruby == null) {
                     addView(createBaseTextView(seg.base, isMini))
                 } else {
+                    if (firstRubyIndex == -1) firstRubyIndex = childCount
                     addView(createRubyStackView(seg.base, seg.ruby, isMini))
                 }
             }
+            // #68: a horizontal LinearLayout reports no baseline (-1) by
+            // default, which makes FlowLayout bottom-align it instead of
+            // baseline-aligning it with sibling ruby stacks. Point at the
+            // first ruby stack so the row shares one baseline. Measurement
+            // is untouched, so wrapping is identical.
+            if (firstRubyIndex != -1) baselineAlignedChildIndex = firstRubyIndex
         }
     }
 
@@ -1471,6 +1488,29 @@ class OcrAccessibilityService : AccessibilityService() {
                 includeFontPadding = false
             })
             addView(createBaseTextView(base, isMini).apply { gravity = Gravity.CENTER })
+            baselineAlignedChildIndex = 1
+        }
+    }
+
+    /** #68: spacer twin of [createRubyStackView] for ruby-less headwords in
+     * mixed groups. Identical config with a non-breaking-space (U+00A0) ruby
+     * row, so it measures exactly like a real stack (same height in both
+     * sizes) while rendering nothing above the base text. Widths match the
+     * plain base view, so FlowLayout wrapping is unaffected. */
+    private fun createSpacerRubyView(term: String, isMini: Boolean): View {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            isBaselineAligned = true
+
+            addView(TextView(this@OcrAccessibilityService).apply {
+                text = " "
+                setTextColor(Color.LTGRAY)
+                textSize = if (isMini) 9f else 13f
+                gravity = Gravity.CENTER
+                includeFontPadding = false
+            })
+            addView(createBaseTextView(term, isMini).apply { gravity = Gravity.CENTER })
             baselineAlignedChildIndex = 1
         }
     }
