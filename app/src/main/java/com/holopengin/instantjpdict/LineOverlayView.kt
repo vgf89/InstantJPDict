@@ -6,6 +6,7 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Rect
 import android.view.View
+import kotlin.math.roundToInt
 
 /**
  * Single View per Line that draws all glyphs directly on Canvas — replaces 3× Views per char
@@ -32,6 +33,26 @@ class LineOverlayView(
     private val hitRects = mutableListOf<android.graphics.Rect>()
     var highlightedIndices: Set<Int> = emptySet()
         private set
+    // Ink margin (#49): halfwidth ink legally overflows its 0.5em advance box
+    // (by design — sizing comes from line height), and edge chars would clip
+    // against the view bounds. The view is padded by [margin] on all sides;
+    // addLineToResults sizes/positions the LayoutParams with the same margin
+    // via [marginFor], so draw coords and hit rects just shift by [margin].
+    private var margin = marginFor(fixedSize)
+
+    companion object {
+        /** View padding per side, in units of fixedSize (#49). 0.30 covers
+         * the worst proportional-latin overflow (~0.17em/side for W/% at
+         * 0.90 textSize, plus bold-highlight headroom). */
+        const val INK_MARGIN_RATIO = 0.30f
+        /** Halfwidth glyph trim (#49): shared line-height textSize renders
+         * ASCII ~10% too large next to kanji on-device (eyeball-calibrated;
+         * nudge if the device font changes). Applied as a center-scale so
+         * centering is untouched — and it also shrinks edge overflow. */
+        const val ASCII_GLYPH_SCALE = 0.9f
+        fun marginFor(fixedSize: Int): Int =
+            (fixedSize * INK_MARGIN_RATIO).roundToInt().coerceAtLeast(1)
+    }
 
     init {
         // Vertical substitution lives ONLY here, never in backend text (#47):
@@ -49,6 +70,7 @@ class LineOverlayView(
         fixedSize = newFixedSize
         lineLeft = newLineLeft
         lineTop = newLineTop
+        margin = marginFor(fixedSize)
         paint.textSize = fixedSize * 0.90f
         if (line.isVertical) {
             paint.textLocale = java.util.Locale.JAPANESE
@@ -69,16 +91,17 @@ class LineOverlayView(
     private fun updateHitRects() {
         hitRects.clear()
         for (box in line.charBoxes) {
-            hitRects.add(android.graphics.Rect(box.left - lineLeft, box.top - lineTop, box.right - lineLeft, box.bottom - lineTop))
+            hitRects.add(android.graphics.Rect(box.left - lineLeft + margin, box.top - lineTop + margin, box.right - lineLeft + margin, box.bottom - lineTop + margin))
         }
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        // View is sized to line bounds (lineW/lineH), parent already positioned at lineLeft/top
+        // View is sized to line bounds plus ink margin on all sides (parent
+        // positions at lineLeft/top minus margin — see addLineToResults).
         val lineW = (line.charBoxes.maxOfOrNull { it.right } ?: 0) - (line.charBoxes.minOfOrNull { it.left } ?: 0)
         val lineH = (line.charBoxes.maxOfOrNull { it.bottom } ?: 0) - (line.charBoxes.minOfOrNull { it.top } ?: 0)
-        val w = if (lineW > 0) lineW else MeasureSpec.getSize(widthMeasureSpec)
-        val h = if (lineH > 0) lineH else MeasureSpec.getSize(heightMeasureSpec)
+        val w = if (lineW > 0) lineW + 2 * margin else MeasureSpec.getSize(widthMeasureSpec)
+        val h = if (lineH > 0) lineH + 2 * margin else MeasureSpec.getSize(heightMeasureSpec)
         setMeasuredDimension(w.coerceAtLeast(1), h.coerceAtLeast(1))
     }
 
@@ -96,8 +119,8 @@ class LineOverlayView(
 
             val boxW = box.width().coerceAtLeast(1)
             val boxH = box.height().coerceAtLeast(1)
-            val viewCenterX = (box.centerX() - lineLeft).toFloat()
-            val viewCenterY = (box.centerY() - lineTop).toFloat()
+            val viewCenterX = (box.centerX() - lineLeft + margin).toFloat()
+            val viewCenterY = (box.centerY() - lineTop + margin).toFloat()
 
             // Measure glyph at current paint size
             paint.getTextBounds(charStr, 0, charStr.length, bounds)
@@ -142,10 +165,14 @@ class LineOverlayView(
             // Keep typeface bold for highlighted
             paint.typeface = if (isHighlighted) android.graphics.Typeface.DEFAULT_BOLD else android.graphics.Typeface.DEFAULT
 
-            if (scale < 0.99f) {
+            // Halfwidth trim (#49): shared line-height textSize overshoots
+            // ASCII ~10% next to kanji — scale about the box center (centering
+            // untouched) on top of any box-fit shrink.
+            val drawScale = scale * (if (isHalf) ASCII_GLYPH_SCALE else 1f)
+            if (drawScale < 0.99f) {
                 canvas.save()
                 canvas.translate(viewCenterX, viewCenterY)
-                canvas.scale(scale, scale)
+                canvas.scale(drawScale, drawScale)
                 canvas.translate(-viewCenterX, -viewCenterY)
                 canvas.drawText(charStr, x, y, paint)
                 canvas.restore()

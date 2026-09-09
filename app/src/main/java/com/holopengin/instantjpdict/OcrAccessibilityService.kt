@@ -685,23 +685,26 @@ class OcrAccessibilityService : AccessibilityService() {
         val lineH = (lineBottom - lineTop).coerceAtLeast(1)
         val lineViewTag = "line_overlay_$lineIdx"
         var lineView = lineContainer.findViewWithTag<LineOverlayView>(lineViewTag)
+        // Ink margin (#49): the view pads itself by margin on all sides so
+        // overflowing halfwidth ink never clips at the view bounds.
+        val m = LineOverlayView.marginFor(fixedSize)
         if (lineView == null) {
             lineView = LineOverlayView(this, line, fixedSize, lineLeft, lineTop) { charIdx ->
                 performLookup(lineIdx, charIdx, rootLayout)
             }
             lineView.tag = lineViewTag
-            lineContainer.addView(lineView, FrameLayout.LayoutParams(lineW, lineH).apply {
-                leftMargin = lineLeft
-                topMargin = lineTop
+            lineContainer.addView(lineView, FrameLayout.LayoutParams(lineW + 2 * m, lineH + 2 * m).apply {
+                leftMargin = lineLeft - m
+                topMargin = lineTop - m
             })
         } else {
             lineView.updateLine(line, fixedSize, lineLeft, lineTop)
             // Update layout params if line bounds changed
             (lineView.layoutParams as? FrameLayout.LayoutParams)?.let { lp ->
-                lp.width = lineW
-                lp.height = lineH
-                lp.leftMargin = lineLeft
-                lp.topMargin = lineTop
+                lp.width = lineW + 2 * m
+                lp.height = lineH + 2 * m
+                lp.leftMargin = lineLeft - m
+                lp.topMargin = lineTop - m
                 lineView.layoutParams = lp
             }
         }
