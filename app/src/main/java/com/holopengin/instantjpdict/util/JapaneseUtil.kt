@@ -35,6 +35,16 @@ object JapaneseUtil {
         )
     }
 
+    /** Vertical-line `?` → `？` (#56): PP-OCR emits ASCII where JP text wants
+     * fullwidth. ASCII `?` has no `vert` alternate and mis-centers in the
+     * vertical em box; `？` centers. Horizontal lines keep `?`. Lookup-safe:
+     * [normalize] folds `？` back to `?`, so dictionary search is unaffected. */
+    fun verticalPunctuation(text: String): String =
+        text.replace('?', '？')
+
+    fun verticalPunctuationChar(c: Char): Char =
+        if (c == '?') '？' else c
+
     private fun convertWidth(text: String): String {
         val sb = StringBuilder()
         var i = 0

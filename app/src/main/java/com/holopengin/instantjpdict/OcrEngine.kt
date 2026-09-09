@@ -10,6 +10,7 @@ import android.util.Log
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import com.holopengin.instantjpdict.util.InferLog
+import com.holopengin.instantjpdict.util.JapaneseUtil
 import java.io.File
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -939,8 +940,29 @@ class OcrEngine(private val context: Context) {
                         snapPx = null
                     }
                 }
+                // Vertical `?` → `？` (#56): PP-OCR emits ASCII where JP wants
+                // fullwidth; ASCII has no `vert` alternate and mis-centers in
+                // the vertical em box. Normalizes BEFORE char boxes so `？`
+                // gets full-em metrics (lookup folds it back via
+                // JapaneseUtil.normalize, so dictionary search is unaffected).
+                // Covers single-pass and long-line stitch paths (both emit here).
+                val recText = if (job.isVertical) JapaneseUtil.verticalPunctuation(result.text) else result.text
+                val recAlts = if (job.isVertical) {
+                    result.alternatives.map { alts ->
+                        alts.map { (c, s) -> JapaneseUtil.verticalPunctuationChar(c) to s }.toMutableList()
+                    }
+                } else {
+                    result.alternatives.map { it.toMutableList() }
+                }
+                val recRaw = if (job.isVertical) {
+                    result.rawAlternatives.map { alts ->
+                        alts.map { (c, s) -> JapaneseUtil.verticalPunctuationChar(c) to s }
+                    }
+                } else {
+                    result.rawAlternatives.map { it.toList() }
+                }
                 val charBoxes = computeCharBoxes(
-                    result.text, result.charCols, result.seqLenTotal,
+                    recText, result.charCols, result.seqLenTotal,
                     job.bbox.left, job.bbox.top,
                     job.bbox.width(), job.bbox.height(),
                     job.isVertical,
@@ -949,15 +971,15 @@ class OcrEngine(private val context: Context) {
 
                 // Vertical lines keep horizontal chars end-to-end (#47): the
                 // overlay renderer applies the font's vert subs at draw time.
-                val finalText = result.text
-                val finalAlts = result.alternatives.map { it.toMutableList() }
+                val finalText = recText
+                val finalAlts = recAlts
 
                 val lineResult = LineResult(
                     text = finalText,
                     charBoxes = charBoxes,
                     alternatives = finalAlts,
                     isVertical = job.isVertical,
-                    rawAlternatives = result.rawAlternatives.map { it.toList() },
+                    rawAlternatives = recRaw,
                     seqLenTotal = result.seqLenTotal,
                     cropW = job.bbox.width(),
                     cropH = job.bbox.height(),
@@ -2138,16 +2160,31 @@ class OcrEngine(private val context: Context) {
             }
         }
 
+        // Vertical `?` → `？` (#56, safety net): the emit path normalizes, but
+        // cached raw alternatives may predate the fix — re-decode must not
+        // reintroduce ASCII `?` into vertical lines.
+        val decodedText = text.toString()
+        val vertText = if (oldLine.isVertical) JapaneseUtil.verticalPunctuation(decodedText) else decodedText
+        if (oldLine.isVertical) {
+            for (alts in newAlts) {
+                for (i in alts.indices) {
+                    val (c, s) = alts[i]
+                    val n = JapaneseUtil.verticalPunctuationChar(c)
+                    if (n != c) alts[i] = n to s
+                }
+            }
+        }
+
         val newCharBoxes = if (oldLine.cropW > 0 && oldLine.cropH > 0) {
             computeCharBoxes(
-                text.toString(), charCols.toFloatArray(), oldLine.seqLenTotal,
+                vertText, charCols.toFloatArray(), oldLine.seqLenTotal,
                 oldLine.cropX, oldLine.cropY, oldLine.cropW, oldLine.cropH,
                 oldLine.isVertical,
             )
         } else oldLine.charBoxes
 
         return LineResult(
-            text = text.toString(),
+            text = vertText,
             charBoxes = newCharBoxes,
             alternatives = newAlts,
             isVertical = oldLine.isVertical,
