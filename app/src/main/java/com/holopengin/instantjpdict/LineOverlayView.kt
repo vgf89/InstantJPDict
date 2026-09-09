@@ -183,37 +183,83 @@ class LineOverlayView(
     }
 
     private var downHitIdx: Int = -1
+    private val tap = TapDisambiguator(0f)
+
+    private fun slopPx(): Float {
+        var slop = tap.slopPx
+        if (slop <= 0f) {
+            slop = android.view.ViewConfiguration.get(context).scaledTouchSlop.toFloat()
+            tap.slopPx = slop
+        }
+        return slop
+    }
 
     override fun onTouchEvent(event: android.view.MotionEvent): Boolean {
-        when (event.action) {
+        when (event.actionMasked) {
             android.view.MotionEvent.ACTION_DOWN -> {
+                slopPx()
                 val x = event.x.toInt()
                 val y = event.y.toInt()
                 for (i in hitRects.indices) {
                     if (hitRects[i].contains(x, y)) {
                         downHitIdx = i
-                        // Claim touch so parent drag doesn't start
-                        parent?.requestDisallowInterceptTouchEvent(true)
+                        tap.onDown(event.x, event.y)
+                        // Deliberately NOT calling
+                        // requestDisallowInterceptTouchEvent(true) here (#61):
+                        // claiming the stream on DOWN starves the root
+                        // layout's pan/pinch handling for touches that start
+                        // on a character. The tap is only claimed on UP if
+                        // the finger stayed within touch slop; otherwise the
+                        // parent intercepts (child gets CANCEL) and gestures
+                        // proceed. Tap fires synchronously on UP — no added
+                        // latency vs before.
                         return true
                     }
                 }
                 downHitIdx = -1
+                tap.cancel()
                 return false
+            }
+            android.view.MotionEvent.ACTION_POINTER_DOWN -> {
+                // Second finger = pinch: abandon the tap candidate and let
+                // the parent's ScaleGestureDetector own the stream.
+                downHitIdx = -1
+                tap.cancel()
+                parent?.requestDisallowInterceptTouchEvent(false)
+                return false
+            }
+            android.view.MotionEvent.ACTION_MOVE -> {
+                if (downHitIdx != -1) {
+                    if (tap.shouldCancelOnMove(event.x, event.y)) {
+                        // Drag: abandon the tap, explicitly allow the parent
+                        // to intercept so pan takes over.
+                        downHitIdx = -1
+                        tap.cancel()
+                        parent?.requestDisallowInterceptTouchEvent(false)
+                        return false
+                    }
+                    // Within slop: keep consuming so the stream stays alive,
+                    // while still allowing the parent to intercept.
+                    return true
+                }
             }
             android.view.MotionEvent.ACTION_UP -> {
                 if (downHitIdx != -1) {
-                    val x = event.x.toInt()
-                    val y = event.y.toInt()
-                    // Only trigger if still on same char (allow small move)
-                    if (hitRects[downHitIdx].contains(x, y)) {
-                        onCharClick(downHitIdx)
-                    }
+                    val idx = downHitIdx
                     downHitIdx = -1
+                    val stillTap = idx in hitRects.indices &&
+                        tap.isTapAtUp(event.x, event.y) &&
+                        hitRects[idx].contains(event.x.toInt(), event.y.toInt())
+                    tap.cancel()
+                    if (stillTap) {
+                        onCharClick(idx)
+                    }
                     return true
                 }
             }
             android.view.MotionEvent.ACTION_CANCEL -> {
                 downHitIdx = -1
+                tap.cancel()
             }
         }
         return super.onTouchEvent(event)
