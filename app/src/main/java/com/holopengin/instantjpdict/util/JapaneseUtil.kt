@@ -35,15 +35,26 @@ object JapaneseUtil {
         )
     }
 
-    /** Vertical-line `?` → `？` (#56): PP-OCR emits ASCII where JP text wants
-     * fullwidth. ASCII `?` has no `vert` alternate and mis-centers in the
-     * vertical em box; `？` centers. Horizontal lines keep `?`. Lookup-safe:
-     * [normalize] folds `？` back to `?`, so dictionary search is unaffected. */
-    fun verticalPunctuation(text: String): String =
-        text.replace('?', '？')
+    /** Vertical-line punctuation (#56, #63): PP-OCR emits ASCII `?` where JP
+     * text wants fullwidth `？`, and horizontal `…`/`‥` where vertical text
+     * wants the vertical presentation forms `︙`/`︰`. ASCII `?` and `…` have
+     * no `vert` alternate and mis-center in the vertical em box; `？`/`︙`/`︰`
+     * center. Horizontal lines keep the originals. Lookup-safe: [normalize]
+     * folds `？` back to `?` and `︙`/`︰` back to `…`/`‥`, so dictionary
+     * search is unaffected. ASCII period runs (`...`) are deliberately left
+     * untouched — an N:1 fold would break char-box/alternative alignment. */
+    fun verticalPunctuation(text: String): String {
+        val sb = StringBuilder(text.length)
+        for (c in text) sb.append(verticalPunctuationChar(c))
+        return sb.toString()
+    }
 
-    fun verticalPunctuationChar(c: Char): Char =
-        if (c == '?') '？' else c
+    fun verticalPunctuationChar(c: Char): Char = when (c) {
+        '?' -> '？'
+        '…' -> '︙' // U+2026 → U+FE19 vertical ellipsis (#63)
+        '‥' -> '︰' // U+2035 → U+FE30 vertical two-dot leader (#63)
+        else -> c
+    }
 
     private fun convertWidth(text: String): String {
         val sb = StringBuilder()
@@ -67,6 +78,18 @@ object JapaneseUtil {
                 }
                 c in '\uFF01'..'\uFF5E' -> { // Full-width to standard
                     sb.append((c.code - 0xFEE0).toChar())
+                    i++
+                }
+                // Vertical presentation forms (#63) fold back to the
+                // horizontal forms the recognizer emits, so lookup of a
+                // vertical line matches dictionary text. Outside the
+                // fullwidth-ASCII range, so they need explicit cases.
+                c == '︙' -> { // U+FE19 → U+2026
+                    sb.append('…')
+                    i++
+                }
+                c == '︰' -> { // U+FE30 → U+2035
+                    sb.append('‥')
                     i++
                 }
                 c == '\u3000' -> { // Ideographic space

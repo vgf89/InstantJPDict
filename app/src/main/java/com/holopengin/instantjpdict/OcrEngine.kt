@@ -963,11 +963,13 @@ class OcrEngine(private val context: Context) {
                         snapPx = null
                     }
                 }
-                // Vertical `?` → `？` (#56): PP-OCR emits ASCII where JP wants
-                // fullwidth; ASCII has no `vert` alternate and mis-centers in
-                // the vertical em box. Normalizes BEFORE char boxes so `？`
-                // gets full-em metrics (lookup folds it back via
-                // JapaneseUtil.normalize, so dictionary search is unaffected).
+                // Vertical punctuation (#56, #63): PP-OCR emits ASCII `?` where
+                // JP wants fullwidth `？`, and horizontal `…`/`‥` where
+                // vertical text wants `︙`/`︰`. All three lack a `vert`
+                // alternate and mis-center in the vertical em box. Normalizes
+                // BEFORE char boxes so the substitutes get full-em metrics
+                // (lookup folds them back via JapaneseUtil.normalize, so
+                // dictionary search is unaffected).
                 // Covers single-pass and long-line stitch paths (both emit here).
                 val recText = if (job.isVertical) JapaneseUtil.verticalPunctuation(result.text) else result.text
                 val recAlts = if (job.isVertical) {
@@ -1806,7 +1808,7 @@ class OcrEngine(private val context: Context) {
      * behavior surface). The renderer centers ink itself. */
     private fun isSnapSkipped(ch: Char): Boolean {
         if (ch in "ぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮヵヶ") return true
-        return ch in "、。．，,．「」『』（）〔〕［］｛｝〈〉《》【】〘〙〚〛'\"\"‘’“”()[]{}-+*/<>＜＞＝…‥：；"
+        return ch in "、。．，,．「」『』（）〔〕［］｛｝〈〉《》【】〘〙〚〛'\"\"‘’“”()[]{}-+*/<>＜＞＝…‥︙︰：；"
     }
 
     /** Idea 4 (#49 positioning): snap legacy box centers to image-ink
@@ -2183,9 +2185,10 @@ class OcrEngine(private val context: Context) {
             }
         }
 
-        // Vertical `?` → `？` (#56, safety net): the emit path normalizes, but
-        // cached raw alternatives may predate the fix — re-decode must not
-        // reintroduce ASCII `?` into vertical lines.
+        // Vertical punctuation (#56, #63, safety net): the emit path
+        // normalizes, but cached raw alternatives may predate the fix —
+        // re-decode must not reintroduce ASCII `?` or horizontal `…`/`‥`
+        // into vertical lines.
         val decodedText = text.toString()
         val vertText = if (oldLine.isVertical) JapaneseUtil.verticalPunctuation(decodedText) else decodedText
         if (oldLine.isVertical) {
@@ -2230,5 +2233,7 @@ class OcrEngine(private val context: Context) {
 
 // Horizontal → vertical glyph equivalents (most CJK brackets are already upright
 // in the font; only chōonpu and ASCII-ish dashes need remapping).
+// Ellipses need no entry here: `…`/`‥` → `︙`/`︰` is handled vertical-only in
+// JapaneseUtil.verticalPunctuation at emit time (#63).
 
 
