@@ -985,7 +985,7 @@ class OcrAccessibilityService : AccessibilityService() {
         matches.forEach { entry ->
             val termSection = LinearLayout(this).apply { 
                 orientation = LinearLayout.VERTICAL
-                setPadding(0, 10, 0, 40)
+                setPadding(0, 6, 0, 40)
             }
             // #62: one chain row per deinflected entry, above its reading
             // groups. Direct matches (deinflection == null) render as before.
@@ -1000,7 +1000,7 @@ class OcrAccessibilityService : AccessibilityService() {
                     text = "⟶ via $via"
                     setTextColor(Color.GRAY)
                     textSize = 14f
-                    setPadding(0, 0, 0, 4)
+                    setPadding(0, 0, 0, 2)
                 })
             }
             entry.readingGroups.forEach { group ->
@@ -1033,7 +1033,7 @@ class OcrAccessibilityService : AccessibilityService() {
      *  logic stays unit-testable via [DeinflectionChain.label]. */
     private fun createDeinflectionRow(chain: DeinflectionChain, term: String): View {
         return FlowLayout(this).apply {
-            setPadding(0, 5, 0, 5)
+            setPadding(0, 2, 0, 2)
             addView(TextView(this@OcrAccessibilityService).apply {
                 text = "${chain.surface} → $term"
                 setTextColor(Color.LTGRAY)
@@ -1048,7 +1048,7 @@ class OcrAccessibilityService : AccessibilityService() {
     private fun renderHeadwordSection(container: LinearLayout, group: FormattedReadingGroup) {
         val headwordList = LinearLayout(this).apply { 
             orientation = LinearLayout.VERTICAL
-            setPadding(0, 0, 0, 10)
+            setPadding(0, 0, 0, 4)
         }
 
         if (group.isKanjiEntry) {
@@ -1056,7 +1056,7 @@ class OcrAccessibilityService : AccessibilityService() {
                 val kanjiHeader = LinearLayout(this).apply {
                     orientation = LinearLayout.HORIZONTAL
                     gravity = Gravity.CENTER_VERTICAL
-                    setPadding(0, 5, 0, 5)
+                    setPadding(0, 2, 0, 2)
                 }
                 kanjiHeader.addView(TextView(this).apply {
                     text = hw.kanji
@@ -1072,7 +1072,7 @@ class OcrAccessibilityService : AccessibilityService() {
                 headwordList.addView(kanjiHeader)
             }
         } else {
-            val flow = FlowLayout(this).apply { setPadding(0, 5, 0, 5) }
+            val flow = FlowLayout(this).apply { setPadding(0, 2, 0, 2) }
             // #68: if any headword renders a ruby row, reserve the same ruby
             // space for all of them so baselines align in the shared flow.
             // All-ruby and no-ruby groups behave exactly as before.
