@@ -987,15 +987,6 @@ class OcrAccessibilityService : AccessibilityService() {
                 orientation = LinearLayout.VERTICAL
                 setPadding(0, 4, 0, 40)
             }
-            // #65: entries reached via a JMdict redirect say where they came from.
-            entry.redirectVia?.let { via ->
-                termSection.addView(TextView(this).apply {
-                    text = "⟶ via $via"
-                    setTextColor(Color.GRAY)
-                    textSize = 14f
-                    setPadding(0, 0, 0, 0)
-                })
-            }
             entry.readingGroups.forEach { group ->
                 renderHeadwordSection(termSection, group)
             }

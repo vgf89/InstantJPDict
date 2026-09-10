@@ -63,11 +63,9 @@ data class FormattedReadingGroup(
 data class FormattedEntry(
     val term: String,
     val readingGroups: List<FormattedReadingGroup>,
-    /** #65: set when this entry was reached by following a JMdict redirect
-     * from another headword (null = direct match). */
-    val redirectVia: String? = null,
-    /** Non-null when this entry matched via deinflection; null for direct
-     *  surface matches (which render exactly as before). */
+    /** Non-null when this entry matched via deinflection (or a JMdict
+     * redirect, folded in as a "redirect" chain step, #65); null for direct
+     * surface matches (which render exactly as before). */
     val deinflection: DeinflectionChain? = null
 )
 
@@ -407,7 +405,15 @@ class OcrOverlayStateController {
         val formatted = formatDictionaryResults(resolvedMatches, g).toMutableList()
         for (i in formatted.indices) {
             redirectVia[formatted[i].term]?.let { via ->
-                formatted[i] = formatted[i].copy(redirectVia = via)
+                // The redirect hop joins the deinflection chain ("via → term
+                // · redirect") instead of a separate caption. Redirect targets
+                // never carry a chain of their own (real entries with glosses
+                // never redirect), but guard anyway.
+                if (formatted[i].deinflection == null) {
+                    formatted[i] = formatted[i].copy(
+                        deinflection = DeinflectionChain(surface = via, steps = listOf("redirect"))
+                    )
+                }
             }
         }
         currentWordLength = maxLen
