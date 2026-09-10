@@ -375,9 +375,12 @@ class OcrOverlayStateController {
         // ── Redirect pass (#65): JMdict pointer entries (variant spellings)
         // carry only ?query= links and render as dead "⟶, X" text. Resolve
         // them breadth-first (visited set + hop cap, so A→B→A cycles always
-        // terminate) and append the target entries after the direct matches.
-        val resolvedMatches = uniqueMatches.toMutableList()
+        // terminate), then splice each target directly below its source entry
+        // (depth-first) so a redirect reads as pointer → target instead of
+        // stranding the target at the end of the popup.
         val redirectVia = mutableMapOf<String, String>()
+        val resolvedByTerm = mutableMapOf<String, TermMatch>()
+        val childrenOf = mutableMapOf<String, MutableList<String>>()
         if (uniqueMatches.isNotEmpty()) {
             val visited = uniqueMatches.map { it.term }.toMutableSet()
             val queue = ArrayDeque<TermMatch>()
@@ -393,7 +396,8 @@ class OcrOverlayStateController {
                             if (targetResults.isEmpty()) continue
                             redirectVia[target] = match.term
                             val resolved = TermMatch(target, targetResults.distinctBy { it.id })
-                            resolvedMatches.add(resolved)
+                            resolvedByTerm[target] = resolved
+                            childrenOf.getOrPut(match.term) { mutableListOf() }.add(target)
                             queue.add(resolved)
                         }
                     }
@@ -401,6 +405,14 @@ class OcrOverlayStateController {
                 hops++
             }
         }
+        val resolvedMatches = mutableListOf<TermMatch>()
+        fun emit(match: TermMatch) {
+            resolvedMatches.add(match)
+            childrenOf[match.term]?.forEach { child ->
+                resolvedByTerm[child]?.let { emit(it) }
+            }
+        }
+        uniqueMatches.forEach { emit(it) }
 
         val formatted = formatDictionaryResults(resolvedMatches, g).toMutableList()
         for (i in formatted.indices) {
