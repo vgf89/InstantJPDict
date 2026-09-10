@@ -335,6 +335,13 @@ class OcrAccessibilityService : AccessibilityService() {
         var initialTouchY = 0f
         var isScaling = false
         var hasPanned = false
+        // #59: set by onDoubleTap; consumes the double-tap's trailing UP so
+        // it can't also schedule a deferred tap-click (dismiss).
+        var suppressNextTapClick = false
+        // Assigned once the gesture detectors below exist; onInterceptTouchEvent
+        // feeds every touch here (it sees char taps too, unlike the root touch
+        // listener, which only gets streams no child consumed).
+        var onInterceptTouchForGestures: ((MotionEvent) -> Unit)? = null
 
         val rootLayout = object : FrameLayout(this) {
             private fun isTouchOnView(tag: String, ev: MotionEvent): Boolean {
@@ -353,6 +360,10 @@ class OcrAccessibilityService : AccessibilityService() {
             }
 
             override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
+                // #59: feed double-tap detection first — intercept sees every
+                // touch, including char taps consumed by LineOverlayView
+                // children that never reach the root touch listener.
+                onInterceptTouchForGestures?.invoke(ev)
                 if (listOf("correction_ui_root", "manual_input_blocker", "close_button").any { isTouchOnView(it, ev) }) return false
                 updateFocusState(ev)
                 if (ev.actionMasked == MotionEvent.ACTION_MOVE) {
@@ -417,6 +428,43 @@ class OcrAccessibilityService : AccessibilityService() {
                 }
             })
 
+            // #59: empty-area single-tap action (dismiss etc. via the click
+            // listener) deferred past the double-tap window, so the first tap
+            // of a double-tap doesn't dismiss before the zoom can fire.
+            // Char taps are unaffected — LineOverlayView fires them
+            // synchronously on UP with zero added latency.
+            val deferredClick = Runnable {
+                if (screenshotOverlay == null) return@Runnable
+                rootLayout.performClick()
+            }
+
+            val tapDetector = android.view.GestureDetector(this@OcrAccessibilityService, object : android.view.GestureDetector.SimpleOnGestureListener() {
+                override fun onDoubleTap(e: MotionEvent): Boolean {
+                    // Never hijack taps on interactive chrome.
+                    val onChrome = listOf("correction_ui_root", "manual_input_blocker", "close_button").any { tag ->
+                        rootLayout.findViewWithTag<View>(tag)?.let { v ->
+                            v.isVisible && Rect().also { r -> v.getGlobalVisibleRect(r) }.contains(e.rawX.toInt(), e.rawY.toInt())
+                        } == true
+                    }
+                    if (onChrome) return false
+                    rootLayout.removeCallbacks(deferredClick)
+                    suppressNextTapClick = true
+                    val next = DoubleTapZoom.toggle(
+                        controller.currentScale, controller.currentTransX, controller.currentTransY,
+                        e.x, e.y
+                    )
+                    controller.currentScale = next.scale
+                    controller.currentTransX = next.transX
+                    controller.currentTransY = next.transY
+                    contentContainer.scaleX = next.scale
+                    contentContainer.scaleY = next.scale
+                    contentContainer.translationX = next.transX
+                    contentContainer.translationY = next.transY
+                    return true
+                }
+            })
+            onInterceptTouchForGestures = { tapDetector.onTouchEvent(it) }
+
             rootLayout.setOnTouchListener { v, event ->
                 val (focusX, focusY) = event.getFocusCoords()
 
@@ -425,6 +473,10 @@ class OcrAccessibilityService : AccessibilityService() {
                         initialTouchX = focusX; initialTouchY = focusY
                         lastFocusX = focusX; lastFocusY = focusY
                         isScaling = false; hasPanned = false
+                        // A fresh stream supersedes any tap-click deferred by
+                        // a previous tap (double-tap's onDoubleTap already
+                        // removed it; this covers tap-then-pinch/pan).
+                        v.removeCallbacks(deferredClick)
                     }
                     MotionEvent.ACTION_POINTER_DOWN -> {
                         isScaling = true; lastFocusX = focusX; lastFocusY = focusY
@@ -455,7 +507,12 @@ class OcrAccessibilityService : AccessibilityService() {
                 gestureDetector.onTouchEvent(event)
                 
                 if (event.actionMasked == MotionEvent.ACTION_UP && !hasPanned && !isScaling) {
-                    if (abs(focusX - initialTouchX) < 10 && abs(focusY - initialTouchY) < 10) v.performClick()
+                    if (suppressNextTapClick) {
+                        suppressNextTapClick = false
+                    } else if (abs(focusX - initialTouchX) < 10 && abs(focusY - initialTouchY) < 10) {
+                        v.removeCallbacks(deferredClick)
+                        v.postDelayed(deferredClick, android.view.ViewConfiguration.getDoubleTapTimeout().toLong())
+                    }
                 }
                 true
             }
