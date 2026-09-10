@@ -329,6 +329,11 @@ class OcrAccessibilityService : AccessibilityService() {
             layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
         }
 
+        // #64: status-strip metrics shared by the scrim fade, the display
+        // bitmap fade and the swipe-dismiss zone. All display-only: OCR box
+        // coordinates are never shifted, so hit-testing cannot desync.
+        val statusStripPx = statusBarHeightPx()
+
         var lastFocusX = 0f
         var lastFocusY = 0f
         var initialTouchX = 0f
@@ -372,7 +377,10 @@ class OcrAccessibilityService : AccessibilityService() {
                 return super.onInterceptTouchEvent(ev)
             }
         }.apply {
-            setBackgroundColor(android.graphics.Color.argb(140, 0, 0, 0))
+            // #64: flat scrim replaced by StatusStripScrimView (bottom-most
+            // child, added below) so the status strip can stay see-through;
+            // the root itself is transparent.
+            setBackgroundColor(android.graphics.Color.TRANSPARENT)
             systemUiVisibility = View.SYSTEM_UI_FLAG_LAYOUT_STABLE or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
             setOnClickListener {
                 if (findViewWithTag<View>("manual_input_blocker") != null) { closeManualInput(this); return@setOnClickListener }
@@ -393,6 +401,16 @@ class OcrAccessibilityService : AccessibilityService() {
             }
         }
 
+            // Bottom-most child: scrim with a see-through status strip (#64).
+            // Never intercepts touches; pan/zoom reveals show this scrim,
+            // exactly like the old flat root background.
+            val scrimView = StatusStripScrimView(this).apply {
+                tag = "backdrop_scrim"
+                stripHeightPx = statusStripPx
+                mode = OverlayBackdrop.STATUS_STRIP_MODE
+            }
+            rootLayout.addView(scrimView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+
             // Viewport container to support Pan & Zoom for image AND results
             val contentContainer = FrameLayout(this).apply {
                 tag = "content_container"
@@ -401,9 +419,13 @@ class OcrAccessibilityService : AccessibilityService() {
             }
             rootLayout.addView(contentContainer, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             
+            // #64: OCR reads the pristine `bitmap`; the user sees a display
+            // copy with the strip treatment baked in, at SCREENSHOT_ALPHA.
+            // Same dimensions and position as before — box mapping untouched.
             val imageView = android.widget.ImageView(this).apply {
-                setImageBitmap(bitmap)
+                setImageBitmap(createOverlayDisplayBitmap(bitmap, statusStripPx))
                 scaleType = android.widget.ImageView.ScaleType.FIT_XY
+                alpha = OverlayBackdrop.SCREENSHOT_ALPHA
             }
             contentContainer.addView(imageView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
 
@@ -485,7 +507,12 @@ class OcrAccessibilityService : AccessibilityService() {
                         val dx = focusX - lastFocusX
                         val dy = focusY - lastFocusY
                         
-                        if (initialTouchY < 100 && focusY - initialTouchY > 50 && !isScaling && !hasPanned) {
+                        // #64: dismiss swipes must start inside the visible
+                        // status strip (shade-pull affordance); drags/pans
+                        // starting below it can never dismiss. Replaces the
+                        // old magic 100px zone that overlapped the strip.
+                        if (OverlayBackdrop.swipeDismissStartsInStrip(initialTouchY, statusStripPx) &&
+                            focusY - initialTouchY > OverlayBackdrop.SWIPE_DISMISS_MIN_TRAVEL_PX && !isScaling && !hasPanned) {
                             hideScreenshotOverlay(); return@setOnTouchListener true
                         }
 
@@ -1968,6 +1995,49 @@ class OcrAccessibilityService : AccessibilityService() {
                 start()
             }
         }
+    }
+
+    /**
+     * Runtime status-bar height backing the #64 strip (scrim fade, display
+     * bitmap fade, swipe-dismiss zone). Framework dimen when present, else
+     * [OverlayBackdrop.STATUS_BAR_HEIGHT_FALLBACK_DP].
+     */
+    private fun statusBarHeightPx(): Int {
+        val resId = resources.getIdentifier("status_bar_height", "dimen", "android")
+        if (resId > 0) {
+            try {
+                return resources.getDimensionPixelSize(resId)
+            } catch (e: Exception) {
+                Log.w("OcrAccessibilityService", "status_bar_height lookup failed, using fallback", e)
+            }
+        }
+        return (OverlayBackdrop.STATUS_BAR_HEIGHT_FALLBACK_DP * resources.displayMetrics.density).roundToInt()
+    }
+
+    /**
+     * Display copy of the screenshot for the overlay ImageView (#64).
+     * SOLID (or no strip) returns [src] itself; otherwise a mutable copy
+     * whose top [stripPx] rows are faded per [OverlayBackdrop.stripAlphaAt].
+     * Dimensions and position are unchanged, and OCR always reads the
+     * pristine [src] — so box coordinates and hit-testing are unaffected.
+     */
+    private fun createOverlayDisplayBitmap(src: Bitmap, stripPx: Int): Bitmap {
+        if (OverlayBackdrop.STATUS_STRIP_MODE == StatusStripMode.SOLID || stripPx <= 0) return src
+        if (src.isRecycled) return src
+        val out = src.copy(Bitmap.Config.ARGB_8888, true) ?: return src
+        val rows = stripPx.coerceAtMost(out.height)
+        val pixels = IntArray(out.width)
+        for (y in 0 until rows) {
+            val stripAlpha = OverlayBackdrop.stripAlphaAt(y, stripPx, OverlayBackdrop.STATUS_STRIP_MODE)
+            if (stripAlpha >= 255) continue
+            out.getPixels(pixels, 0, out.width, 0, y, out.width, 1)
+            for (x in pixels.indices) {
+                val p = pixels[x]
+                pixels[x] = p and 0x00FFFFFF or ((Color.alpha(p) * stripAlpha / 255) shl 24)
+            }
+            out.setPixels(pixels, 0, out.width, 0, y, out.width, 1)
+        }
+        return out
     }
 
     private fun hideScreenshotOverlay() {
