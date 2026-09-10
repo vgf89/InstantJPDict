@@ -77,12 +77,19 @@ data class CharCandidate(
 
 interface DictionaryProvider {
     suspend fun findByTexts(texts: List<String>): List<DictionaryEntry>
+    /** dictionaryId → display name, for per-entry source labels. */
+    suspend fun dictionaryNames(): Map<Int, String>
 }
 
 class AndroidDictionaryProvider(private val context: Context) : DictionaryProvider {
     override suspend fun findByTexts(texts: List<String>): List<DictionaryEntry> {
         val db = AppDatabase.getDatabase(context)
         return db.dictionaryDao().findByTexts(texts)
+    }
+
+    override suspend fun dictionaryNames(): Map<Int, String> {
+        val db = AppDatabase.getDatabase(context)
+        return db.dictionaryDao().getAllDictionaries().associate { it.id to it.name }
     }
 }
 

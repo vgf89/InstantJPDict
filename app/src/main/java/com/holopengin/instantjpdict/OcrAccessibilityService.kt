@@ -44,6 +44,7 @@ import com.google.gson.Gson
 import com.holopengin.instantjpdict.util.Deinflector
 import com.holopengin.instantjpdict.util.DeinflectionChain
 import com.holopengin.instantjpdict.util.FuriganaAligner
+import com.holopengin.instantjpdict.util.SplitReadings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -1149,6 +1150,17 @@ class OcrAccessibilityService : AccessibilityService() {
                     alpha = 0.3f
                 })
             }
+            // Dictionary source, bottom of the entry: entries never mix
+            // dictionaries, so one caption per section is exact.
+            entry.dictionaryName?.let { name ->
+                termSection.addView(TextView(this).apply {
+                    text = name
+                    setTextColor(Color.GRAY)
+                    textSize = 12f
+                    gravity = Gravity.END
+                    setPadding(0, 8, 0, 0)
+                })
+            }
             scrollContent.addView(termSection)
         }
 
@@ -1208,6 +1220,14 @@ class OcrAccessibilityService : AccessibilityService() {
                 headwordList.addView(kanjiHeader)
             }
         } else {
+            // #69: merged rows with a KANJIDIC-backed 訓/音 split render the
+            // kanji left with labeled rows right, instead of ruby above.
+            val split = group.splitReadings
+            if (split != null) {
+                headwordList.addView(
+                    createSplitHeadwordView(group.headwords.firstOrNull()?.kanji ?: group.reading, split)
+                )
+            } else {
             val flow = FlowLayout(this).apply { setPadding(0, 0, 0, 0) }
             // #68: if any headword renders a ruby row, reserve the same ruby
             // space for all of them so baselines align in the shared flow.
@@ -1220,6 +1240,7 @@ class OcrAccessibilityService : AccessibilityService() {
                 }
             }
             headwordList.addView(flow)
+            }
         }
         container.addView(headwordList)
     }
@@ -1640,6 +1661,50 @@ class OcrAccessibilityService : AccessibilityService() {
             })
             addView(createBaseTextView(term, isMini).apply { gravity = Gravity.CENTER })
             baselineAlignedChildIndex = 1
+        }
+    }
+
+    /**
+     * #69: merged headword with KANJIDIC-backed 訓/音 split — kanji left,
+     * labeled reading rows right (訓 top, 音 bottom, 他 only when needed).
+     * Replaces the ruby-above layout for splittable rows only.
+     */
+    private fun createSplitHeadwordView(kanji: String, split: SplitReadings): View {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(TextView(this@OcrAccessibilityService).apply {
+                text = kanji
+                setTextColor(Color.CYAN)
+                textSize = 32f
+                typeface = android.graphics.Typeface.DEFAULT_BOLD
+                includeFontPadding = false
+                setPadding(0, 0, 30, 0)
+            })
+            addView(LinearLayout(this@OcrAccessibilityService).apply {
+                orientation = LinearLayout.VERTICAL
+                listOf("訓" to split.kun, "音" to split.on, "他" to split.other).forEach { (label, readings) ->
+                    if (readings.isNotEmpty()) {
+                        addView(LinearLayout(this@OcrAccessibilityService).apply {
+                            orientation = LinearLayout.HORIZONTAL
+                            gravity = Gravity.CENTER_VERTICAL
+                            addView(TextView(this@OcrAccessibilityService).apply {
+                                text = label
+                                setTextColor(Color.GRAY)
+                                textSize = 12f
+                                setPadding(0, 0, 12, 0)
+                                includeFontPadding = false
+                            })
+                            addView(TextView(this@OcrAccessibilityService).apply {
+                                text = readings.joinToString("、")
+                                setTextColor(Color.LTGRAY)
+                                textSize = 18f
+                                includeFontPadding = false
+                            })
+                        })
+                    }
+                }
+            })
         }
     }
 

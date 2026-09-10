@@ -1,5 +1,6 @@
 package com.holopengin.instantjpdict
 
+import com.holopengin.instantjpdict.util.KunOn
 import com.holopengin.instantjpdict.util.ReadingGroupMerge
 import org.junit.Test
 
@@ -69,5 +70,43 @@ class ReadingGroupMergeTest {
         val one = listOf(group("きみ", "君"))
         assertEquals(one, ReadingGroupMerge.mergeSameKanji(one))
         assertEquals(emptyList<FormattedReadingGroup>(), ReadingGroupMerge.mergeSameKanji(emptyList()))
+    }
+
+    private val kimiKunOn = mapOf("君" to KunOn(on = setOf("くん"), kun = setOf("きみ", "ぎみ")))
+
+    @Test
+    fun split_kun_on_other() {
+        val out = ReadingGroupMerge.mergeSameKanji(
+            listOf(group("きみ", "君"), group("くん", "君"), group("ぎみ", "君"), group("きんじ", "君")),
+            kimiKunOn
+        )
+        assertEquals(1, out.size)
+        val split = out[0].splitReadings
+        assertNotNull(split)
+        assertEquals(listOf("きみ", "ぎみ"), split!!.kun)
+        assertEquals(listOf("くん"), split.on)
+        assertEquals(listOf("きんじ"), split.other)
+        // Joined reading preserved for compatibility.
+        assertEquals("きみ、くん、ぎみ、きんじ", out[0].reading)
+    }
+
+    @Test
+    fun no_classifier_falls_back_to_comma() {
+        val out = ReadingGroupMerge.mergeSameKanji(
+            listOf(group("きみ", "君"), group("くん", "君"))
+        )
+        assertEquals(1, out.size)
+        assertNull(out[0].splitReadings)
+        assertEquals("きみ、くん", out[0].reading)
+    }
+
+    @Test
+    fun all_unknown_falls_back_to_comma() {
+        val out = ReadingGroupMerge.mergeSameKanji(
+            listOf(group("きみ", "君"), group("くん", "君")),
+            mapOf("君" to KunOn(on = setOf("xxx"), kun = setOf("yyy")))
+        )
+        assertEquals(1, out.size)
+        assertNull(out[0].splitReadings)
     }
 }

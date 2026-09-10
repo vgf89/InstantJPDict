@@ -5,6 +5,8 @@ import com.holopengin.instantjpdict.util.Deinflector
 import com.holopengin.instantjpdict.util.DeinflectionChain
 import com.holopengin.instantjpdict.util.DictionaryRedirects
 import com.holopengin.instantjpdict.util.ReadingGroupMerge
+import com.holopengin.instantjpdict.util.KunOn
+import com.holopengin.instantjpdict.util.SplitReadings
 import com.holopengin.instantjpdict.data.DictionaryEntry
 import com.google.gson.Gson
 import uniffi.nav_graph_core.*
@@ -58,7 +60,10 @@ data class FormattedReadingGroup(
     val reading: String,
     val headwords: List<FormattedHeadword>,
     val senseGroups: List<FormattedSenseGroup>,
-    val isKanjiEntry: Boolean
+    val isKanjiEntry: Boolean,
+    /** #69: set on merged rows splittable into 訓/音 rows (null = render
+     * via the normal ruby path). */
+    val splitReadings: SplitReadings? = null
 )
 
 data class FormattedEntry(
@@ -67,7 +72,10 @@ data class FormattedEntry(
     /** Non-null when this entry matched via deinflection (or a JMdict
      * redirect, folded in as a "redirect" chain step, #65); null for direct
      * surface matches (which render exactly as before). */
-    val deinflection: DeinflectionChain? = null
+    val deinflection: DeinflectionChain? = null,
+    /** Display name of the dictionary this entry came from (null = unknown,
+     * caption omitted). Entries never mix dictionaries. */
+    val dictionaryName: String? = null
 )
 
 /** One lookup candidate: a dictionary-form term plus how it was reached.
@@ -371,6 +379,9 @@ class OcrOverlayStateController {
 
         val (allTermsToSearch, candidatesByLength) = prepareSearchCandidates(followingText, deinf)
         val dbResults = provider.findByTexts(allTermsToSearch.toList())
+        // dictionaryId → display name for per-entry source captions. Missing
+        // map = captions omitted, entries still split per dictionary.
+        val dictNames = try { provider.dictionaryNames() } catch (_: Exception) { emptyMap() }
         val (uniqueMatches, maxLen) = processResults(dbResults, candidatesByLength, allTermsToSearch, followingText)
 
         // ── Redirect pass (#65): JMdict pointer entries (variant spellings)
@@ -415,7 +426,7 @@ class OcrOverlayStateController {
         }
         uniqueMatches.forEach { emit(it) }
 
-        val formatted = formatDictionaryResults(resolvedMatches, g).toMutableList()
+        val formatted = formatDictionaryResults(resolvedMatches, g, dictNames).toMutableList()
         for (i in formatted.indices) {
             redirectVia[formatted[i].term]?.let { via ->
                 // The redirect hop joins the deinflection chain ("via → term
@@ -448,7 +459,7 @@ class OcrOverlayStateController {
             val kanjiResults = provider.findByTexts(listOf(kanjiStr))
             val kanjiOnly = kanjiResults.filter { it.onyomi != null || it.kunyomi != null }
             if (kanjiOnly.isNotEmpty()) {
-                val formattedKanji = formatDictionaryResults(listOf(TermMatch(kanjiStr, kanjiOnly)), g)
+                val formattedKanji = formatDictionaryResults(listOf(TermMatch(kanjiStr, kanjiOnly)), g, dictNames)
                 appendKanji.addAll(formattedKanji)
             }
         }
@@ -768,10 +779,29 @@ class OcrOverlayStateController {
 
     fun formatDictionaryResults(
         matches: List<TermMatch>,
-        gson: Gson
+        gson: Gson,
+        dictNames: Map<Int, String> = emptyMap()
     ): List<FormattedEntry> {
-        return matches.map { (term, entries, chain) ->
-            val readingGroups = entries.groupBy { it.reading }.map { (reading, readingEntries) ->
+        // One entry per (term, dictionary): JMdict and KANJIDIC rows must
+        // never merge into a single block. findByTexts returns priority
+        // order, so groupBy preserves dictionary ranking.
+        return matches.flatMap { (term, entries, chain) ->
+            // #69: KANJIDIC on/kun lists per kanji (hiragana-normalized) so
+            // merged headword rows can split readings into 訓/音 rows.
+            // Built from ALL entries cross-dict: the JMdict slice borrows
+            // the KANJIDIC slice's lists.
+            val kunOn = mutableMapOf<String, KunOn>()
+            for (e in entries) {
+                if (e.onyomi == null && e.kunyomi == null) continue
+                val acc = kunOn.getOrPut(e.kanji) { KunOn(emptySet(), emptySet()) }
+                val on = acc.on + (e.onyomi?.split(" ").orEmpty())
+                    .map { JapaneseUtil.katakanaToHiragana(it) }.filter { it.isNotEmpty() }
+                val kun = acc.kun + (e.kunyomi?.split(" ").orEmpty())
+                    .map { JapaneseUtil.katakanaToHiragana(it.trimStart('-')) }.filter { it.isNotEmpty() }
+                kunOn[e.kanji] = KunOn(on.toSet(), kun.toSet())
+            }
+            entries.groupBy { it.dictionaryId }.map { (dictId, dictEntries) ->
+            val readingGroups = dictEntries.groupBy { it.reading }.map { (reading, readingEntries) ->
                 val isKanjiEntry = readingEntries.firstOrNull()?.let { it.onyomi != null || it.kunyomi != null } ?: false
                 val kanjiVariants = readingEntries.map { it.kanji }.distinct()
                 
@@ -831,7 +861,13 @@ class OcrOverlayStateController {
 
                 FormattedReadingGroup(reading, headwords, senseGroups, isKanjiEntry)
             }
-            FormattedEntry(term, ReadingGroupMerge.mergeSameKanji(readingGroups), deinflection = chain)
+            FormattedEntry(
+                term,
+                ReadingGroupMerge.mergeSameKanji(readingGroups, kunOn),
+                deinflection = chain,
+                dictionaryName = dictNames[dictId]
+            )
+            }
         }
     }
 
