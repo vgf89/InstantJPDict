@@ -1214,8 +1214,9 @@ class OcrAccessibilityService : AccessibilityService() {
                     setPadding(0, 0, 30, 0)
                 })
                 val readingStack = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-                hw.onyomi?.takeIf { it.isNotEmpty() }?.let { readingStack.addView(TextView(this).apply { text = "ON: ${it.replace(" ", "、")}"; setTextColor(Color.LTGRAY); textSize = 14f }) }
-                hw.kunyomi?.takeIf { it.isNotEmpty() }?.let { readingStack.addView(TextView(this).apply { text = "KUN: ${it.replace(" ", "、")}"; setTextColor(Color.LTGRAY); textSize = 14f }) }
+                // #69: 訓 (kun) above 音 (on), matching the split-row order.
+                hw.kunyomi?.takeIf { it.isNotEmpty() }?.let { readingStack.addView(TextView(this).apply { text = "訓 ${it.replace(" ", "、")}"; setTextColor(Color.LTGRAY); textSize = 14f }) }
+                hw.onyomi?.takeIf { it.isNotEmpty() }?.let { readingStack.addView(TextView(this).apply { text = "音 ${it.replace(" ", "、")}"; setTextColor(Color.LTGRAY); textSize = 14f }) }
                 kanjiHeader.addView(readingStack)
                 headwordList.addView(kanjiHeader)
             }
