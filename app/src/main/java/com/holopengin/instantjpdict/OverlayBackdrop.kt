@@ -55,6 +55,18 @@ object OverlayBackdrop {
     const val SCREENSHOT_ALPHA_OPAQUE = 1.0f
     const val SCREENSHOT_ALPHA_DIM = 0.7f
 
+    /** SharedPreferences key for the experimental opacity slider. */
+    const val PREF_SCREENSHOT_ALPHA = "overlay_screenshot_alpha"
+    const val DEF_SCREENSHOT_ALPHA = 0.7f
+
+    /** Effective screenshot alpha: slider value when set, else the default.
+     * Read at overlay creation (re-run OCR to apply, like the other
+     * tunables); OCR input always stays pristine regardless. */
+    fun screenshotAlpha(ctx: Context): Float =
+        ctx.getSharedPreferences(OcrEngine.PREFS_NAME, Context.MODE_PRIVATE)
+            .getFloat(PREF_SCREENSHOT_ALPHA, DEF_SCREENSHOT_ALPHA)
+            .coerceIn(0f, 1f)
+
     /**
      * Strip treatment default. FADE is gentlest (a CUT edge can read as a
      * rendering bug); SOLID restores near-previous look with translucency.

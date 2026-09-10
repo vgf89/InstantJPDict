@@ -431,7 +431,7 @@ class OcrAccessibilityService : AccessibilityService() {
             val imageView = android.widget.ImageView(this).apply {
                 setImageBitmap(createOverlayDisplayBitmap(bitmap, statusStripPx))
                 scaleType = android.widget.ImageView.ScaleType.FIT_XY
-                alpha = OverlayBackdrop.SCREENSHOT_ALPHA
+                alpha = OverlayBackdrop.screenshotAlpha(this@OcrAccessibilityService)
             }
             contentContainer.addView(imageView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
 
