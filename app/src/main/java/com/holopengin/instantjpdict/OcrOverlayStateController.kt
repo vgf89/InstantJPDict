@@ -4,6 +4,7 @@ import com.holopengin.instantjpdict.util.JapaneseUtil
 import com.holopengin.instantjpdict.util.Deinflector
 import com.holopengin.instantjpdict.util.DeinflectionChain
 import com.holopengin.instantjpdict.util.DictionaryRedirects
+import com.holopengin.instantjpdict.util.ReadingGroupMerge
 import com.holopengin.instantjpdict.data.DictionaryEntry
 import com.google.gson.Gson
 import uniffi.nav_graph_core.*
@@ -830,7 +831,7 @@ class OcrOverlayStateController {
 
                 FormattedReadingGroup(reading, headwords, senseGroups, isKanjiEntry)
             }
-            FormattedEntry(term, readingGroups, deinflection = chain)
+            FormattedEntry(term, ReadingGroupMerge.mergeSameKanji(readingGroups), deinflection = chain)
         }
     }
 
