@@ -343,6 +343,12 @@ class OcrAccessibilityService : AccessibilityService() {
         // #59: set by onDoubleTap; consumes the double-tap's trailing UP so
         // it can't also schedule a deferred tap-click (dismiss).
         var suppressNextTapClick = false
+        // #59: explicit empty-space double-tap tracking (the root listener
+        // owns empty-area streams; the intercept GestureDetector below owns
+        // char taps, which never reach the listener).
+        var lastEmptyTapUpTime = 0L
+        var lastEmptyTapUpX = 0f
+        var lastEmptyTapUpY = 0f
         // Assigned once the gesture detectors below exist; onInterceptTouchEvent
         // feeds every touch here (it sees char taps too, unlike the root touch
         // listener, which only gets streams no child consumed).
@@ -429,8 +435,36 @@ class OcrAccessibilityService : AccessibilityService() {
             }
             contentContainer.addView(imageView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
 
+            // #59: animated zoom shared by char and empty-space double-tap.
+            // A new toggle cancels the running animation; pinch (fresh
+            // POINTER_DOWN / onScale) takes over the same way.
+            var zoomAnimator: android.animation.ValueAnimator? = null
+            fun animateZoomTo(next: DoubleTapZoom.ZoomState) {
+                zoomAnimator?.cancel()
+                val fromScale = controller.currentScale
+                val fromX = controller.currentTransX
+                val fromY = controller.currentTransY
+                zoomAnimator = android.animation.ValueAnimator.ofFloat(0f, 1f).apply {
+                    duration = DoubleTapZoom.ANIM_DURATION_MS
+                    interpolator = android.view.animation.DecelerateInterpolator()
+                    addUpdateListener { anim ->
+                        val t = anim.animatedValue as Float
+                        controller.currentScale = fromScale + (next.scale - fromScale) * t
+                        controller.currentTransX = fromX + (next.transX - fromX) * t
+                        controller.currentTransY = fromY + (next.transY - fromY) * t
+                        contentContainer.scaleX = controller.currentScale
+                        contentContainer.scaleY = controller.currentScale
+                        contentContainer.translationX = controller.currentTransX
+                        contentContainer.translationY = controller.currentTransY
+                    }
+                    start()
+                }
+            }
+
             val gestureDetector = android.view.ScaleGestureDetector(this@OcrAccessibilityService, object : android.view.ScaleGestureDetector.SimpleOnScaleGestureListener() {
                 override fun onScale(detector: android.view.ScaleGestureDetector): Boolean {
+                    // Pinch takes over immediately from any running zoom animation.
+                    zoomAnimator?.cancel()
                     val oldScale = controller.currentScale
                     controller.currentScale = (controller.currentScale * detector.scaleFactor).coerceIn(1f, 5f)
                     val factor = controller.currentScale / oldScale
@@ -469,19 +503,20 @@ class OcrAccessibilityService : AccessibilityService() {
                         } == true
                     }
                     if (onChrome) return false
+                    // Char taps only: empty space belongs to the root
+                    // listener's explicit double-tap path below (it never sees
+                    // char streams, and this detector seeing both would
+                    // double-toggle). Same 20dp neighborhood the tap-to-
+                    // dismiss check uses.
+                    if (!controller.isNearCharacter(e.x, e.y, 20f, resources.displayMetrics.density)) return false
                     rootLayout.removeCallbacks(deferredClick)
                     suppressNextTapClick = true
-                    val next = DoubleTapZoom.toggle(
-                        controller.currentScale, controller.currentTransX, controller.currentTransY,
-                        e.x, e.y
+                    animateZoomTo(
+                        DoubleTapZoom.toggle(
+                            controller.currentScale, controller.currentTransX, controller.currentTransY,
+                            e.x, e.y
+                        )
                     )
-                    controller.currentScale = next.scale
-                    controller.currentTransX = next.transX
-                    controller.currentTransY = next.transY
-                    contentContainer.scaleX = next.scale
-                    contentContainer.scaleY = next.scale
-                    contentContainer.translationX = next.transX
-                    contentContainer.translationY = next.transY
                     return true
                 }
             })
@@ -501,6 +536,7 @@ class OcrAccessibilityService : AccessibilityService() {
                         v.removeCallbacks(deferredClick)
                     }
                     MotionEvent.ACTION_POINTER_DOWN -> {
+                        zoomAnimator?.cancel()
                         isScaling = true; lastFocusX = focusX; lastFocusY = focusY
                     }
                     MotionEvent.ACTION_MOVE -> {
@@ -537,8 +573,31 @@ class OcrAccessibilityService : AccessibilityService() {
                     if (suppressNextTapClick) {
                         suppressNextTapClick = false
                     } else if (abs(focusX - initialTouchX) < 10 && abs(focusY - initialTouchY) < 10) {
-                        v.removeCallbacks(deferredClick)
-                        v.postDelayed(deferredClick, android.view.ViewConfiguration.getDoubleTapTimeout().toLong())
+                        // #59: explicit empty-space double-tap (this listener
+                        // never sees char streams). A second tap within the
+                        // system double-tap window + slop zooms instead of
+                        // dismissing; otherwise the single tap dismisses as
+                        // before, deferred past the window.
+                        val now = android.os.SystemClock.uptimeMillis()
+                        val dtWindow = android.view.ViewConfiguration.getDoubleTapTimeout().toLong()
+                        val dtSlop = android.view.ViewConfiguration.get(this@OcrAccessibilityService).scaledDoubleTapSlop
+                        if (now - lastEmptyTapUpTime < dtWindow &&
+                            abs(focusX - lastEmptyTapUpX) <= dtSlop &&
+                            abs(focusY - lastEmptyTapUpY) <= dtSlop
+                        ) {
+                            lastEmptyTapUpTime = 0L
+                            v.removeCallbacks(deferredClick)
+                            animateZoomTo(
+                                DoubleTapZoom.toggle(
+                                    controller.currentScale, controller.currentTransX, controller.currentTransY,
+                                    focusX, focusY
+                                )
+                            )
+                        } else {
+                            lastEmptyTapUpTime = now; lastEmptyTapUpX = focusX; lastEmptyTapUpY = focusY
+                            v.removeCallbacks(deferredClick)
+                            v.postDelayed(deferredClick, dtWindow)
+                        }
                     }
                 }
                 true

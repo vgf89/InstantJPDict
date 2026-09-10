@@ -12,6 +12,8 @@ object DoubleTapZoom {
     const val ZOOMED_SCALE = 2.5f
     const val MIN_SCALE = 1f
     const val MAX_SCALE = 5f
+    /** Double-tap zoom transition length (both directions). */
+    const val ANIM_DURATION_MS = 200L
 
     /**
      * Scales at or below this count as "at rest" → double-tap zooms in.
