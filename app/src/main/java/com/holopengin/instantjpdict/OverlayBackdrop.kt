@@ -45,10 +45,11 @@ enum class StatusStripMode {
 object OverlayBackdrop {
     /**
      * Screenshot translucency. Axis from the ticket: 1.0 / 0.85 / 0.7.
-     * Default 0.85: notifications ghost through while the screenshot still
-     * dominates. Nudge in one place; OCR input always stays pristine.
+     * Default 0.7 (= SCREENSHOT_ALPHA_DIM below): maintainer call after
+     * 0.85 still hid notifications. Nudge in one place; OCR input always
+     * stays pristine.
      */
-    const val SCREENSHOT_ALPHA = 0.85f
+    const val SCREENSHOT_ALPHA = 0.7f
 
     /** Axis endpoints, kept named so the experiment can flip quickly. */
     const val SCREENSHOT_ALPHA_OPAQUE = 1.0f
