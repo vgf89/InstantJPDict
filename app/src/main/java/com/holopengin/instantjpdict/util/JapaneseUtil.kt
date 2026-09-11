@@ -29,9 +29,19 @@ object JapaneseUtil {
         'ﾊ' to "パ", 'ﾋ' to "ピ", 'ﾌ' to "プ", 'ﾍ' to "ペ", 'ﾎ' to "ポ"
     )
 
+    /**
+     * Fold an OCR line to the form dictionary lookup expects: width/combining
+     * normalisation plus [#44] lookup-variant folds (iteration kana, obsolete
+     * kana, Roman numerals, the Chinese-only forms the recogniser emits).
+     *
+     * Query-side only. [OcrOverlayStateController] calls this to build search
+     * keys from the raw line prefix, so a fold may change the *length* of the
+     * key without affecting what is displayed or which prefix the match
+     * corresponds to — the caller keeps using the raw prefix length.
+     */
     fun normalize(text: String): String {
         return normalizeCombiningCharacters(
-            convertWidth(text)
+            foldLookupVariants(convertWidth(text))
         )
     }
 
@@ -108,6 +118,84 @@ object JapaneseUtil {
                 else -> {
                     sb.append(c)
                     i++
+                }
+            }
+        }
+        return sb.toString()
+    }
+
+    /** Kana and their voiced counterparts, for the iteration marks `ゞ`/`ヾ` (#44). */
+    private val HIRAGANA_VOICED = mapOf(
+        'か' to 'が', 'き' to 'ぎ', 'く' to 'ぐ', 'け' to 'げ', 'こ' to 'ご',
+        'さ' to 'ざ', 'し' to 'じ', 'す' to 'ず', 'せ' to 'ぜ', 'そ' to 'ぞ',
+        'た' to 'だ', 'ち' to 'ぢ', 'つ' to 'づ', 'て' to 'で', 'と' to 'ど',
+        'は' to 'ば', 'ひ' to 'び', 'ふ' to 'ぶ', 'へ' to 'べ', 'ほ' to 'ぼ',
+        'う' to 'ゔ'
+    )
+
+    private val KATAKANA_VOICED = mapOf(
+        'カ' to 'ガ', 'キ' to 'ギ', 'ク' to 'グ', 'ケ' to 'ゲ', 'コ' to 'ゴ',
+        'サ' to 'ザ', 'シ' to 'ジ', 'ス' to 'ズ', 'セ' to 'ゼ', 'ソ' to 'ゾ',
+        'タ' to 'ダ', 'チ' to 'ヂ', 'ツ' to 'ヅ', 'テ' to 'デ', 'ト' to 'ド',
+        'ハ' to 'バ', 'ヒ' to 'ビ', 'フ' to 'ブ', 'ヘ' to 'ベ', 'ホ' to 'ボ',
+        'ウ' to 'ヴ'
+    )
+
+    /**
+     * Characters the recogniser *can* emit that dictionaries do not use, folded
+     * to the form lookup expects (#44, layer 1). Measured over 225M characters of
+     * Aozora plus the calibration benches.
+     *
+     * Absent on purpose: characters the quantised head has **no class for** —
+     * `ゐ`, `ヱ`, `─`, `｜`, `〳`, `〴`, `〻`, `〃`, fullwidth ASCII, the Ainu small
+     * katakana. They can never appear in the model's output, so an entry would be
+     * dead code; those lines fail as *deletions* and no fold can restore them.
+     * `々` is absent too: dictionary headwords contain it (`日々`), so expanding it
+     * would lose matches rather than gain them.
+     */
+    private val LOOKUP_VARIANT_MAP: Map<Char, String> = mapOf(
+        // Roman numerals (NFKC behaviour; the benches show `Ⅶ` where text has `VII`)
+        'Ⅰ' to "I", 'Ⅱ' to "II", 'Ⅲ' to "III", 'Ⅳ' to "IV", 'Ⅴ' to "V",
+        'Ⅵ' to "VI", 'Ⅶ' to "VII", 'Ⅷ' to "VIII", 'Ⅸ' to "IX", 'Ⅹ' to "X",
+        'Ⅺ' to "XI", 'Ⅻ' to "XII",
+        'ⅰ' to "i", 'ⅱ' to "ii", 'ⅲ' to "iii", 'ⅳ' to "iv", 'ⅴ' to "v",
+        'ⅵ' to "vi", 'ⅶ' to "vii", 'ⅷ' to "viii", 'ⅸ' to "ix", 'ⅹ' to "x",
+        // Compatibility form
+        '℃' to "°C",
+        // Obsolete kana the head *can* emit (8,430 and 1,585 occurrences in Aozora)
+        'ゑ' to "え", 'ヰ' to "イ",
+        // Chinese-only forms the head emits in place of the Japanese one (benches)
+        '况' to "況", '查' to "査", '调' to "調"
+    )
+
+    /**
+     * Fold the variant characters of [LOOKUP_VARIANT_MAP] and expand the iteration
+     * marks `ゝ`/`ゞ`/`ヽ`/`ヾ`, which repeat the preceding kana (`こゝろ` → `こころ`,
+     * `たゞ` → `ただ`) — 139,270 occurrences in Aozora, all emittable, and a query
+     * containing one of them matches nothing in a modern dictionary.
+     *
+     * `ゞ`/`ヾ` voice the repeat when the preceding kana has a voiced form and fall
+     * back to a plain repeat otherwise (`まゞ` → `まま`, 537 real occurrences), which
+     * is also what an already-voiced kana needs (`がゞ` → `がが`). A mark whose
+     * preceding character is not kana of the matching script (line-initial, after a
+     * kanji or punctuation) is left as-is rather than folded into a guess — 1,061 of
+     * 139,270 real occurrences, validated across the Aozora corpus.
+     */
+    fun foldLookupVariants(text: String): String {
+        if (text.isEmpty()) return text
+        val sb = StringBuilder(text.length)
+        for (c in text) {
+            val last = sb.lastOrNull()
+            val isHira = last != null && last in '\u3041'..'\u3096'
+            val isKata = last != null && last in '\u30A1'..'\u30F6'
+            when (c) {
+                'ゝ' -> sb.append(if (isHira) last!! else c)
+                'ゞ' -> sb.append(if (isHira) HIRAGANA_VOICED[last!!] ?: last!! else c)
+                'ヽ' -> sb.append(if (isKata) last!! else c)
+                'ヾ' -> sb.append(if (isKata) KATAKANA_VOICED[last!!] ?: last!! else c)
+                else -> {
+                    val mapped = LOOKUP_VARIANT_MAP[c]
+                    if (mapped != null) sb.append(mapped) else sb.append(c)
                 }
             }
         }
