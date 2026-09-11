@@ -43,6 +43,8 @@ class OcrEngine(private val context: Context) {
     private var detNcnn: DetNcnn? = null
     private var ppocrVocab: List<String> = emptyList()
     private var classRemap: IntArray = IntArray(0) // pruned-out -> orig class id (#39)
+    /** Pruned CTC-head width, derived from rec_remap.txt when it loads (#44). */
+    private var recNumOutputs = 0
     private var recDynNcnn: RecNcnn? = null
 
     // One line awaiting recognition; results stay keyed by idx.
@@ -158,8 +160,12 @@ class OcrEngine(private val context: Context) {
         // Recognition constants (not tunable)
         private const val REC_TARGET_H = 48
         private const val REC_NUM_CLASSES = 18710  // 0=blank, 1..18708=chars, 18709=space (orig id space)
-        // Pruned CTC-head width (#39): gemm_8 emits 13193 outs; CLASS_REMAP[new] = orig id.
-        private const val REC_NUM_OUTPUTS = 13193
+        // Pruned CTC-head width (#39): gemm_8 emits one out per rec_remap entry,
+        // and CLASS_REMAP[new] = orig id. Deliberately NOT a constant — the width
+        // is derived from the loaded remap (`recNumOutputs`), so re-pruning the
+        // head with a wider keep list (#44 added 160 CJK classes) cannot leave the
+        // model and this file disagreeing. A stale constant used to be able to
+        // disable the engine silently via isReady().
         private const val REC_STRIDE = 8
         /** Streaming batch size (#58 retune knob; was const 4). Batches of line
          * crops created/recycled per batch; per-batch concurrency = fanout. */
@@ -287,7 +293,8 @@ class OcrEngine(private val context: Context) {
             classRemap = remapTxt.lineSequence()
                 .mapNotNull { it.trim().takeIf(String::isNotEmpty)?.toIntOrNull() }
                 .toList().toIntArray()
-            Log.d(TAG, "Class remap loaded: ${classRemap.size} entries")
+            recNumOutputs = classRemap.size
+            Log.d(TAG, "Class remap loaded: ${classRemap.size} entries (head width $recNumOutputs)")
 
         } catch (e: Exception) {
             Log.e(TAG, "Failed to load models", e)
@@ -295,7 +302,7 @@ class OcrEngine(private val context: Context) {
     }
 
     fun isReady(): Boolean =
-        detNcnn != null && recDynNcnn != null && ppocrVocab.isNotEmpty() && classRemap.size == REC_NUM_OUTPUTS
+        detNcnn != null && recDynNcnn != null && ppocrVocab.isNotEmpty() && recNumOutputs > 0
 
     // ═════════════════════════════════════════════════════════════════════════
     //  Detect — DB segmentation → contours → boxes (#28 furigana, unclip)
@@ -879,16 +886,19 @@ class OcrEngine(private val context: Context) {
             InferLog.add("rec w=$modelW infer NULL")
             return null
         }
-        if (flatOutput.size != seqLen * REC_NUM_OUTPUTS) {
-            Log.e(TAG, "recNcnn w$modelW bad output ${flatOutput.size} vs ${seqLen * REC_NUM_OUTPUTS}")
-            InferLog.add("rec w=$modelW BAD out=${flatOutput.size} expect=${seqLen * REC_NUM_OUTPUTS}")
+        // Head width comes from the loaded remap; this is also the one place the
+        // model and the remap are checked against each other at runtime.
+        val numOut = recNumOutputs
+        if (flatOutput.size != seqLen * numOut) {
+            Log.e(TAG, "recNcnn w$modelW bad output ${flatOutput.size} vs ${seqLen * numOut}")
+            InferLog.add("rec w=$modelW BAD out=${flatOutput.size} expect=${seqLen * numOut}")
             return null
         }
         val cropLogits = Array(actualSeqLen) { t ->
-            FloatArray(REC_NUM_OUTPUTS) { c -> flatOutput[t * REC_NUM_OUTPUTS + c] }
+            FloatArray(numOut) { c -> flatOutput[t * numOut + c] }
         }
         val rawAlts = (0 until actualSeqLen).map { t -> top15Alternatives(cropLogits[t]) }
-        val decoded = ctcDecode(cropLogits, actualSeqLen, REC_NUM_OUTPUTS, 0f, actualSeqLen)
+        val decoded = ctcDecode(cropLogits, actualSeqLen, numOut, 0f, actualSeqLen)
         return decoded.copy(rawAlternatives = rawAlts)
     }
 

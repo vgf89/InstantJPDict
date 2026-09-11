@@ -138,6 +138,45 @@ python3 tools/make_rec_dyn.py --param /tmp/int8_models/rec_w480.param \
 
 Verified: inverts byte-identically to the shipped `rec_dyn.param` (#23).
 
+## 6b. Fuse GELU (required — the shipped param has no GELU layers)
+
+```bash
+python3 tools/fuse_gelu_rec.py --mode fuse --param /tmp/rec_dyn/rec_dyn.param \
+  --out /tmp/rec_dyn_fused/rec_dyn.param
+# expect: "removed 13 GELU layers, 206 -> 193 blobs"
+```
+
+Skipping this step yields a param that is *functionally* the same but carries 13
+dispatched `GELU` layers instead of the fused `9=7` epilogues (#40/#41) — slower,
+and not the graph that was verified. The step also prints the new blob id of the
+`gemm_8` output; **it must be 191**, because `app/src/main/cpp/ncnn_jni.cpp`
+extracts that blob by hardcoded id in two places (`ex.extract(191, out)`). If the
+id moves, update both or inference silently decodes the wrong blob.
+
+## 6c. Prune the CTC head
+
+```bash
+python3 tools/prune_ctc_head.py --param /tmp/rec_dyn_fused/rec_dyn.param \
+  --bin /tmp/int8_models/rec_w480.bin --keep tools/ctchead_keep_enjp.txt \
+  --out-param /tmp/rec_dyn_final/rec_dyn.param --out-bin /tmp/rec_dyn_final/rec_dyn.bin \
+  --remap /tmp/rec_dyn_final/rec_remap.txt
+# expect: "kept 13353/18710, bin ... -> ..."
+```
+
+Keep list = the CTC classes that ship (one orig id per line, ascending, pure ints —
+a comment line breaks the parser). It is EN+JP only: CJK with no Unihan
+`kJapaneseKun/On`, accented Latin and Greek/Coptic are cut. **That rule over-cuts**
+— Unihan's kJapanese coverage is incomplete, and 160 CJK characters used in real
+Aozora text (including `獾`, which has a documented Japanese reading アナクマ) were
+being dropped; #44 added them back, 13193 -> 13353. To re-derive the list, use
+`prune_ctc_head.py`'s header note (Unihan.zip kJapanese + vocab.json).
+
+Round-trip check worth running after any keep-list edit: pruning the *unmodified*
+list from a freshly built int8 model must reproduce the shipped
+`rec_dyn.param`/`rec_remap.txt` byte-for-byte (the `rec_dyn.bin` reproduced to
+within 1 byte in 4.7 MB). If that fails, something upstream of the prune changed.
+
+
 ## 7. Parity gate (host)
 
 ```bash

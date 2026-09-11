@@ -164,5 +164,5 @@ Permute permute_102 1 1 186 187 0=4
 BinaryOp add_21 2 1 187 127 188
 Squeeze squeeze_119 1 1 188 189 -23303=1,1
 Permute transpose_123 1 1 189 190 0=1
-Gemm gemm_8 1 1 190 191 3=1 5=1 6=1 8=13193 9=120 10=4 18=2
+Gemm gemm_8 1 1 190 191 3=1 5=1 6=1 8=13353 9=120 10=4 18=2
 Softmax softmax_30 1 1 191 out0 0=1 1=1
