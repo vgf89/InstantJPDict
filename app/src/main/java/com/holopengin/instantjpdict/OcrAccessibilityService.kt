@@ -65,6 +65,9 @@ class OcrAccessibilityService : AccessibilityService() {
     /** Set in onDestroy so restore paths never re-add windows during teardown. (#60) */
     private var isDestroyed = false
     private var screenshotOverlay: View? = null
+    /** #72: window back callback, so it can be unregistered with the window. */
+    private var backCallback: android.window.OnBackInvokedCallback? = null
+    private var backDispatcher: android.window.OnBackInvokedDispatcher? = null
     private var screenshotBitmap: Bitmap? = null
     private lateinit var ocrEngine: OcrEngine
     private val controller = OcrOverlayStateController()
@@ -677,6 +680,7 @@ class OcrAccessibilityService : AccessibilityService() {
 
         screenshotOverlay = rootLayout
         windowManager?.addView(screenshotOverlay, params)
+        registerBackCallback(rootLayout)
         
         val closeButton = CenteredButton(this).apply {
             tag = "close_button"
@@ -1951,14 +1955,17 @@ class OcrAccessibilityService : AccessibilityService() {
             return super.onKeyEvent(event)
         }
 
-        // #72: back closes one layer, exactly like an empty-space tap. Handled
-        // before the gamepad path so the system key wins over any key mapping,
-        // and consumed while the overlay is up (down and up) so it cannot reach
-        // the app underneath. With no overlay, the early return above leaves
-        // back untouched.
+        // #72: back closes one layer, exactly like an empty-space tap. On API
+        // 33+ the gesture and 3-button back are dispatched through the window's
+        // OnBackInvokedDispatcher (registerBackCallback) and never arrive here;
+        // this path covers API 30-32 and any key event the system still routes
+        // to a key-filtering accessibility service. Act on DOWN, not UP, so a
+        // press still works if the UP is never delivered.
         if (keyEvent.keyCode == KeyEvent.KEYCODE_BACK) {
-            val root = screenshotOverlay as? FrameLayout
-            if (root != null && keyEvent.action == KeyEvent.ACTION_UP) closeNextLayer(root)
+            if (keyEvent.action == KeyEvent.ACTION_DOWN) {
+                backProbe("key down")
+                (screenshotOverlay as? FrameLayout)?.let { closeNextLayer(it) }
+            }
             return true
         }
 
@@ -2030,6 +2037,64 @@ class OcrAccessibilityService : AccessibilityService() {
         if (!allowDismiss) return false
         hideScreenshotOverlay()
         return true
+    }
+
+    /**
+     * #72: register back on the overlay window itself.
+     *
+     * With `targetSdk` 33+ predictive back is on, so back — gesture *and*
+     * 3-button — is dispatched through the focused window's
+     * `OnBackInvokedDispatcher` and is never delivered as a `KEYCODE_BACK` key
+     * event. This window is focusable, so it swallows the back gesture and the
+     * service's `onKeyEvent` never sees it: back looked "blocked" rather than
+     * handled. Registering here is what actually receives it.
+     *
+     * `PRIORITY_OVERLAY` so the overlay wins over whatever is behind it. No-op
+     * below API 33, where back is still a key event ([onKeyEvent] covers it).
+     */
+    private fun registerBackCallback(root: FrameLayout) {
+        if (android.os.Build.VERSION.SDK_INT < 33) return
+        val dispatcher = root.findOnBackInvokedDispatcher() ?: return
+        val callback = android.window.OnBackInvokedCallback {
+            backProbe("callback")
+            closeNextLayer(root)
+        }
+        try {
+            dispatcher.registerOnBackInvokedCallback(
+                android.window.OnBackInvokedDispatcher.PRIORITY_OVERLAY, callback
+            )
+            backDispatcher = dispatcher
+            backCallback = callback
+        } catch (e: Exception) {
+            Log.e("OcrAccessibilityService", "Could not register back callback", e)
+        }
+    }
+
+    /**
+     * Unregistered before the window goes away — a callback left on a dead
+     * dispatcher would keep swallowing back after the overlay closed, which is
+     * worse than not handling back at all.
+     */
+    private fun unregisterBackCallback() {
+        val callback = backCallback ?: return
+        try {
+            backDispatcher?.unregisterOnBackInvokedCallback(callback)
+        } catch (e: Exception) {
+            Log.e("OcrAccessibilityService", "Could not unregister back callback", e)
+        }
+        backCallback = null
+        backDispatcher = null
+    }
+
+    /**
+     * TEMP (#72): echoes the last back-related event into the overlay's status
+     * line, so a device can show whether the dispatcher callback or a key event
+     * actually fires — no logcat needed. Remove once back is confirmed on-device.
+     */
+    private fun backProbe(text: String) {
+        (screenshotOverlay as? FrameLayout)
+            ?.findViewWithTag<TextView>("debug_text")
+            ?.let { tv -> tv.text = "back: $text" }
     }
 
     private fun handleGamepadBack(root: FrameLayout) {
@@ -2241,6 +2306,7 @@ class OcrAccessibilityService : AccessibilityService() {
         lookupJob?.cancel()
         lookupJob = null
         val root = screenshotOverlay ?: return
+        unregisterBackCallback()
         (floatingView?.parent as? android.view.ViewGroup)?.removeView(floatingView)
         if (root.isAttachedToWindow) try { windowManager?.removeViewImmediate(root) } catch (e: Exception) { Log.e("OcrAccessibilityService", "Error removing overlay", e) }
         screenshotOverlay = null; screenshotBitmap = null; floatingView?.visibility = View.VISIBLE
