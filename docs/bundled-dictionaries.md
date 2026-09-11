@@ -43,11 +43,33 @@ the feature fully offline, avoids adding the `INTERNET` permission for it, and
 still satisfies CC BY-SA as long as attribution travels with the copy (which is
 what `PROVENANCE.txt` and #70 are for).
 
+### Built-in, not user-editable
+
+The pitch dictionary is installed as a **built-in** dictionary
+(`dictionary_meta.builtIn`). Built-ins are app data rather than user data:
+
+- it does not appear in **Manage Dictionaries** — nothing to reorder, nothing
+  to delete;
+- there is no delete path for it;
+- the app installs it automatically at startup whenever none is present, so the
+  presence check doubles as self-repair after a wiped or corrupted database.
+
+The **Reinstall Bundled Pitch Dictionary** button in the main activity is the
+manual escape hatch for the one case auto-install cannot detect: an import that
+is killed part-way, leaving the metadata row present but the entries short.
+(The row is written before the entries are, so "present" is not proof of
+complete.)
+
+`builtIn` was added in schema version 4 with a hand-written migration. Note that
+the database is otherwise configured with `fallbackToDestructiveMigration()`,
+which would have silently wiped every user-imported dictionary on upgrade — the
+migration exists to prevent exactly that.
+
 ### Installation is idempotent
 
 `DictionaryImporter.importBundledAsset` deletes any existing dictionary with the
-same title before importing, so re-tapping the button repairs the install rather
-than stacking a second copy of all 124k rows.
+same title before importing, so re-running it repairs the install rather than
+stacking a second copy of all 124k rows.
 
 ### A note on the source data
 

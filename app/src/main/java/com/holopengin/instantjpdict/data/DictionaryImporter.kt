@@ -32,6 +32,7 @@ class DictionaryImporter(private val context: Context) {
                     BufferedInputStream(inputStream),
                     fileName.removeSuffix(".zip"),
                     onProgress,
+                    builtIn = false,
                 )
             )
         } catch (e: Exception) {
@@ -65,6 +66,7 @@ class DictionaryImporter(private val context: Context) {
                     BufferedInputStream(inputStream),
                     assetPath.substringAfterLast('/').removeSuffix(".zip"),
                     onProgress,
+                    builtIn = true,
                 )
             )
         } catch (e: Exception) {
@@ -100,6 +102,7 @@ class DictionaryImporter(private val context: Context) {
         bufferedStream: BufferedInputStream,
         fallbackTitle: String,
         onProgress: (Int) -> Unit,
+        builtIn: Boolean = false,
     ): Int = coroutineScope {
             val startTime = System.currentTimeMillis()
             val db = AppDatabase.getDatabase(context)
@@ -139,7 +142,7 @@ class DictionaryImporter(private val context: Context) {
                     entry.name.startsWith("term_bank_") && entry.name.endsWith(".json") -> {
                         if (dictionaryId == null) {
                             val maxPriority = dao.getMaxPriority() ?: -1
-                            dictionaryId = dao.insertDictionary(DictionaryMeta(name = dictTitle, priority = maxPriority + 1)).toInt()
+                            dictionaryId = dao.insertDictionary(DictionaryMeta(name = dictTitle, priority = maxPriority + 1, builtIn = builtIn)).toInt()
                         }
                         val reader = JsonReader(InputStreamReader(zipInputStream, "UTF-8"))
                         processTermBank(reader, dictionaryId!!, batchChannel)
@@ -147,7 +150,7 @@ class DictionaryImporter(private val context: Context) {
                     entry.name.startsWith("kanji_bank_") && entry.name.endsWith(".json") -> {
                         if (dictionaryId == null) {
                             val maxPriority = dao.getMaxPriority() ?: -1
-                            dictionaryId = dao.insertDictionary(DictionaryMeta(name = dictTitle, priority = maxPriority + 1)).toInt()
+                            dictionaryId = dao.insertDictionary(DictionaryMeta(name = dictTitle, priority = maxPriority + 1, builtIn = builtIn)).toInt()
                         }
                         val reader = JsonReader(InputStreamReader(zipInputStream, "UTF-8"))
                         processKanjiBank(reader, dictionaryId!!, batchChannel)
@@ -155,7 +158,7 @@ class DictionaryImporter(private val context: Context) {
                     entry.name.startsWith("tag_bank_") && entry.name.endsWith(".json") -> {
                         if (dictionaryId == null) {
                             val maxPriority = dao.getMaxPriority() ?: -1
-                            dictionaryId = dao.insertDictionary(DictionaryMeta(name = dictTitle, priority = maxPriority + 1)).toInt()
+                            dictionaryId = dao.insertDictionary(DictionaryMeta(name = dictTitle, priority = maxPriority + 1, builtIn = builtIn)).toInt()
                         }
                         val reader = JsonReader(InputStreamReader(zipInputStream, "UTF-8"))
                         parseTagBank(reader, dao, dictionaryId!!)
@@ -166,7 +169,7 @@ class DictionaryImporter(private val context: Context) {
                     entry.name.startsWith("term_meta_bank_") && entry.name.endsWith(".json") -> {
                         if (dictionaryId == null) {
                             val maxPriority = dao.getMaxPriority() ?: -1
-                            dictionaryId = dao.insertDictionary(DictionaryMeta(name = dictTitle, priority = maxPriority + 1)).toInt()
+                            dictionaryId = dao.insertDictionary(DictionaryMeta(name = dictTitle, priority = maxPriority + 1, builtIn = builtIn)).toInt()
                         }
                         val reader = JsonReader(InputStreamReader(zipInputStream, "UTF-8"))
                         processTermMetaBank(reader, dictionaryId!!, batchChannel)

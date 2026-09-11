@@ -6,9 +6,9 @@ import com.google.gson.JsonParser
 import com.holopengin.instantjpdict.OcrEngine
 
 /**
- * Pitch-accent support (#43): Yamitan-compatible pitch payloads from any
- * imported pitch dictionary (we ship a Kanjium-derived one), plus the pure
- * mora/contour math the renderer draws.
+ * Pitch-accent support (#43): Yomitan-compatible pitch payloads from any
+ * imported pitch dictionary (we ship a Kanjium-derived one as a built-in),
+ * plus the pure mora/contour math the renderer draws.
  *
  * No Android dependency in the math — only [isEnabled]/[setEnabled] touch
  * SharedPreferences, so the rest is JVM-unit-testable.
@@ -19,24 +19,13 @@ object PitchAccent {
     const val DEF_PITCH_ENABLED = false
 
     /**
-     * Pitch dictionary vendored in the APK assets (#43). Built by
-     * tools/build_pitch_dict.py from the pinned Kanjium revision; see
-     * pitch/PROVENANCE.txt next to it for source, license and SHA-256.
+     * Pitch dictionary vendored in the APK assets (#43), installed as a
+     * built-in: it never appears in the dictionary manager and cannot be
+     * deleted. Built by tools/build_pitch_dict.py from the pinned Kanjium
+     * revision; see pitch/PROVENANCE.txt next to it for source, license and
+     * SHA-256.
      */
     const val BUNDLED_ASSET = "pitch/kanjium_pitch_accents.zip"
-
-    /**
-     * Set once the bundled dictionary has been installed successfully, so the
-     * auto-install runs on first launch only. Deliberately NOT derived from the
-     * database: the dictionary manager can delete dictionaries, and a
-     * presence-check would resurrect one the user removed on purpose.
-     *
-     * Written only after a successful import, so an install that is killed
-     * part-way (the title row lands before the entries do) is retried next
-     * launch instead of being mistaken for complete.
-     */
-    const val PREF_BUNDLED_INSTALLED = "pitch_bundled_installed"
-    const val DEF_BUNDLED_INSTALLED = false
 
     /**
      * Small kana (拗音) fuse with the preceding kana into one mora: きょ is one
@@ -49,21 +38,11 @@ object PitchAccent {
         ctx.getSharedPreferences(OcrEngine.PREFS_NAME, Context.MODE_PRIVATE)
             .getBoolean(PREF_PITCH_ENABLED, DEF_PITCH_ENABLED)
 
-    /** True once the bundled dictionary has been installed at least once. */
-    fun isBundledInstalled(ctx: Context): Boolean =
-        ctx.getSharedPreferences(OcrEngine.PREFS_NAME, Context.MODE_PRIVATE)
-            .getBoolean(PREF_BUNDLED_INSTALLED, DEF_BUNDLED_INSTALLED)
-
-    fun setBundledInstalled(ctx: Context, installed: Boolean) {
-        ctx.getSharedPreferences(OcrEngine.PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
-            .putBoolean(PREF_BUNDLED_INSTALLED, installed)
-            .apply()
-    }
-
     fun setEnabled(ctx: Context, enabled: Boolean) {
         ctx.getSharedPreferences(OcrEngine.PREFS_NAME, Context.MODE_PRIVATE)
-            .edit().putBoolean(PREF_PITCH_ENABLED, enabled).apply()
+            .edit()
+            .putBoolean(PREF_PITCH_ENABLED, enabled)
+            .apply()
     }
 
     /**
@@ -89,7 +68,7 @@ object PitchAccent {
      * (1) is H then L; otherwise mora 1 is L, morae up to the accented one
      * are H, the rest fall. A position at or beyond the last mora therefore
      * renders like heiban *within* the word — the difference only shows on
-     * the following particle, which the renderer draws as a placeholder.
+     * the following particle, which the renderer draws as a fall arrow.
      */
     fun pattern(moraCount: Int, position: Int): List<Boolean> {
         if (moraCount <= 0) return emptyList()
@@ -113,7 +92,7 @@ object PitchAccent {
      * Downstep positions from a stored definition payload, or null when this
      * entry is not pitch data. Detection is by payload shape
      * (`{"reading":…, "pitches":[{"position":N},…]}`), so it works for ANY
-     * Yomitan pitch dictionary the user imports, not just the Kanjium build.
+     * Yomitan pitch dictionary, not just the Kanjium build.
      */
     fun positionsOf(definitionsJson: String): List<Int>? {
         val root: JsonElement = try {

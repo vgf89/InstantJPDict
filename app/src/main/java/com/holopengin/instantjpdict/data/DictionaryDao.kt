@@ -24,6 +24,10 @@ interface DictionaryDao {
     @Query("SELECT * FROM dictionary_meta ORDER BY priority ASC")
     suspend fun getAllDictionaries(): List<DictionaryMeta>
 
+    /** #43: built-in dictionaries are hidden from the user-editable list. */
+    @Query("SELECT * FROM dictionary_meta WHERE builtIn = 1 LIMIT 1")
+    suspend fun findBuiltInDictionary(): DictionaryMeta?
+
     /** #43: used to make bundled-dictionary installs idempotent. */
     @Query("SELECT * FROM dictionary_meta WHERE name = :name LIMIT 1")
     suspend fun findDictionaryByName(name: String): DictionaryMeta?

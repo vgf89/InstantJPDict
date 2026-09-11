@@ -94,6 +94,9 @@ object DictionaryManagerDialog {
             
         lifecycleOwner?.lifecycleScope?.launch {
             val dicts = withContext(Dispatchers.IO) { db.dictionaryDao().getAllDictionaries() }
+                // #43: built-ins are app data, not user dictionaries — nothing
+                // to reorder and nothing to delete, so they are not listed.
+                .filterNot { it.builtIn }
             (rv.adapter as? DictionaryAdapter)?.update(dicts)
         }
     }
