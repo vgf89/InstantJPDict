@@ -75,8 +75,17 @@ class JapaneseUtilVariantFoldTest {
     fun folds_compatibility_and_chinese_only_forms() {
         assertEquals("20°C", JapaneseUtil.foldLookupVariants("20℃"))
         assertEquals("状況", JapaneseUtil.foldLookupVariants("状况"))
-        assertEquals("調査", JapaneseUtil.foldLookupVariants("调查"))
-        assertEquals("調べる", JapaneseUtil.foldLookupVariants("调べる"))
+        // 查 folds (emittable) while 调 does not (we pruned it) — same word, and
+        // only the emittable half of the pair is worth an entry
+        assertEquals("调査④", JapaneseUtil.foldLookupVariants("调查④"))
+    }
+
+    @Test
+    fun does_not_fold_characters_we_pruned_ourselves() {
+        // 调 has no Unihan Japanese reading, so prune_ctc_head cut it: the head
+        // cannot emit it, and an entry would be dead code. Emittability is checked
+        // against rec_remap.txt, never vocab.json, which still lists pruned classes.
+        assertEquals("调", JapaneseUtil.foldLookupVariants("调"))
     }
 
     @Test

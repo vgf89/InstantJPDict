@@ -164,8 +164,13 @@ object JapaneseUtil {
         '℃' to "°C",
         // Obsolete kana the head *can* emit (8,430 and 1,585 occurrences in Aozora)
         'ゑ' to "え", 'ヰ' to "イ",
-        // Chinese-only forms the head emits in place of the Japanese one (benches)
-        '况' to "況", '查' to "査", '调' to "調"
+        // Chinese-only forms the head emits in place of the Japanese one (benches:
+        // `調査` → `調査` with 查 for 査). Only *emittable* pairs belong here: 调
+        // looks like it belongs (調) but has no Unihan Japanese reading, so
+        // tools/prune_ctc_head.py cut it and the head cannot produce it — an entry
+        // for it is dead code. Check membership against rec_remap.txt, not
+        // vocab.json, which still lists the 5,517 classes we pruned.
+        '况' to "況", '查' to "査"
     )
 
     /**
