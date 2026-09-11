@@ -1205,37 +1205,39 @@ class OcrAccessibilityService : AccessibilityService() {
         }
 
         val kanjiEntries = groups.filter { it.isKanjiEntry }
-        if (kanjiEntries.isNotEmpty()) {
-            kanjiEntries.forEach { group ->
-                group.headwords.forEach { hw ->
-                    val kanjiHeader = LinearLayout(this).apply {
-                        orientation = LinearLayout.HORIZONTAL
-                        gravity = Gravity.CENTER_VERTICAL
-                        setPadding(0, 1, 0, 1)
-                    }
-                    kanjiHeader.addView(TextView(this).apply {
-                        text = hw.kanji
-                        setTextColor(Color.CYAN)
-                        textSize = 48f
-                        typeface = android.graphics.Typeface.DEFAULT_BOLD
-                        setPadding(0, 0, 30, 0)
-                    })
-                    val readingStack = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-                    // 訓 (kun) above 音 (on); shared row styling.
-                    hw.kunyomi?.takeIf { it.isNotEmpty() }?.let {
-                        readingStack.addView(createKunOnRow("訓", JapaneseUtil.splitKanaList(it).joinToString("、")))
-                    }
-                    hw.onyomi?.takeIf { it.isNotEmpty() }?.let {
-                        readingStack.addView(createKunOnRow("音", JapaneseUtil.splitKanaList(it).joinToString("、"), topMarginPx = kunOnRowTightenPx))
-                    }
-                    kanjiHeader.addView(readingStack)
-                    headwordList.addView(kanjiHeader)
+        kanjiEntries.forEach { group ->
+            group.headwords.forEach { hw ->
+                val kanjiHeader = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(0, 1, 0, 1)
                 }
+                kanjiHeader.addView(TextView(this).apply {
+                    text = hw.kanji
+                    setTextColor(Color.CYAN)
+                    textSize = 48f
+                    typeface = android.graphics.Typeface.DEFAULT_BOLD
+                    setPadding(0, 0, 30, 0)
+                })
+                val readingStack = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+                // 訓 (kun) above 音 (on); shared row styling.
+                hw.kunyomi?.takeIf { it.isNotEmpty() }?.let {
+                    readingStack.addView(createKunOnRow("訓", JapaneseUtil.splitKanaList(it).joinToString("、")))
+                }
+                hw.onyomi?.takeIf { it.isNotEmpty() }?.let {
+                    readingStack.addView(createKunOnRow("音", JapaneseUtil.splitKanaList(it).joinToString("、"), topMarginPx = kunOnRowTightenPx))
+                }
+                kanjiHeader.addView(readingStack)
+                headwordList.addView(kanjiHeader)
             }
-        } else {
-            // Every (kanji, reading) pair across the entry's reading groups,
-            // one flow row, comma separated.
-            val pairs = groups.flatMap { g -> g.headwords.map { it.kanji to g.reading } }
+        }
+
+        // Every (kanji, reading) pair across the remaining reading groups, one
+        // flow row, comma separated. Entries are single-dictionary so this is
+        // normally all-or-nothing with the kanji branch above.
+        val termGroups = groups.filter { !it.isKanjiEntry }
+        if (termGroups.isNotEmpty()) {
+            val pairs = termGroups.flatMap { g -> g.headwords.map { it.kanji to g.reading } }
             val flow = FlowLayout(this).apply { setPadding(0, 0, 0, 0) }
             // #68: if any headword renders a ruby row, reserve the same ruby
             // space for all of them so baselines align in the shared flow.
