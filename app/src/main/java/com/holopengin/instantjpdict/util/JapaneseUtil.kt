@@ -56,6 +56,15 @@ object JapaneseUtil {
         else -> c
     }
 
+    /**
+     * Split a KANJIDIC kana list ("きみ -ぎみ", "クン キン") into readings.
+     * Entries are whitespace-separated; a leading ASCII hyphen marks an
+     * okurigana-less stem ("-ぎみ" → "ぎみ") and is stripped. Shared by the
+     * #69 classifier and the kanji-branch renderer so both agree.
+     */
+    fun splitKanaList(raw: String): List<String> =
+        raw.split(" ", "　").map { it.trimStart('-') }.filter { it.isNotEmpty() }
+
     private fun convertWidth(text: String): String {
         val sb = StringBuilder()
         var i = 0

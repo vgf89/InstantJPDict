@@ -44,6 +44,7 @@ import com.google.gson.Gson
 import com.holopengin.instantjpdict.util.Deinflector
 import com.holopengin.instantjpdict.util.DeinflectionChain
 import com.holopengin.instantjpdict.util.FuriganaAligner
+import com.holopengin.instantjpdict.util.JapaneseUtil
 import com.holopengin.instantjpdict.util.SplitReadings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -1218,10 +1219,10 @@ class OcrAccessibilityService : AccessibilityService() {
                 // using the exact split-row styling: label (12f, GRAY) + value
                 // (18f, LTGRAY) so the labels read identically everywhere.
                 hw.kunyomi?.takeIf { it.isNotEmpty() }?.let {
-                    readingStack.addView(createKunOnRow("訓", it))
+                    readingStack.addView(createKunOnRow("訓", JapaneseUtil.splitKanaList(it).joinToString("、")))
                 }
                 hw.onyomi?.takeIf { it.isNotEmpty() }?.let {
-                    readingStack.addView(createKunOnRow("音", it, topMarginPx = kunOnRowTightenPx))
+                    readingStack.addView(createKunOnRow("音", JapaneseUtil.splitKanaList(it).joinToString("、"), topMarginPx = kunOnRowTightenPx))
                 }
                 kanjiHeader.addView(readingStack)
                 headwordList.addView(kanjiHeader)
@@ -1730,12 +1731,18 @@ class OcrAccessibilityService : AccessibilityService() {
                 setTextColor(Color.LTGRAY)
                 textSize = 18f
                 includeFontPadding = false
+                setLineSpacing(0f, kunOnLineSpacingMult)
             })
         }
     }
 
     /** Vertical gap applied above every 訓/音 row after the first (#69). */
     private val kunOnRowTightenPx = -6
+    /**
+     * Wrapped-line spacing inside long readings values (#69): long 訓/音
+     * lines must sit no looser than the gap between the rows themselves.
+     */
+    private val kunOnLineSpacingMult = 0.85f
 
     private fun createRubyStackView(base: String, ruby: String, isMini: Boolean): View {
         return LinearLayout(this).apply {

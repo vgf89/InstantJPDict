@@ -794,10 +794,10 @@ class OcrOverlayStateController {
             for (e in entries) {
                 if (e.onyomi == null && e.kunyomi == null) continue
                 val acc = kunOn.getOrPut(e.kanji) { KunOn(emptySet(), emptySet()) }
-                val on = acc.on + (e.onyomi?.split(" ").orEmpty())
+                val on = acc.on + (e.onyomi?.let { JapaneseUtil.splitKanaList(it) }.orEmpty())
                     .map { JapaneseUtil.katakanaToHiragana(it) }.filter { it.isNotEmpty() }
-                val kun = acc.kun + (e.kunyomi?.split(" ").orEmpty())
-                    .map { JapaneseUtil.katakanaToHiragana(it.trimStart('-')) }.filter { it.isNotEmpty() }
+                val kun = acc.kun + (e.kunyomi?.let { JapaneseUtil.splitKanaList(it) }.orEmpty())
+                    .map { JapaneseUtil.katakanaToHiragana(it) }.filter { it.isNotEmpty() }
                 kunOn[e.kanji] = KunOn(on.toSet(), kun.toSet())
             }
             entries.groupBy { it.dictionaryId }.map { (dictId, dictEntries) ->

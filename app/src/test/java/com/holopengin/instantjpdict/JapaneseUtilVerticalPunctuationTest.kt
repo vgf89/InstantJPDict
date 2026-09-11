@@ -34,6 +34,15 @@ class JapaneseUtilVerticalPunctuationTest {
     }
 
     @Test
+    fun split_kana_list() {
+        assertEquals(listOf("きみ", "ぎみ"), JapaneseUtil.splitKanaList("きみ -ぎみ"))
+        assertEquals(listOf("クン", "キン"), JapaneseUtil.splitKanaList("クン キン"))
+        assertEquals(listOf("クン"), JapaneseUtil.splitKanaList("クン"))
+        assertEquals(emptyList<String>(), JapaneseUtil.splitKanaList(""))
+        assertEquals(emptyList<String>(), JapaneseUtil.splitKanaList("   "))
+    }
+
+    @Test
     fun lookup_safe_normalize_folds_back() {
         // Dictionary lookup runs normalize(), which folds ？ back to ? —
         // so the substitution must not change lookup results.
