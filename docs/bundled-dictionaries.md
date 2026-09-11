@@ -85,3 +85,50 @@ before they were handled:
 
 One row (`言論機関 げんろんきかん`) declares position 8 for a 7-mora reading. It
 is upstream noise; the renderer clamps it.
+
+## Kanji components — `components/krad_components.txt`
+
+Visual decomposition of each kanji into its components, used to propose
+characters the recogniser cannot emit (see #44). One line per kanji,
+`呟:亠 口 幺 玄`, sorted by codepoint.
+
+| | |
+|---|---|
+| Source | [EDRDG KRADFILE](http://ftp.edrdg.org/pub/Nihongo/kradzip.zip) — `kradfile` + `kradfile2` |
+| License | EDRDG (CC BY-SA 4.0) |
+| Entries | 12,156 kanji |
+| Generator | `tools/build_component_table.py` |
+
+Regenerate:
+
+```sh
+curl -o /tmp/kradzip.zip http://ftp.edrdg.org/pub/Nihongo/kradzip.zip
+python3 tools/build_component_table.py --zip /tmp/kradzip.zip \
+  --out-dir app/src/main/assets/components
+```
+
+Output is byte-deterministic, as with the pitch dictionary. Both files are
+merged because their coverage differs (`啦` is in `kradfile2` only); the input
+is EUC-JP, not UTF-8.
+
+### Why components, and not a language model
+
+An unemittable character comes back as a **blank**, not a misread: at the `呟`
+gap the head's best guess is blank at 0.42 with 咳 0.17 behind it. That blank is
+not detectable by probability (recovery is error-neutral at every floor) and not
+by ink (92–98% of ordinary inter-character gaps contain ink too).
+
+What the head *does* carry is radical evidence: its top-5 at that gap is
+`咳 咬 啦 哮 眩`, and those share 口 and 亠 — both components of `呟`. Filtering
+the dictionary's reading-matched candidates by the components the head agrees on
+cuts 229 candidates to 7 with `呟` surviving, and the existing text n-gram then
+ranks it first. A text n-gram *alone* ranks it 30th of 229, because every
+candidate is a `〜く` verb and 「と咲いて」「と働いて」「と呟いて」 are all
+ordinary Japanese. The components are the discriminator; the n-gram is only the
+tie-break.
+
+Scoring the same candidates with an n-gram trained on kanji-only subsequences
+(to rank on content rather than conjugation) was measured and did **not** help:
+rank 3 of 7 against the plain model's 1 of 7. Once the component filter has cut
+the field to single digits, conjugation noise stops mattering.
+
