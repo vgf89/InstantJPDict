@@ -31,35 +31,35 @@ class PitchAccentTest {
     }
 
     @Test
-    fun mark_none_for_heiban_and_first_mora_for_atamadaka() {
-        // Heiban carries no mark — the absence is the encoding.
-        assertNull(PitchAccent.markIndex(3, 0))
-        // Accent 1 falls after mora 1 → mark sits on mora index 0.
-        assertEquals(0, PitchAccent.markIndex(3, 1))
+    fun pattern_heiban() {
+        // 0 = no downstep: L then H — とり renders と gray, り white.
+        assertEquals(listOf(false, true), PitchAccent.pattern(2, 0))
+        assertEquals(listOf(false, true, true), PitchAccent.pattern(3, 0))
+        assertEquals(listOf(false), PitchAccent.pattern(1, 0))
     }
 
     @Test
-    fun mark_sits_on_the_mora_before_the_fall() {
-        // Accent 2 of 3 morae: fall after the 2nd mora → index 1.
-        assertEquals(1, PitchAccent.markIndex(3, 2))
-        // Odaka (position == mora count): fall after the last mora.
-        assertEquals(2, PitchAccent.markIndex(3, 3))
-        // Out-of-range position (one known bad row) clamps to the last mora
-        // instead of dropping the mark.
-        assertEquals(2, PitchAccent.markIndex(3, 9))
+    fun pattern_atamadaka() {
+        // 1 = fall right after the first mora.
+        assertEquals(listOf(true, false), PitchAccent.pattern(2, 1))
+        assertEquals(listOf(true, false, false), PitchAccent.pattern(3, 1))
     }
 
     @Test
-    fun mark_absent_for_empty_mora_count() {
-        assertNull(PitchAccent.markIndex(0, 1))
+    fun pattern_nakadaka_and_odaka() {
+        // L H L for a 3-mora word accented on mora 2 — たべる renders た gray,
+        // べ white, る gray.
+        assertEquals(listOf(false, true, false), PitchAccent.pattern(3, 2))
+        // Position >= mora count renders like heiban within the word; the
+        // particle placeholder carries the difference.
+        assertEquals(listOf(false, true), PitchAccent.pattern(2, 2))
+        assertEquals(listOf(false, true, true), PitchAccent.pattern(3, 3))
+        assertEquals(listOf(false, true, true), PitchAccent.pattern(3, 9))
     }
 
     @Test
-    fun heiban_and_odaka_are_distinguishable_only_by_mark() {
-        // The verification behind the single-mark design: both are L H…H
-        // in-word, so the mark is the only thing that separates them.
-        assertNull(PitchAccent.markIndex(2, 0))
-        assertEquals(1, PitchAccent.markIndex(2, 2))
+    fun pattern_empty() {
+        assertEquals(emptyList<Boolean>(), PitchAccent.pattern(0, 1))
     }
 
     @Test

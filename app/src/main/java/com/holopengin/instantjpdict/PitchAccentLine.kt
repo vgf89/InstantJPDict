@@ -14,16 +14,18 @@ import com.holopengin.instantjpdict.util.PitchAccent
  * a single comma-separated line so the popup gets one row instead of one row
  * per accent variant.
  *
- * Each item renders its morae with the accented mora in [ACCENT_COLOR] and the
- * rest in [PLAIN_COLOR]. When the downstep lands past the final mora (odaka),
- * the unwritten particle slot is drawn as [BEYOND_WORD] in [PLAIN_COLOR] — it
- * is low. Heiban shows all morae in [PLAIN_COLOR] with no placeholder.
+ * Each item renders its morae in the Tokyo contour — high morae in
+ * [ACCENT_COLOR], low morae in [PLAIN_COLOR]. When the downstep lands past
+ * the final mora (odaka), the unwritten particle slot is drawn as
+ * [BEYOND_WORD] in [PLAIN_COLOR] — it is low. That placeholder is what
+ * separates odaka from heiban, whose in-word contour is identical.
  *
  * Why color instead of a step line or tick: the accent position determines the
- * whole Tokyo contour, so highlighting the mora before the fall loses nothing —
- * and it wins on the one case the contour gets wrong. Heiban (0) and odaka
- * (position == mora count) share the same in-word contour (L H…H); only the
- * mark tells them apart. Verified across the whole Kanjium dataset.
+ * whole Tokyo contour, so painting each mora high/low loses nothing — and the
+ * 〇 placeholder covers the one case the word alone gets wrong. Heiban (0)
+ * and odaka (position == mora count) share the same in-word contour
+ * (L H…H); only the particle slot tells them apart. Verified across the
+ * whole Kanjium dataset.
  *
  * A TextView rather than a custom View so overflow wraps like normal text.
  */
@@ -32,10 +34,10 @@ object PitchAccentLine {
     /** Item separator. JP comma, matching the headword lists (#64). */
     const val SEPARATOR = "、"
 
-    /** Unaccented morae — deliberately dimmer than the accented one. */
+    /** Low morae and the low particle slot — deliberately dimmer than high. */
     const val PLAIN_COLOR = 0xFFAAAAAA.toInt()
 
-    /** The accented mora: pure white, matching the headword text. */
+    /** High morae: pure white, matching the headword text. */
     const val ACCENT_COLOR = Color.WHITE
 
     /** Numeric position label and separators: dimmest of the three. */
@@ -70,12 +72,12 @@ object PitchAccentLine {
         usable.forEachIndexed { index, item ->
             if (index > 0) text.append(SEPARATOR)
             val morae = PitchAccent.moraeOf(item.reading)
-            val accented = PitchAccent.markIndex(morae.size, item.position)
+            val contour = PitchAccent.pattern(morae.size, item.position)
             morae.forEachIndexed { moraIndex, mora ->
                 val start = text.length
                 text.append(mora)
                 text.setSpan(
-                    ForegroundColorSpan(if (moraIndex == accented) ACCENT_COLOR else PLAIN_COLOR),
+                    ForegroundColorSpan(if (contour[moraIndex]) ACCENT_COLOR else PLAIN_COLOR),
                     start,
                     text.length,
                     Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
