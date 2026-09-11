@@ -9,6 +9,7 @@ import android.graphics.Typeface
 import android.util.Log
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
+import com.holopengin.instantjpdict.util.BlankRecovery
 import com.holopengin.instantjpdict.util.InferLog
 import com.holopengin.instantjpdict.util.JapaneseUtil
 import java.io.File
@@ -1534,8 +1535,9 @@ class OcrEngine(private val context: Context) {
     /**
      * Greedy CTC decode: argmax per timestep, skip blank 0, collapse repeats,
      * class 18709 → space. `blankThreshold` 0 means pure greedy (default PP-OCR
-     * behaviour); values >0 surface a non-blank char at blank timesteps whose
-     * best alternative scores within `blankThreshold` of blank, with [GAP_CHAR]
+     * behaviour); values >0 surface a non-blank char at a blank timestep when the
+     * candidate clears that probability floor *and* beats blank's own probability
+     * (see [BlankRecovery] for the measurement behind the rule), with [GAP_CHAR]
      * kept as a selectable alternative. Emits per-char top-15 [alternatives]
      * plus timestep columns; full per-timestep top-15 lives in
      * [PPOcrResult.rawAlternatives] for cache re-decode.
@@ -1584,7 +1586,7 @@ class OcrEngine(private val context: Context) {
                     if (blankThreshold > 0f) {
                         // Check if a non-blank alternative has meaningful score.
                         val topNonBlank = indexed.firstOrNull { (ch, sc) ->
-                            ch != GAP_CHAR && ch != '　' && (1f / (1f + abs(maxVal - sc)) > blankThreshold)
+                            ch != GAP_CHAR && ch != '　' && BlankRecovery.shouldSurface(maxVal, sc, blankThreshold)
                         }
                         if (topNonBlank != null) {
                             // Show the best non-blank character; put GAP_CHAR as an alternative
@@ -1661,7 +1663,7 @@ class OcrEngine(private val context: Context) {
                 classIdx == 0 -> {
                     if (blankThreshold > 0f) {
                         val topNonBlank = indexed.firstOrNull { (ch, sc) ->
-                            ch != GAP_CHAR && ch != '　' && (1f / (1f + abs(maxVal - sc)) > blankThreshold)
+                            ch != GAP_CHAR && ch != '　' && BlankRecovery.shouldSurface(maxVal, sc, blankThreshold)
                         }
                         if (topNonBlank != null) {
                             text.append(topNonBlank.first)
