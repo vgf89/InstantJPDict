@@ -1214,9 +1214,15 @@ class OcrAccessibilityService : AccessibilityService() {
                     setPadding(0, 0, 30, 0)
                 })
                 val readingStack = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-                // #69: 訓 (kun) above 音 (on), matching the split-row order.
-                hw.kunyomi?.takeIf { it.isNotEmpty() }?.let { readingStack.addView(TextView(this).apply { text = "訓 ${it.replace(" ", "、")}"; setTextColor(Color.LTGRAY); textSize = 14f }) }
-                hw.onyomi?.takeIf { it.isNotEmpty() }?.let { readingStack.addView(TextView(this).apply { text = "音 ${it.replace(" ", "、")}"; setTextColor(Color.LTGRAY); textSize = 14f }) }
+                // #69: 訓 (kun) above 音 (on), matching the split-row order and
+                // using the exact split-row styling: label (12f, GRAY) + value
+                // (18f, LTGRAY) so the labels read identically everywhere.
+                hw.kunyomi?.takeIf { it.isNotEmpty() }?.let {
+                    readingStack.addView(createKunOnRow("訓", it))
+                }
+                hw.onyomi?.takeIf { it.isNotEmpty() }?.let {
+                    readingStack.addView(createKunOnRow("音", it))
+                }
                 kanjiHeader.addView(readingStack)
                 headwordList.addView(kanjiHeader)
             }
@@ -1686,25 +1692,34 @@ class OcrAccessibilityService : AccessibilityService() {
                 orientation = LinearLayout.VERTICAL
                 listOf("訓" to split.kun, "音" to split.on, "他" to split.other).forEach { (label, readings) ->
                     if (readings.isNotEmpty()) {
-                        addView(LinearLayout(this@OcrAccessibilityService).apply {
-                            orientation = LinearLayout.HORIZONTAL
-                            gravity = Gravity.CENTER_VERTICAL
-                            addView(TextView(this@OcrAccessibilityService).apply {
-                                text = label
-                                setTextColor(Color.GRAY)
-                                textSize = 12f
-                                setPadding(0, 0, 12, 0)
-                                includeFontPadding = false
-                            })
-                            addView(TextView(this@OcrAccessibilityService).apply {
-                                text = readings.joinToString("、")
-                                setTextColor(Color.LTGRAY)
-                                textSize = 18f
-                                includeFontPadding = false
-                            })
-                        })
+                        addView(createKunOnRow(label, readings.joinToString("、")))
                     }
                 }
+            })
+        }
+    }
+
+    /**
+     * #69: one 訓 / 音 / 他 row — label (12f, GRAY) beside its readings
+     * (18f, LTGRAY). Shared by the kanji-entry and split-headword branches so
+     * every on/kun label renders identically.
+     */
+    private fun createKunOnRow(label: String, readings: String): View {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(TextView(this@OcrAccessibilityService).apply {
+                text = label
+                setTextColor(Color.GRAY)
+                textSize = 12f
+                setPadding(0, 0, 12, 0)
+                includeFontPadding = false
+            })
+            addView(TextView(this@OcrAccessibilityService).apply {
+                text = readings
+                setTextColor(Color.LTGRAY)
+                textSize = 18f
+                includeFontPadding = false
             })
         }
     }
