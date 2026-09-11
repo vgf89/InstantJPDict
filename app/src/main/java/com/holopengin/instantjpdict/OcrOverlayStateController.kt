@@ -4,6 +4,7 @@ import com.holopengin.instantjpdict.util.JapaneseUtil
 import com.holopengin.instantjpdict.util.Deinflector
 import com.holopengin.instantjpdict.util.DeinflectionChain
 import com.holopengin.instantjpdict.util.DictionaryRedirects
+import com.holopengin.instantjpdict.util.PitchAccent
 import com.holopengin.instantjpdict.data.DictionaryEntry
 import com.google.gson.Gson
 import uniffi.nav_graph_core.*
@@ -57,7 +58,10 @@ data class FormattedReadingGroup(
     val reading: String,
     val headwords: List<FormattedHeadword>,
     val senseGroups: List<FormattedSenseGroup>,
-    val isKanjiEntry: Boolean
+    val isKanjiEntry: Boolean,
+    /** #43: downstep positions for this reading (empty = no pitch data, or
+     * the feature is off). Drawn as a step line over the morae. */
+    val pitchPositions: List<Int> = emptyList()
 )
 
 data class FormattedEntry(
@@ -780,10 +784,24 @@ class OcrOverlayStateController {
         // never merge into a single block. findByTexts returns priority
         // order, so groupBy preserves dictionary ranking.
         return matches.flatMap { (term, entries, chain) ->
+            // #43: pitch rows (from any imported pitch dictionary) are data,
+            // not entries — collect them by reading and keep them out of the
+            // rendered entry list. Reading-keyed, so a kana form's pitch still
+            // lands on the matching group.
+            val pitchByReading = mutableMapOf<String, MutableList<Int>>()
+            val termEntries = entries.filterNot { e ->
+                val positions = PitchAccent.positionsOf(e.definitions)
+                if (positions == null) return@filterNot false
+                val reading = PitchAccent.readingOf(e.definitions) ?: e.reading
+                pitchByReading.getOrPut(reading) { mutableListOf() }.addAll(positions)
+                true
+            }
+            if (termEntries.isEmpty()) return@flatMap emptyList()
+
             // One entry per (term, dictionary): JMdict and KANJIDIC rows must
             // never merge into a single block. findByTexts returns priority
             // order, so groupBy preserves dictionary ranking.
-            entries.groupBy { it.dictionaryId }.map { (dictId, dictEntries) ->
+            termEntries.groupBy { it.dictionaryId }.map { (dictId, dictEntries) ->
             val readingGroups = dictEntries.groupBy { it.reading }.map { (reading, readingEntries) ->
                 val isKanjiEntry = readingEntries.firstOrNull()?.let { it.onyomi != null || it.kunyomi != null } ?: false
                 val kanjiVariants = readingEntries.map { it.kanji }.distinct()
@@ -842,7 +860,13 @@ class OcrOverlayStateController {
                     senseGroups.add(FormattedSenseGroup(tagsToRender.filter { groupSeenTags.add(it) }, currentGroupSenses, isForms))
                 }
 
-                FormattedReadingGroup(reading, headwords, senseGroups, isKanjiEntry)
+                FormattedReadingGroup(
+                    reading,
+                    headwords,
+                    senseGroups,
+                    isKanjiEntry,
+                    pitchPositions = pitchByReading[reading]?.distinct()?.sorted() ?: emptyList()
+                )
             }
             FormattedEntry(
                 term,

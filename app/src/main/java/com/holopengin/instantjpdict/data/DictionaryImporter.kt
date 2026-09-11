@@ -3,6 +3,7 @@ package com.holopengin.instantjpdict.data
 import android.content.Context
 import android.util.Log
 import com.google.gson.Gson
+import com.google.gson.JsonElement
 import com.google.gson.stream.JsonReader
 import com.google.gson.stream.JsonToken
 import kotlinx.coroutines.Dispatchers
@@ -78,6 +79,17 @@ class DictionaryImporter(private val context: Context) {
                         }
                         val reader = JsonReader(InputStreamReader(zipInputStream, "UTF-8"))
                         parseTagBank(reader, dao, dictionaryId!!)
+                    }
+                    // #43: term-meta banks carry pitch-accent data (and freq,
+                    // which we skip). Stored like a term entry so lookup finds
+                    // it, then filtered out of the entry list at render time.
+                    entry.name.startsWith("term_meta_bank_") && entry.name.endsWith(".json") -> {
+                        if (dictionaryId == null) {
+                            val maxPriority = dao.getMaxPriority() ?: -1
+                            dictionaryId = dao.insertDictionary(DictionaryMeta(name = dictTitle, priority = maxPriority + 1)).toInt()
+                        }
+                        val reader = JsonReader(InputStreamReader(zipInputStream, "UTF-8"))
+                        processTermMetaBank(reader, dictionaryId!!, batchChannel)
                     }
                 }
                 zipInputStream.closeEntry()
@@ -266,6 +278,57 @@ class DictionaryImporter(private val context: Context) {
             Log.e("DictionaryImporter", "Failed to parse kanji entry", e)
             return null
         }
+    }
+
+    /**
+     * #43: Yomitan term-meta bank rows are `[term, type, data]`. Only `pitch`
+     * rows are kept (freq/ipa skipped); each becomes a DictionaryEntry keyed
+     * on the term with its reading, and its data stored verbatim as the
+     * definition payload so render-time parsing sees exact integers.
+     */
+    private suspend fun processTermMetaBank(reader: JsonReader, dictionaryId: Int, channel: Channel<List<DictionaryEntry>>) {
+        val batchSize = 5000
+        var batch = mutableListOf<DictionaryEntry>()
+
+        reader.beginArray()
+        while (reader.hasNext()) {
+            try {
+                reader.beginArray()
+                val term = reader.nextString()
+                val type = nextStringOrArray(reader)
+                val data: JsonElement? = if (reader.peek() != JsonToken.END_ARRAY) {
+                    gson.fromJson(reader, JsonElement::class.java)
+                } else null
+                while (reader.hasNext()) reader.skipValue()
+                reader.endArray()
+
+                if (type == "pitch" && data != null && term.isNotEmpty()) {
+                    val reading = data.takeIf { it.isJsonObject }
+                        ?.asJsonObject?.get("reading")
+                        ?.takeIf { it.isJsonPrimitive }?.asJsonPrimitive?.asString
+                    if (!reading.isNullOrEmpty()) {
+                        batch.add(DictionaryEntry(
+                            kanji = term,
+                            reading = reading,
+                            definitions = data.toString(),
+                            rules = "",
+                            popularity = 0,
+                            dictionaryId = dictionaryId
+                        ))
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("DictionaryImporter", "Failed to parse term meta entry", e)
+                while (reader.peek() != JsonToken.END_ARRAY && reader.peek() != JsonToken.END_DOCUMENT) reader.skipValue()
+                if (reader.peek() == JsonToken.END_ARRAY) reader.endArray()
+            }
+            if (batch.size >= batchSize) {
+                channel.send(batch)
+                batch = mutableListOf()
+            }
+        }
+        reader.endArray()
+        if (batch.isNotEmpty()) channel.send(batch)
     }
 
     private fun parseTermEntry(reader: JsonReader, dictionaryId: Int): DictionaryEntry? {

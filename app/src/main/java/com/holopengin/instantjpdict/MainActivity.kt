@@ -28,6 +28,7 @@ import androidx.lifecycle.lifecycleScope
 import com.holopengin.instantjpdict.data.AppDatabase
 import com.holopengin.instantjpdict.data.DictionaryImporter
 import com.holopengin.instantjpdict.util.InferLog
+import com.holopengin.instantjpdict.util.PitchAccent
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -110,6 +111,20 @@ class MainActivity : AppCompatActivity() {
         addButton(layout, "Gamepad Controls") {
             GamepadSettingsDialog.show(this)
         }
+
+        // #43: pitch-accent display. Off by default; needs a pitch dictionary
+        // imported (see the Kanjium-derived zip) or the rows simply never
+        // appear. Read at popup build time, so the next lookup picks it up.
+        layout.addView(CheckBox(this).apply {
+            text = "Show pitch accent in dictionary popup"
+            isChecked = PitchAccent.isEnabled(this@MainActivity)
+            textSize = 14f
+            setPadding(0, 20, 0, 8)
+            setOnCheckedChangeListener { _, checked ->
+                PitchAccent.setEnabled(this@MainActivity, checked)
+                Log.d("MainActivity", "pitch_accent_enabled=$checked")
+            }
+        })
 
         addButton(layout, "Refresh Status") {
             refreshStatus()

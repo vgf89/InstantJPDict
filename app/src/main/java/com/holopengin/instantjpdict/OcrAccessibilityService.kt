@@ -45,6 +45,7 @@ import com.holopengin.instantjpdict.util.Deinflector
 import com.holopengin.instantjpdict.util.DeinflectionChain
 import com.holopengin.instantjpdict.util.FuriganaAligner
 import com.holopengin.instantjpdict.util.JapaneseUtil
+import com.holopengin.instantjpdict.util.PitchAccent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -1249,6 +1250,22 @@ class OcrAccessibilityService : AccessibilityService() {
                 }
             }
             headwordList.addView(flow)
+
+            // #43: pitch contour under the headword flow — one row per
+            // reading that has data. Gated by the MainActivity checkbox; with
+            // no pitch dictionary imported (or the toggle off) this is a no-op
+            // and the popup is unchanged.
+            if (PitchAccent.isEnabled(this)) {
+                termGroups.forEach { g ->
+                    PitchAccentView.rowsFor(this, g.reading, g.pitchPositions, pitchTextSizePx)
+                        .forEach { row ->
+                            headwordList.addView(row, LinearLayout.LayoutParams(
+                                LinearLayout.LayoutParams.WRAP_CONTENT,
+                                LinearLayout.LayoutParams.WRAP_CONTENT
+                            ).apply { topMargin = pitchRowTopMarginPx })
+                        }
+                }
+            }
         }
         container.addView(headwordList)
     }
@@ -1710,6 +1727,10 @@ class OcrAccessibilityService : AccessibilityService() {
      * lines must sit no looser than the gap between the rows themselves.
      */
     private val kunOnLineSpacingMult = 0.85f
+    /** Pitch-row typography (#43): matches the furigana reading size. */
+    private val pitchTextSizePx: Float
+        get() = 13f * resources.displayMetrics.scaledDensity
+    private val pitchRowTopMarginPx = 2
 
     private fun createRubyStackView(base: String, ruby: String, isMini: Boolean): View {
         return LinearLayout(this).apply {
