@@ -71,8 +71,8 @@ object PitchAccent {
     /**
      * True when the downstep lands past the final mora (odaka, or the one
      * known-bad row whose position exceeds its mora count): the following
-     * particle carries the fall, so the renderer draws [beyond-word
-     * placeholder][com.holopengin.instantjpdict.PitchAccentLine.BEYOND_WORD].
+     * particle carries the fall, so the renderer draws a fall arrow
+     * ([PitchAccentLine.FALL_ARROW][com.holopengin.instantjpdict.PitchAccentLine.FALL_ARROW]).
      */
     fun fallsBeyondWord(moraCount: Int, position: Int): Boolean =
         moraCount > 0 && position > 0 && position >= moraCount
