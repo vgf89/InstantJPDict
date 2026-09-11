@@ -4,9 +4,6 @@ import com.holopengin.instantjpdict.util.JapaneseUtil
 import com.holopengin.instantjpdict.util.Deinflector
 import com.holopengin.instantjpdict.util.DeinflectionChain
 import com.holopengin.instantjpdict.util.DictionaryRedirects
-import com.holopengin.instantjpdict.util.ReadingGroupMerge
-import com.holopengin.instantjpdict.util.KunOn
-import com.holopengin.instantjpdict.util.SplitReadings
 import com.holopengin.instantjpdict.data.DictionaryEntry
 import com.google.gson.Gson
 import uniffi.nav_graph_core.*
@@ -60,10 +57,7 @@ data class FormattedReadingGroup(
     val reading: String,
     val headwords: List<FormattedHeadword>,
     val senseGroups: List<FormattedSenseGroup>,
-    val isKanjiEntry: Boolean,
-    /** #69: set on merged rows splittable into 訓/音 rows (null = render
-     * via the normal ruby path). */
-    val splitReadings: SplitReadings? = null
+    val isKanjiEntry: Boolean
 )
 
 data class FormattedEntry(
@@ -786,20 +780,9 @@ class OcrOverlayStateController {
         // never merge into a single block. findByTexts returns priority
         // order, so groupBy preserves dictionary ranking.
         return matches.flatMap { (term, entries, chain) ->
-            // #69: KANJIDIC on/kun lists per kanji (hiragana-normalized) so
-            // merged headword rows can split readings into 訓/音 rows.
-            // Built from ALL entries cross-dict: the JMdict slice borrows
-            // the KANJIDIC slice's lists.
-            val kunOn = mutableMapOf<String, KunOn>()
-            for (e in entries) {
-                if (e.onyomi == null && e.kunyomi == null) continue
-                val acc = kunOn.getOrPut(e.kanji) { KunOn(emptySet(), emptySet()) }
-                val on = acc.on + (e.onyomi?.let { JapaneseUtil.splitKanaList(it) }.orEmpty())
-                    .map { JapaneseUtil.katakanaToHiragana(it) }.filter { it.isNotEmpty() }
-                val kun = acc.kun + (e.kunyomi?.let { JapaneseUtil.splitKanaList(it) }.orEmpty())
-                    .map { JapaneseUtil.katakanaToHiragana(it) }.filter { it.isNotEmpty() }
-                kunOn[e.kanji] = KunOn(on.toSet(), kun.toSet())
-            }
+            // One entry per (term, dictionary): JMdict and KANJIDIC rows must
+            // never merge into a single block. findByTexts returns priority
+            // order, so groupBy preserves dictionary ranking.
             entries.groupBy { it.dictionaryId }.map { (dictId, dictEntries) ->
             val readingGroups = dictEntries.groupBy { it.reading }.map { (reading, readingEntries) ->
                 val isKanjiEntry = readingEntries.firstOrNull()?.let { it.onyomi != null || it.kunyomi != null } ?: false
@@ -863,7 +846,7 @@ class OcrOverlayStateController {
             }
             FormattedEntry(
                 term,
-                ReadingGroupMerge.mergeSameKanji(readingGroups, kunOn),
+                readingGroups,
                 deinflection = chain,
                 dictionaryName = dictNames[dictId]
             )

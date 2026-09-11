@@ -45,8 +45,6 @@ import com.holopengin.instantjpdict.util.Deinflector
 import com.holopengin.instantjpdict.util.DeinflectionChain
 import com.holopengin.instantjpdict.util.FuriganaAligner
 import com.holopengin.instantjpdict.util.JapaneseUtil
-import com.holopengin.instantjpdict.util.RubyHeading
-import com.holopengin.instantjpdict.util.SplitReadings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -1133,9 +1131,7 @@ class OcrAccessibilityService : AccessibilityService() {
                 orientation = LinearLayout.VERTICAL
                 setPadding(0, 4, 0, 40)
             }
-            entry.readingGroups.forEach { group ->
-                renderHeadwordSection(termSection, group)
-            }
+            renderHeadwordSection(termSection, entry.readingGroups)
             // #62: chain row directly below the headwords, above the senses.
             // Direct matches (deinflection == null) render as before.
             entry.deinflection?.let { chain ->
@@ -1195,64 +1191,62 @@ class OcrAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun renderHeadwordSection(container: LinearLayout, group: FormattedReadingGroup) {
+    /**
+     * Headword block for one entry. Kanji (KANJIDIC) entries render their big
+     * glyph with 訓/音 rows; ordinary term entries render every headword with
+     * its own reading in ONE comma-separated flow, so repeated kanji across
+     * reading groups read like the multi-kanji kana-lookup case instead of
+     * stacking.
+     */
+    private fun renderHeadwordSection(container: LinearLayout, groups: List<FormattedReadingGroup>) {
         val headwordList = LinearLayout(this).apply { 
             orientation = LinearLayout.VERTICAL
             setPadding(0, 0, 0, 2)
         }
 
-        if (group.isKanjiEntry) {
-            group.headwords.forEach { hw ->
-                val kanjiHeader = LinearLayout(this).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    gravity = Gravity.CENTER_VERTICAL
-                    setPadding(0, 1, 0, 1)
+        val kanjiEntries = groups.filter { it.isKanjiEntry }
+        if (kanjiEntries.isNotEmpty()) {
+            kanjiEntries.forEach { group ->
+                group.headwords.forEach { hw ->
+                    val kanjiHeader = LinearLayout(this).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.CENTER_VERTICAL
+                        setPadding(0, 1, 0, 1)
+                    }
+                    kanjiHeader.addView(TextView(this).apply {
+                        text = hw.kanji
+                        setTextColor(Color.CYAN)
+                        textSize = 48f
+                        typeface = android.graphics.Typeface.DEFAULT_BOLD
+                        setPadding(0, 0, 30, 0)
+                    })
+                    val readingStack = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+                    // 訓 (kun) above 音 (on); shared row styling.
+                    hw.kunyomi?.takeIf { it.isNotEmpty() }?.let {
+                        readingStack.addView(createKunOnRow("訓", JapaneseUtil.splitKanaList(it).joinToString("、")))
+                    }
+                    hw.onyomi?.takeIf { it.isNotEmpty() }?.let {
+                        readingStack.addView(createKunOnRow("音", JapaneseUtil.splitKanaList(it).joinToString("、"), topMarginPx = kunOnRowTightenPx))
+                    }
+                    kanjiHeader.addView(readingStack)
+                    headwordList.addView(kanjiHeader)
                 }
-                kanjiHeader.addView(TextView(this).apply {
-                    text = hw.kanji
-                    setTextColor(Color.CYAN)
-                    textSize = 48f
-                    typeface = android.graphics.Typeface.DEFAULT_BOLD
-                    setPadding(0, 0, 30, 0)
-                })
-                val readingStack = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-                // #69: 訓 (kun) above 音 (on), matching the split-row order and
-                // using the exact split-row styling: label (12f, GRAY) + value
-                // (18f, LTGRAY) so the labels read identically everywhere.
-                hw.kunyomi?.takeIf { it.isNotEmpty() }?.let {
-                    readingStack.addView(createKunOnRow("訓", JapaneseUtil.splitKanaList(it).joinToString("、")))
-                }
-                hw.onyomi?.takeIf { it.isNotEmpty() }?.let {
-                    readingStack.addView(createKunOnRow("音", JapaneseUtil.splitKanaList(it).joinToString("、"), topMarginPx = kunOnRowTightenPx))
-                }
-                kanjiHeader.addView(readingStack)
-                headwordList.addView(kanjiHeader)
             }
         } else {
-            // #69: merged rows with a KANJIDIC-backed 訓/音 split render the
-            // kanji left with labeled rows right, instead of ruby above.
-            val split = group.splitReadings
-            if (split != null) {
-                headwordList.addView(
-                    createSplitHeadwordView(group.headwords.firstOrNull()?.kanji ?: group.reading, split)
-                )
-            } else {
+            // Every (kanji, reading) pair across the entry's reading groups,
+            // one flow row, comma separated.
+            val pairs = groups.flatMap { g -> g.headwords.map { it.kanji to g.reading } }
             val flow = FlowLayout(this).apply { setPadding(0, 0, 0, 0) }
             // #68: if any headword renders a ruby row, reserve the same ruby
             // space for all of them so baselines align in the shared flow.
-            // All-ruby and no-ruby groups behave exactly as before.
-            val reserveRubySpace = group.headwords.any { hw -> hw.kanji != group.reading }
-            // #69: the left-align rule applies only to a lone headword; a row
-            // of alternative kanji/reading pairs stays centered.
-            val alignStart = group.headwords.size == 1
-            group.headwords.forEachIndexed { i, hw ->
-                flow.addView(createRubyView(hw.kanji, group.reading, reserveRubySpace = reserveRubySpace, allowAlignStart = alignStart))
-                if (i < group.headwords.size - 1) {
+            val reserveRubySpace = pairs.any { (kanji, reading) -> kanji != reading }
+            pairs.forEachIndexed { i, (kanji, reading) ->
+                flow.addView(createRubyView(kanji, reading, reserveRubySpace = reserveRubySpace))
+                if (i < pairs.size - 1) {
                     flow.addView(TextView(this).apply { text = "、"; setTextColor(Color.GRAY); textSize = 24f; setPadding(5, 0, 5, 0) })
                 }
             }
             headwordList.addView(flow)
-            }
         }
         container.addView(headwordList)
     }
@@ -1612,7 +1606,7 @@ class OcrAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun createRubyView(term: String, reading: String, isMini: Boolean = false, reserveRubySpace: Boolean = false, allowAlignStart: Boolean = false): View {
+    private fun createRubyView(term: String, reading: String, isMini: Boolean = false, reserveRubySpace: Boolean = false): View {
         if (term == reading) {
             if (!reserveRubySpace) return createBaseTextView(term, isMini)
             // #68: mixed group — reserve the same ruby row a furigana-bearing
@@ -1625,7 +1619,7 @@ class OcrAccessibilityService : AccessibilityService() {
         // plain base text. Falls back to full-reading ruby when unalignable.
         val segments = FuriganaAligner.align(term, reading)
         if (segments == null || segments.none { it.ruby != null }) {
-            return createFullRubyView(term, reading, isMini, allowAlignStart)
+            return createFullRubyView(term, reading, isMini)
         }
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -1658,66 +1652,28 @@ class OcrAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun createFullRubyView(term: String, reading: String, isMini: Boolean, allowAlignStart: Boolean = true): View {
-        // #69: a long merged reading wraps; centering the kanji under it reads
-        // as ragged, so those rows left-align. Single readings keep centering.
-        val alignStart = allowAlignStart && RubyHeading.shouldAlignStart(term, reading)
-        val itemGravity = if (alignStart) Gravity.START else Gravity.CENTER
+    private fun createFullRubyView(term: String, reading: String, isMini: Boolean): View {
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            gravity = if (alignStart) Gravity.START else Gravity.CENTER_HORIZONTAL
+            gravity = Gravity.CENTER_HORIZONTAL
             isBaselineAligned = true
 
             addView(TextView(this@OcrAccessibilityService).apply {
                 text = reading
                 setTextColor(Color.LTGRAY)
                 textSize = if (isMini) 9f else 13f
-                gravity = itemGravity
+                gravity = Gravity.CENTER
                 includeFontPadding = false
             })
-            addView(createBaseTextView(term, isMini).apply { gravity = itemGravity })
+            addView(createBaseTextView(term, isMini).apply { gravity = Gravity.CENTER })
             baselineAlignedChildIndex = 1
         }
     }
 
     /**
-     * #69: merged headword with KANJIDIC-backed 訓/音 split — kanji left,
-     * labeled reading rows right (訓 top, 音 bottom, 他 only when needed).
-     * Replaces the ruby-above layout for splittable rows only.
-     */
-    private fun createSplitHeadwordView(kanji: String, split: SplitReadings): View {
-        return LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            addView(TextView(this@OcrAccessibilityService).apply {
-                text = kanji
-                setTextColor(Color.CYAN)
-                textSize = 32f
-                typeface = android.graphics.Typeface.DEFAULT_BOLD
-                includeFontPadding = false
-                setPadding(0, 0, 30, 0)
-            })
-            addView(LinearLayout(this@OcrAccessibilityService).apply {
-                orientation = LinearLayout.VERTICAL
-                listOf("訓" to split.kun, "音" to split.on, "他" to split.other)
-                    .filter { it.second.isNotEmpty() }
-                    .forEachIndexed { i, (label, readings) ->
-                        addView(createKunOnRow(
-                            label,
-                            readings.joinToString("、"),
-                            topMarginPx = if (i == 0) 0 else kunOnRowTightenPx
-                        ))
-                    }
-            })
-        }
-    }
-
-    /**
-     * #69: one 訓 / 音 / 他 row — label (12f, GRAY) beside its readings
-     * (18f, LTGRAY). Shared by the kanji-entry and split-headword branches so
-     * every on/kun label renders identically. [topMarginPx] pulls consecutive
-     * rows closer (negative tightens) — the 18f value text leaves more
-     * leading than the row visually needs.
+     * One 訓 / 音 row — label (12f, GRAY) beside its readings (13f, LTGRAY),
+     * used by the kanji (KANJIDIC) entry branch. [topMarginPx] pulls
+     * consecutive rows closer (negative tightens).
      */
     private fun createKunOnRow(label: String, readings: String, topMarginPx: Int = 0): View {
         return LinearLayout(this).apply {
