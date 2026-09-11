@@ -142,7 +142,7 @@ class DictionaryImporter(private val context: Context) {
                     entry.name.startsWith("term_bank_") && entry.name.endsWith(".json") -> {
                         if (dictionaryId == null) {
                             val maxPriority = dao.getMaxPriority() ?: -1
-                            dictionaryId = dao.insertDictionary(DictionaryMeta(name = dictTitle, priority = maxPriority + 1, builtIn = builtIn)).toInt()
+                            dictionaryId = dao.insertDictionary(DictionaryMeta(name = dictTitle, priority = maxPriority + 1)).toInt()
                         }
                         val reader = JsonReader(InputStreamReader(zipInputStream, "UTF-8"))
                         processTermBank(reader, dictionaryId!!, batchChannel)
@@ -150,7 +150,7 @@ class DictionaryImporter(private val context: Context) {
                     entry.name.startsWith("kanji_bank_") && entry.name.endsWith(".json") -> {
                         if (dictionaryId == null) {
                             val maxPriority = dao.getMaxPriority() ?: -1
-                            dictionaryId = dao.insertDictionary(DictionaryMeta(name = dictTitle, priority = maxPriority + 1, builtIn = builtIn)).toInt()
+                            dictionaryId = dao.insertDictionary(DictionaryMeta(name = dictTitle, priority = maxPriority + 1)).toInt()
                         }
                         val reader = JsonReader(InputStreamReader(zipInputStream, "UTF-8"))
                         processKanjiBank(reader, dictionaryId!!, batchChannel)
@@ -158,7 +158,7 @@ class DictionaryImporter(private val context: Context) {
                     entry.name.startsWith("tag_bank_") && entry.name.endsWith(".json") -> {
                         if (dictionaryId == null) {
                             val maxPriority = dao.getMaxPriority() ?: -1
-                            dictionaryId = dao.insertDictionary(DictionaryMeta(name = dictTitle, priority = maxPriority + 1, builtIn = builtIn)).toInt()
+                            dictionaryId = dao.insertDictionary(DictionaryMeta(name = dictTitle, priority = maxPriority + 1)).toInt()
                         }
                         val reader = JsonReader(InputStreamReader(zipInputStream, "UTF-8"))
                         parseTagBank(reader, dao, dictionaryId!!)
@@ -169,7 +169,7 @@ class DictionaryImporter(private val context: Context) {
                     entry.name.startsWith("term_meta_bank_") && entry.name.endsWith(".json") -> {
                         if (dictionaryId == null) {
                             val maxPriority = dao.getMaxPriority() ?: -1
-                            dictionaryId = dao.insertDictionary(DictionaryMeta(name = dictTitle, priority = maxPriority + 1, builtIn = builtIn)).toInt()
+                            dictionaryId = dao.insertDictionary(DictionaryMeta(name = dictTitle, priority = maxPriority + 1)).toInt()
                         }
                         val reader = JsonReader(InputStreamReader(zipInputStream, "UTF-8"))
                         processTermMetaBank(reader, dictionaryId!!, batchChannel)
@@ -183,6 +183,12 @@ class DictionaryImporter(private val context: Context) {
             dbJob.join()
             zipInputStream.close()
             
+            // #43: `builtIn` is the completion marker, not a label. Flipping it
+            // only after every bank is written means an import killed part-way
+            // leaves a non-built-in row, so the next launch imports again
+            // instead of trusting a half-present dictionary.
+            if (builtIn) dictionaryId?.let { dao.updateBuiltIn(it, true) }
+
             val duration = System.currentTimeMillis() - startTime
             Log.i(TAG, "Imported $totalProcessed entries in ${duration}ms")
 

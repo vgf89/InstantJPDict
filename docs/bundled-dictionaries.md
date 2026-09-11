@@ -54,11 +54,12 @@ The pitch dictionary is installed as a **built-in** dictionary
 - the app installs it automatically at startup whenever none is present, so the
   presence check doubles as self-repair after a wiped or corrupted database.
 
-The **Reinstall Bundled Pitch Dictionary** button in the main activity is the
-manual escape hatch for the one case auto-install cannot detect: an import that
-is killed part-way, leaving the metadata row present but the entries short.
-(The row is written before the entries are, so "present" is not proof of
-complete.)
+There is no install/reinstall button: `builtIn` is the **completion marker**,
+set only after every entry is written, and the startup check looks exactly at
+it. So a database wipe, a corrupted row and an import killed part-way all
+present as "no built-in dictionary" and are repaired on the next launch. A
+plain presence check on the title would have treated a partial import as done,
+and a button was only needed to paper over that.
 
 `builtIn` was added in schema version 4 with a hand-written migration. Note that
 the database is otherwise configured with `fallbackToDestructiveMigration()`,

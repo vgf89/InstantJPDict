@@ -68,6 +68,10 @@ class OcrAccessibilityService : AccessibilityService() {
     /** #72: window back callback, so it can be unregistered with the window. */
     private var backCallback: android.window.OnBackInvokedCallback? = null
     private var backDispatcher: android.window.OnBackInvokedDispatcher? = null
+    /** #72: last handled back press, to de-duplicate the two delivery paths. */
+    private var lastBackHandledAt = 0L
+    /** #72: window within which a second back delivery counts as the same press. */
+    private val backDedupeMs = 250L
     private var screenshotBitmap: Bitmap? = null
     private lateinit var ocrEngine: OcrEngine
     private val controller = OcrOverlayStateController()
@@ -361,20 +365,17 @@ class OcrAccessibilityService : AccessibilityService() {
 
         val rootLayout = object : FrameLayout(this) {
             /**
-             * #72: with predictive back opted out, back comes back as a plain
-             * key event. If the platform delivers it to this window's view tree
-             * (rather than to the service's onKeyEvent, which is filtered), it
-             * lands here — and a plain FrameLayout would drop it silently, which
-             * is exactly the "back is blocked" symptom.
+             * #72: this is the path back actually takes. The platform does not
+             * route back navigation to an accessibility overlay window (its
+             * OnBackInvokedDispatcher callback registers but is never invoked),
+             * so with predictive back opted out in the manifest the back key
+             * event lands on this window's view tree instead — where a plain
+             * FrameLayout dropped it silently, which was the "back is blocked
+             * but nothing happens" symptom.
              */
             override fun dispatchKeyEvent(event: KeyEvent): Boolean {
                 if (event.keyCode == KeyEvent.KEYCODE_BACK) {
-                    if (event.action == KeyEvent.ACTION_DOWN) {
-                        backProbe("view key down")
-                        closeNextLayer(this)
-                    } else {
-                        backProbe("view key up")
-                    }
+                    if (event.action == KeyEvent.ACTION_DOWN) handleBack(this)
                     return true
                 }
                 return super.dispatchKeyEvent(event)
@@ -654,23 +655,6 @@ class OcrAccessibilityService : AccessibilityService() {
             bottomMargin = 0
         }
         rootLayout.addView(debugTextView, debugParams)
-
-        // TEMP (#72) back probe: the status line above belongs to OCR progress,
-        // so this gets its own corner view. It reports whether the window's back
-        // dispatcher could be registered, and which path actually receives back.
-        // Remove once back is confirmed on-device.
-        val backProbeView = TextView(this).apply {
-            tag = "back_probe"
-            setTextColor(android.graphics.Color.YELLOW)
-            setBackgroundColor(android.graphics.Color.argb(180, 0, 0, 0))
-            setPadding(12, 6, 12, 6)
-            textSize = 11f
-            text = "back: (pending)"
-        }
-        rootLayout.addView(backProbeView, FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-            FrameLayout.LayoutParams.WRAP_CONTENT
-        ).apply { gravity = Gravity.BOTTOM or Gravity.START })
 
         val progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             isIndeterminate = true
@@ -1992,18 +1976,14 @@ class OcrAccessibilityService : AccessibilityService() {
             return super.onKeyEvent(event)
         }
 
-        // #72: back closes one layer, exactly like an empty-space tap. On API
-        // 33+ the gesture and 3-button back are dispatched through the window's
-        // OnBackInvokedDispatcher (registerBackCallback) and never arrive here;
-        // this path covers API 30-32 and any key event the system still routes
-        // to a key-filtering accessibility service. Act on DOWN, not UP, so a
-        // press still works if the UP is never delivered.
+        // #72: back closes one layer, exactly like an empty-space tap. On this
+        // device back arrives at the overlay's view tree (see the root view's
+        // dispatchKeyEvent); this path covers API 30-32 and any key event the
+        // system routes to a key-filtering accessibility service instead. Act on
+        // DOWN, not UP, so a press still works if the UP is never delivered.
         if (keyEvent.keyCode == KeyEvent.KEYCODE_BACK) {
             if (keyEvent.action == KeyEvent.ACTION_DOWN) {
-                backProbe("key down")
-                (screenshotOverlay as? FrameLayout)?.let { closeNextLayer(it) }
-            } else {
-                backProbe("key up")
+                (screenshotOverlay as? FrameLayout)?.let { handleBack(it) }
             }
             return true
         }
@@ -2079,45 +2059,30 @@ class OcrAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * #72: register back on the overlay window itself.
+     * #72: the documented way to own back in a window, registered alongside the
+     * view-tree handler that does the work here.
      *
-     * With `targetSdk` 33+ predictive back is on, so back — gesture *and*
-     * 3-button — is dispatched through the focused window's
-     * `OnBackInvokedDispatcher` and is never delivered as a `KEYCODE_BACK` key
-     * event. This window is focusable, so it swallows the back gesture and the
-     * service's `onKeyEvent` never sees it: back looked "blocked" rather than
-     * handled. Registering here is what actually receives it.
+     * On this device the registration succeeds and the callback is never
+     * invoked — the platform does not route back navigation to a
+     * `TYPE_ACCESSIBILITY_OVERLAY` window — so back falls through to the root
+     * view's `dispatchKeyEvent`. Both are wired to [handleBack], which
+     * de-duplicates, so a device that honours the dispatcher instead does not
+     * close two layers per press.
      *
-     * `PRIORITY_OVERLAY` so the overlay wins over whatever is behind it. No-op
-     * below API 33, where back is still a key event ([onKeyEvent] covers it).
+     * See [unregisterBackCallback] for why this must not outlive the window.
      */
     private fun registerBackCallback(root: FrameLayout) {
-        // #72: the dispatcher path needs the predictive-back opt-in to be
-        // honoured, so the manifest opt-out is tested alongside it: whichever
-        // path the platform actually uses, one of these receives back.
-        if (android.os.Build.VERSION.SDK_INT < 33) {
-            backProbe("register: api<33")
-            return
-        }
-        val dispatcher = root.findOnBackInvokedDispatcher()
-        if (dispatcher == null) {
-            backProbe("register: no dispatcher")
-            return
-        }
-        val callback = android.window.OnBackInvokedCallback {
-            backProbe("CALLBACK")
-            closeNextLayer(root)
-        }
+        if (android.os.Build.VERSION.SDK_INT < 33) return
+        val dispatcher = root.findOnBackInvokedDispatcher() ?: return
+        val callback = android.window.OnBackInvokedCallback { handleBack(root) }
         try {
             dispatcher.registerOnBackInvokedCallback(
                 android.window.OnBackInvokedDispatcher.PRIORITY_OVERLAY, callback
             )
             backDispatcher = dispatcher
             backCallback = callback
-            backProbe("register: ok")
         } catch (e: Exception) {
             Log.e("OcrAccessibilityService", "Could not register back callback", e)
-            backProbe("register: failed ${e.javaClass.simpleName}")
         }
     }
 
@@ -2138,14 +2103,15 @@ class OcrAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * TEMP (#72): echoes back-dispatch state into the overlay's corner probe so
-     * a device can show whether the dispatcher registered and which path fires
-     * — no logcat needed. Remove once back is confirmed on-device.
+     * #72: one back press, whichever path delivered it. The window's back
+     * callback and the view tree are both wired up, and a platform that used
+     * both for a single press would otherwise close two layers.
      */
-    private fun backProbe(text: String) {
-        (screenshotOverlay as? FrameLayout)
-            ?.findViewWithTag<TextView>("back_probe")
-            ?.let { tv -> tv.post { tv.text = "back: $text" } }
+    private fun handleBack(root: FrameLayout) {
+        val now = android.os.SystemClock.uptimeMillis()
+        if (now - lastBackHandledAt < backDedupeMs) return
+        lastBackHandledAt = now
+        closeNextLayer(root)
     }
 
     private fun handleGamepadBack(root: FrameLayout) {

@@ -126,10 +126,6 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
-        addButton(layout, "Reinstall Bundled Pitch Dictionary") {
-            installBundledPitchDictionary(manual = true)
-        }
-
         // #72: double-tap zoom is opt-in. While it is on, a tap on empty space
         // must wait out the double-tap window before closing, so the default
         // trades zoom for an instant close.
@@ -457,7 +453,7 @@ class MainActivity : AppCompatActivity() {
                     .dictionaryDao()
                     .findBuiltInDictionary() != null
             }
-            if (!installed) installBundledPitchDictionary(manual = false)
+            if (!installed) installBundledPitchDictionary()
         }
     }
 
@@ -466,11 +462,11 @@ class MainActivity : AppCompatActivity() {
      * and no file picker — and because [DictionaryImporter.importBundledAsset]
      * replaces any copy with the same title, running it twice is harmless.
      *
-     * This doubles as the repair path if the database is ever wiped or the
-     * dictionary row is corrupted.
+     * There is no button for this: the install completes the flag it is checked
+     * by, so a wiped database, a corrupted row or an import killed part-way all
+     * repair themselves on the next launch.
      */
-    private fun installBundledPitchDictionary(manual: Boolean) {
-        if (manual) tvStatus.text = "Installing bundled pitch dictionary..."
+    private fun installBundledPitchDictionary() {
         lifecycleScope.launch {
             try {
                 val importer = DictionaryImporter(applicationContext)

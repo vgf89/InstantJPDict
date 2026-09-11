@@ -24,9 +24,17 @@ interface DictionaryDao {
     @Query("SELECT * FROM dictionary_meta ORDER BY priority ASC")
     suspend fun getAllDictionaries(): List<DictionaryMeta>
 
-    /** #43: built-in dictionaries are hidden from the user-editable list. */
+    /**
+     * #43: built-in dictionaries are hidden from the user-editable list. Also
+     * the completion check for the bundled install: the flag is set only after
+     * every entry is written, so a half-finished import is not mistaken for a
+     * finished one.
+     */
     @Query("SELECT * FROM dictionary_meta WHERE builtIn = 1 LIMIT 1")
     suspend fun findBuiltInDictionary(): DictionaryMeta?
+
+    @Query("UPDATE dictionary_meta SET builtIn = :builtIn WHERE id = :dictionaryId")
+    suspend fun updateBuiltIn(dictionaryId: Int, builtIn: Boolean)
 
     /** #43: used to make bundled-dictionary installs idempotent. */
     @Query("SELECT * FROM dictionary_meta WHERE name = :name LIMIT 1")
