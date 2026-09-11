@@ -1729,7 +1729,8 @@ class OcrAccessibilityService : AccessibilityService() {
             addView(TextView(this@OcrAccessibilityService).apply {
                 text = readings
                 setTextColor(Color.LTGRAY)
-                textSize = 18f
+                // Same size as the furigana rows (non-mini ruby).
+                textSize = 13f
                 includeFontPadding = false
                 setLineSpacing(0f, kunOnLineSpacingMult)
             })
@@ -1737,7 +1738,7 @@ class OcrAccessibilityService : AccessibilityService() {
     }
 
     /** Vertical gap applied above every 訓/音 row after the first (#69). */
-    private val kunOnRowTightenPx = -6
+    private val kunOnRowTightenPx = -4
     /**
      * Wrapped-line spacing inside long readings values (#69): long 訓/音
      * lines must sit no looser than the gap between the rows themselves.
