@@ -1251,19 +1251,19 @@ class OcrAccessibilityService : AccessibilityService() {
             }
             headwordList.addView(flow)
 
-            // #43: pitch contour under the headword flow — one row per
-            // reading that has data. Gated by the MainActivity checkbox; with
+            // #43: pitch accents for every reading of this entry, on one
+            // comma-separated line. Gated by the MainActivity checkbox; with
             // no pitch dictionary imported (or the toggle off) this is a no-op
             // and the popup is unchanged.
             if (PitchAccent.isEnabled(this)) {
-                termGroups.forEach { g ->
-                    PitchAccentView.rowsFor(this, g.reading, g.pitchPositions, pitchTextSizePx)
-                        .forEach { row ->
-                            headwordList.addView(row, LinearLayout.LayoutParams(
-                                LinearLayout.LayoutParams.WRAP_CONTENT,
-                                LinearLayout.LayoutParams.WRAP_CONTENT
-                            ).apply { topMargin = pitchRowTopMarginPx })
-                        }
+                val items = termGroups.flatMap { group ->
+                    group.pitchPositions.map { PitchAccentLine.Item(group.reading, it) }
+                }
+                PitchAccentLine.build(this, items, pitchTextSizePx)?.let { line ->
+                    headwordList.addView(line, LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply { topMargin = pitchRowTopMarginPx })
                 }
             }
         }
