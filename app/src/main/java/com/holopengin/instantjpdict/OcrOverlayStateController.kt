@@ -59,8 +59,8 @@ data class FormattedReadingGroup(
     val headwords: List<FormattedHeadword>,
     val senseGroups: List<FormattedSenseGroup>,
     val isKanjiEntry: Boolean,
-    /** #43: downstep positions for this reading (empty = no pitch data, or
-     * the feature is off). Drawn as a step line over the morae. */
+    /** #43: downstep positions for this reading (empty = no pitch data).
+     * Rendered as one colored-morae item on the entry's pitch line. */
     val pitchPositions: List<Int> = emptyList()
 )
 
@@ -784,18 +784,20 @@ class OcrOverlayStateController {
         // never merge into a single block. findByTexts returns priority
         // order, so groupBy preserves dictionary ranking.
         return matches.flatMap { (term, entries, chain) ->
-            // #43: pitch rows (from any imported pitch dictionary) are data,
-            // not entries — collect them by reading and keep them out of the
-            // rendered entry list. Reading-keyed, so a kana form's pitch still
-            // lands on the matching group.
-            val pitchByReading = mutableMapOf<String, MutableList<Int>>()
-            val termEntries = entries.filterNot { e ->
-                val positions = PitchAccent.positionsOf(e.definitions)
-                if (positions == null) return@filterNot false
-                val reading = PitchAccent.readingOf(e.definitions) ?: e.reading
-                pitchByReading.getOrPut(reading) { mutableListOf() }.addAll(positions)
-                true
+            // #43: pitch rows (from any imported pitch dictionary — ours is a
+            // built-in) are data, not entries, so they are split out and keyed
+            // by reading rather than rendered. Reading-keyed means a kana
+            // form's pitch still lands on the matching group.
+            val (pitchEntries, termEntries) = entries.partition {
+                PitchAccent.positionsOf(it.definitions) != null
             }
+            val pitchByReading = pitchEntries
+                .groupBy { PitchAccent.readingOf(it.definitions) ?: it.reading }
+                .mapValues { (_, rows) ->
+                    rows.flatMap { PitchAccent.positionsOf(it.definitions).orEmpty() }
+                        .distinct()
+                        .sorted()
+                }
             if (termEntries.isEmpty()) return@flatMap emptyList()
 
             // One entry per (term, dictionary): JMdict and KANJIDIC rows must
@@ -865,7 +867,7 @@ class OcrOverlayStateController {
                     headwords,
                     senseGroups,
                     isKanjiEntry,
-                    pitchPositions = pitchByReading[reading]?.distinct()?.sorted() ?: emptyList()
+                    pitchPositions = pitchByReading[reading].orEmpty()
                 )
             }
             FormattedEntry(

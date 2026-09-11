@@ -1252,9 +1252,8 @@ class OcrAccessibilityService : AccessibilityService() {
             headwordList.addView(flow)
 
             // #43: pitch accents for every reading of this entry, on one
-            // comma-separated line. Gated by the MainActivity checkbox; with
-            // no pitch dictionary imported (or the toggle off) this is a no-op
-            // and the popup is unchanged.
+            // comma-separated line. Gated by the MainActivity toggle; with it
+            // off, or no reading carrying pitch data, the popup is unchanged.
             if (PitchAccent.isEnabled(this)) {
                 val items = termGroups.flatMap { group ->
                     group.pitchPositions.map { PitchAccentLine.Item(group.reading, it) }
