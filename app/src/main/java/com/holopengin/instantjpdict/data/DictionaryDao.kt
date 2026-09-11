@@ -24,6 +24,10 @@ interface DictionaryDao {
     @Query("SELECT * FROM dictionary_meta ORDER BY priority ASC")
     suspend fun getAllDictionaries(): List<DictionaryMeta>
 
+    /** #43: used to make bundled-dictionary installs idempotent. */
+    @Query("SELECT * FROM dictionary_meta WHERE name = :name LIMIT 1")
+    suspend fun findDictionaryByName(name: String): DictionaryMeta?
+
     @Query("DELETE FROM dictionary_meta WHERE id = :dictionaryId")
     suspend fun deleteDictionary(dictionaryId: Int)
 

@@ -8,26 +8,106 @@ import com.google.gson.stream.JsonReader
 import com.google.gson.stream.JsonToken
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.BufferedInputStream
+import java.io.InputStream
 import java.io.InputStreamReader
 import java.util.zip.ZipInputStream
 
 class DictionaryImporter(private val context: Context) {
     private val gson = Gson()
 
+    private companion object {
+        const val TAG = "DictionaryImporter"
+    }
+
     suspend fun importZip(uri: android.net.Uri, fileName: String, onProgress: (Int) -> Unit): Result<Int> = withContext(Dispatchers.IO) {
-        val startTime = System.currentTimeMillis()
         try {
+            val inputStream = context.contentResolver.openInputStream(uri)
+                ?: return@withContext Result.failure(Exception("Failed to open input stream"))
+            Result.success(
+                importZipStream(
+                    BufferedInputStream(inputStream),
+                    fileName.removeSuffix(".zip"),
+                    onProgress,
+                )
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Import failed", e)
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Import a dictionary bundled in the APK's assets (#43) — the vendored
+     * pitch dictionary, which needs no network and no file picker.
+     *
+     * Re-importing replaces any existing copy with the same title, so the
+     * action is idempotent: tapping it twice leaves one dictionary, not two
+     * stacked copies of the same 124k rows.
+     */
+    suspend fun importBundledAsset(assetPath: String, onProgress: (Int) -> Unit): Result<Int> = withContext(Dispatchers.IO) {
+        try {
+            val title = context.assets.open(assetPath).use { readZipTitle(it) }
+            if (title != null) {
+                val dao = AppDatabase.getDatabase(context).dictionaryDao()
+                dao.findDictionaryByName(title)?.let { existing ->
+                    Log.i(TAG, "Replacing existing '${existing.name}' (id=${existing.id})")
+                    dao.deleteEntriesForDictionary(existing.id)
+                    dao.deleteDictionary(existing.id)
+                }
+            }
+            val inputStream = context.assets.open(assetPath)
+            Result.success(
+                importZipStream(
+                    BufferedInputStream(inputStream),
+                    assetPath.substringAfterLast('/').removeSuffix(".zip"),
+                    onProgress,
+                )
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Bundled import failed", e)
+            Result.failure(e)
+        }
+    }
+
+    /** Title declared by a zip's index.json, or null when unreadable. */
+    private fun readZipTitle(input: InputStream): String? {
+        return try {
+            ZipInputStream(input).use { zip ->
+                var entry = zip.nextEntry
+                while (entry != null) {
+                    if (entry.name == "index.json") {
+                        val reader = JsonReader(InputStreamReader(zip, "UTF-8"))
+                        val map = gson.fromJson<Map<String, Any>>(reader, Map::class.java)
+                        return map["title"] as? String
+                    }
+                    zip.closeEntry()
+                    entry = zip.nextEntry
+                }
+                null
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not read dictionary title", e)
+            null
+        }
+    }
+
+    /** Shared import core: reads a dictionary zip and writes its rows. */
+    private suspend fun importZipStream(
+        bufferedStream: BufferedInputStream,
+        fallbackTitle: String,
+        onProgress: (Int) -> Unit,
+    ): Int = coroutineScope {
+            val startTime = System.currentTimeMillis()
             val db = AppDatabase.getDatabase(context)
             val dao = db.dictionaryDao()
-            
-            val inputStream = context.contentResolver.openInputStream(uri) ?: return@withContext Result.failure(Exception("Failed to open input stream"))
-            val bufferedStream = BufferedInputStream(inputStream)
+
             val zipInputStream = ZipInputStream(bufferedStream)
-            
-            var dictTitle = fileName.removeSuffix(".zip")
+
+            var dictTitle = fallbackTitle
             var dictionaryId: Int? = null
             var totalProcessed = 0
             
@@ -101,13 +181,9 @@ class DictionaryImporter(private val context: Context) {
             zipInputStream.close()
             
             val duration = System.currentTimeMillis() - startTime
-            Log.i("DictionaryImporter", "Imported $totalProcessed entries in ${duration}ms")
-            
-            Result.success(totalProcessed)
-        } catch (e: Exception) {
-            Log.e("DictionaryImporter", "Import failed", e)
-            Result.failure(e)
-        }
+            Log.i(TAG, "Imported $totalProcessed entries in ${duration}ms")
+
+            totalProcessed
     }
 
     private suspend fun processTermBank(reader: JsonReader, dictionaryId: Int, channel: Channel<List<DictionaryEntry>>) {

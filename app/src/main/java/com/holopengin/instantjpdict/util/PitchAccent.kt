@@ -14,9 +14,16 @@ import com.holopengin.instantjpdict.OcrEngine
  * SharedPreferences, so the rest is JVM-unit-testable.
  */
 object PitchAccent {
-    /** SharedPreferences key for the main-activity checkbox. */
+    /** SharedPreferences key for the pitch-accent toggle (#43). */
     const val PREF_PITCH_ENABLED = "pitch_accent_enabled"
     const val DEF_PITCH_ENABLED = false
+
+    /**
+     * Pitch dictionary vendored in the APK assets (#43). Built by
+     * tools/build_pitch_dict.py from the pinned Kanjium revision; see
+     * pitch/PROVENANCE.txt next to it for source, license and SHA-256.
+     */
+    const val BUNDLED_ASSET = "pitch/kanjium_pitch_accents.zip"
 
     /**
      * Small kana (拗音) fuse with the preceding kana into one mora: きょ is one

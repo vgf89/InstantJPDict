@@ -4,8 +4,9 @@
 Source : https://github.com/mifunetoshiro/kanjium
          data/source_files/raw/accents.txt
 License: CC BY-SA 4.0 (see the repo's LICENSE.txt). Redistribution of the
-         produced zip must carry attribution and the same license; the app
-         ships the notice in assets/licenses/ (see #70).
+         produced zip must carry attribution and the same license; this script
+         writes pitch/PROVENANCE.txt beside the artifact for that purpose, and
+         #70 surfaces the notices in-app.
 
 Input format (tab separated, one record per line):
     <term> \t <reading> \t <position>[,<position>...]
@@ -18,17 +19,20 @@ Output: a Yomitan term-meta-bank v3 zip:
     term_meta_bank_1.json [[term, "pitch", {"reading": r, "pitches": [{"position": n}, ...]}], ...]
 
 Usage:
-    python3 tools/build_pitch_dict.py accents.txt -o dist/kanjium_pitch_accents.zip
+    python3 tools/build_pitch_dict.py accents.txt
+    # -> app/src/main/assets/pitch/kanjium_pitch_accents.zip (+ PROVENANCE.txt)
 
 Deterministic: same input -> byte-identical output (sorted keys, fixed
-separators, no timestamps), so the zip can be hash-pinned for the #71
-one-step download catalog.
+separators, no timestamps), so a vendored copy can be hash-verified and a
+rebuild that differs means the input changed.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import re
 import sys
 import zipfile
@@ -36,7 +40,13 @@ from collections import OrderedDict
 
 # Pinned upstream revision this build is validated against; bump deliberately.
 SOURCE_COMMIT = "685d4d723d6d20bf9beb169103aeac188eb067ad"
+SOURCE_REPO = "https://github.com/mifunetoshiro/kanjium"
+SOURCE_LICENSE = "CC BY-SA 4.0"
 DICTIONARY_TITLE = "Kanjium Pitch Accents"
+
+# Vendored straight into the APK so the feature needs no network or file picker.
+DEFAULT_OUTPUT = "app/src/main/assets/pitch/kanjium_pitch_accents.zip"
+PROVENANCE_FILENAME = "PROVENANCE.txt"
 POSITION_HINT_RE = re.compile(r"^(?:\([^)]*\))?\s*(\d+)$")
 
 
@@ -115,12 +125,39 @@ def write_zip(path: str, entries: list[list]) -> None:
             z.writestr(info, payload)
 
 
+def write_provenance(path: str, zip_path: str, entry_count: int) -> None:
+    """Sidecar that ships in the APK assets: where this file came from, how to
+    rebuild it, and the hash to verify it against (#43, feeds the #70 viewer)."""
+    digest = hashlib.sha256(open(zip_path, "rb").read()).hexdigest()
+    size = os.path.getsize(zip_path)
+    text = f"""Pitch accent dictionary — vendored, do not edit by hand.
+
+Dictionary : {DICTIONARY_TITLE}
+Entries    : {entry_count}
+File       : {os.path.basename(zip_path)}
+Size       : {size} bytes
+SHA-256    : {digest}
+
+Source     : {SOURCE_REPO} (data/source_files/raw/accents.txt)
+Source ref : {SOURCE_COMMIT}
+Retrieved  : accents.txt as published by the Kanjium project
+License    : {SOURCE_LICENSE}
+"""
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description="Build a Yomitan pitch-accent dictionary from Kanjium accents.txt"
     )
     ap.add_argument("accents", help="path to Kanjium accents.txt")
-    ap.add_argument("-o", "--output", default="kanjium_pitch_accents.zip")
+    ap.add_argument(
+        "-o",
+        "--output",
+        default=DEFAULT_OUTPUT,
+        help=f"output zip path (default: {DEFAULT_OUTPUT})",
+    )
     args = ap.parse_args()
 
     with open(args.accents, encoding="utf-8") as f:
@@ -129,8 +166,11 @@ def main() -> int:
         print("no entries parsed — wrong file?", file=sys.stderr)
         return 1
     write_zip(args.output, entries)
+    provenance = os.path.join(os.path.dirname(args.output), PROVENANCE_FILENAME)
+    write_provenance(provenance, args.output, len(entries))
     print(f"wrote {args.output}: {len(entries)} pitch entries "
           f"(source commit {SOURCE_COMMIT[:12]})")
+    print(f"wrote {provenance}")
     return 0
 
 

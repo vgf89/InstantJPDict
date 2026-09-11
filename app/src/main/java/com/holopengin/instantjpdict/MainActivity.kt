@@ -113,8 +113,8 @@ class MainActivity : AppCompatActivity() {
         }
 
         // #43: pitch-accent display. Off by default; needs a pitch dictionary
-        // imported (see the Kanjium-derived zip) or the rows simply never
-        // appear. Read at popup build time, so the next lookup picks it up.
+        // installed (see the button below) or the rows simply never appear.
+        // Read at popup build time, so the next lookup picks it up.
         layout.addView(CheckBox(this).apply {
             text = "Show pitch accent in dictionary popup"
             isChecked = PitchAccent.isEnabled(this@MainActivity)
@@ -125,6 +125,10 @@ class MainActivity : AppCompatActivity() {
                 Log.d("MainActivity", "pitch_accent_enabled=$checked")
             }
         })
+
+        addButton(layout, "Install Bundled Pitch Dictionary") {
+            installBundledPitchDictionary()
+        }
 
         addButton(layout, "Refresh Status") {
             refreshStatus()
@@ -419,6 +423,42 @@ class MainActivity : AppCompatActivity() {
             val dictCount = withContext(Dispatchers.IO) { db.dictionaryDao().getAllDictionaries().size }
             withContext(Dispatchers.Main) {
                 tvStatus.text = "DB contains $entryCount entries in $dictCount dictionaries"
+            }
+        }
+    }
+
+    /**
+     * #43: install the pitch dictionary vendored in the APK assets. No
+     * network and no file picker — and because [DictionaryImporter.importBundledAsset]
+     * replaces any copy with the same title, tapping this twice is harmless.
+     */
+    private fun installBundledPitchDictionary() {
+        tvStatus.text = "Installing bundled pitch dictionary..."
+        lifecycleScope.launch {
+            try {
+                val importer = DictionaryImporter(applicationContext)
+                val result = importer.importBundledAsset(PitchAccent.BUNDLED_ASSET) { progress ->
+                    lifecycleScope.launch(Dispatchers.Main) {
+                        tvStatus.text = "Installing pitch dictionary: $progress entries..."
+                    }
+                }
+                withContext(Dispatchers.Main) {
+                    tvStatus.text = result.fold(
+                        onSuccess = { count ->
+                            if (PitchAccent.isEnabled(this@MainActivity)) {
+                                "Pitch dictionary installed: $count entries"
+                            } else {
+                                "Pitch dictionary installed: $count entries " +
+                                    "(tick the box above to show it)"
+                            }
+                        },
+                        onFailure = { e -> "Pitch dictionary error: ${e.message}" },
+                    )
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    tvStatus.text = "Error installing pitch dictionary: ${e.message}"
+                }
             }
         }
     }

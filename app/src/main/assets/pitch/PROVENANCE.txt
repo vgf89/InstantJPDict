@@ -1,0 +1,12 @@
+Pitch accent dictionary — vendored, do not edit by hand.
+
+Dictionary : Kanjium Pitch Accents
+Entries    : 124134
+File       : kanjium_pitch_accents.zip
+Size       : 1207703 bytes
+SHA-256    : c1cdb4f4d930ff569490fe0b7d93b58eef23880c75f54660fd5fbca05b71740f
+
+Source     : https://github.com/mifunetoshiro/kanjium (data/source_files/raw/accents.txt)
+Source ref : 685d4d723d6d20bf9beb169103aeac188eb067ad
+Retrieved  : accents.txt as published by the Kanjium project
+License    : CC BY-SA 4.0
