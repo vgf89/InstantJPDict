@@ -391,13 +391,14 @@ class OcrAccessibilityService : AccessibilityService() {
             setBackgroundColor(android.graphics.Color.TRANSPARENT)
             systemUiVisibility = View.SYSTEM_UI_FLAG_LAYOUT_STABLE or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
             setOnClickListener {
-                if (findViewWithTag<View>("manual_input_blocker") != null) { closeManualInput(this); return@setOnClickListener }
-                if (controller.isAlternativesVisible) {
-                    toggleAlternativesPanel(this, controller.currentTappedLineIdx, controller.currentTappedCharIdxInLine, width > height)
-                    return@setOnClickListener
-                }
-                findViewWithTag<View>("correction_ui_root")?.let { removeView(it); resetHighlights(); return@setOnClickListener }
-                if (!controller.isNearCharacter(initialTouchX, initialTouchY, 20f, resources.displayMetrics.density)) hideScreenshotOverlay()
+                // #72: the click is just "close one layer" — the same action
+                // the back key and gamepad back run, so all three stay in step.
+                // A tap that landed on a character was a lookup, not a
+                // dismissal, so it may not close the overlay.
+                val onCharacter = controller.isNearCharacter(
+                    initialTouchX, initialTouchY, 20f, resources.displayMetrics.density
+                )
+                closeNextLayer(this, allowDismiss = !onCharacter)
             }
             setOnGenericMotionListener { _, event ->
                 handleJoystick(
@@ -498,6 +499,9 @@ class OcrAccessibilityService : AccessibilityService() {
 
             val tapDetector = android.view.GestureDetector(this@OcrAccessibilityService, object : android.view.GestureDetector.SimpleOnGestureListener() {
                 override fun onDoubleTap(e: MotionEvent): Boolean {
+                    // #72: with the feature off there is no second-tap meaning
+                    // to resolve, so don't claim the gesture at all.
+                    if (!DoubleTapZoom.isEnabled(this@OcrAccessibilityService)) return false
                     // Never hijack taps on interactive chrome.
                     val onChrome = listOf("correction_ui_root", "manual_input_blocker", "close_button").any { tag ->
                         rootLayout.findViewWithTag<View>(tag)?.let { v ->
@@ -583,7 +587,13 @@ class OcrAccessibilityService : AccessibilityService() {
                         val now = android.os.SystemClock.uptimeMillis()
                         val dtWindow = android.view.ViewConfiguration.getDoubleTapTimeout().toLong()
                         val dtSlop = android.view.ViewConfiguration.get(this@OcrAccessibilityService).scaledDoubleTapSlop
-                        if (now - lastEmptyTapUpTime < dtWindow &&
+                        val zoomEnabled = DoubleTapZoom.isEnabled(this@OcrAccessibilityService)
+                        if (!zoomEnabled) {
+                            // #72: nothing to wait for — close on this tap
+                            // instead of arming a timer that can never fire.
+                            v.removeCallbacks(deferredClick)
+                            deferredClick.run()
+                        } else if (now - lastEmptyTapUpTime < dtWindow &&
                             abs(focusX - lastEmptyTapUpX) <= dtSlop &&
                             abs(focusY - lastEmptyTapUpY) <= dtSlop
                         ) {
@@ -1941,6 +1951,17 @@ class OcrAccessibilityService : AccessibilityService() {
             return super.onKeyEvent(event)
         }
 
+        // #72: back closes one layer, exactly like an empty-space tap. Handled
+        // before the gamepad path so the system key wins over any key mapping,
+        // and consumed while the overlay is up (down and up) so it cannot reach
+        // the app underneath. With no overlay, the early return above leaves
+        // back untouched.
+        if (keyEvent.keyCode == KeyEvent.KEYCODE_BACK) {
+            val root = screenshotOverlay as? FrameLayout
+            if (root != null && keyEvent.action == KeyEvent.ACTION_UP) closeNextLayer(root)
+            return true
+        }
+
         Log.d("OcrAccessibilityService", "onKeyEvent: keyCode=${keyEvent.keyCode}, action=${keyEvent.action}")
         if (handleGamepad(keyEvent)) return true
         return super.onKeyEvent(keyEvent)
@@ -1976,17 +1997,43 @@ class OcrAccessibilityService : AccessibilityService() {
         return true
     }
 
-    private fun handleGamepadBack(root: FrameLayout) {
+    /**
+     * #72: the single "go back one layer" action — manual input → neighbour
+     * panel → dictionary panel → the whole overlay.
+     *
+     * Shared by the empty-space tap, the system back key and the gamepad's back
+     * button, so all three can never drift apart.
+     *
+     * @param allowDismiss false when the gesture was a tap that landed on a
+     *   character: that tap was a lookup, not a dismissal, so the overlay must
+     *   stay. Back and gamepad-back have no coordinates to test, so they always
+     *   dismiss.
+     * @return true when something was closed, so a caller holding an input
+     *   event knows whether it did anything.
+     */
+    private fun closeNextLayer(root: FrameLayout, allowDismiss: Boolean = true): Boolean {
+        if (root.findViewWithTag<View>("manual_input_blocker") != null) {
+            closeManualInput(root)
+            return true
+        }
         if (controller.isAlternativesVisible) {
             toggleAlternativesPanel(root, controller.currentTappedLineIdx, controller.currentTappedCharIdxInLine, root.width > root.height)
-        } else if (controller.isDictionaryVisible) {
-            root.removeView(root.findViewWithTag("correction_ui_root"))
+            return true
+        }
+        val dictPanel = root.findViewWithTag<View>("correction_ui_root")
+        if (dictPanel != null || controller.isDictionaryVisible) {
+            dictPanel?.let { root.removeView(it) }
             controller.isDictionaryVisible = false
             resetHighlights()
-            updateCursor()
-        } else {
-            hideScreenshotOverlay()
+            return true
         }
+        if (!allowDismiss) return false
+        hideScreenshotOverlay()
+        return true
+    }
+
+    private fun handleGamepadBack(root: FrameLayout) {
+        if (closeNextLayer(root)) updateCursor()
     }
 
     private fun handleGamepadConfirm(root: FrameLayout) {

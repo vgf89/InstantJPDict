@@ -130,6 +130,20 @@ class MainActivity : AppCompatActivity() {
             installBundledPitchDictionary(manual = true)
         }
 
+        // #72: double-tap zoom is opt-in. While it is on, a tap on empty space
+        // must wait out the double-tap window before closing, so the default
+        // trades zoom for an instant close.
+        layout.addView(CheckBox(this).apply {
+            text = "Double-tap to zoom (makes tap-to-close wait)"
+            isChecked = DoubleTapZoom.isEnabled(this@MainActivity)
+            textSize = 14f
+            setPadding(0, 20, 0, 8)
+            setOnCheckedChangeListener { _, checked ->
+                DoubleTapZoom.setEnabled(this@MainActivity, checked)
+                Log.d("MainActivity", "double_tap_zoom_enabled=$checked")
+            }
+        })
+
         addButton(layout, "Refresh Status") {
             refreshStatus()
         }
