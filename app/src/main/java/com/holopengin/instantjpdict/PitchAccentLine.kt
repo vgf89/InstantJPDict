@@ -1,18 +1,14 @@
 package com.holopengin.instantjpdict
 
 import android.content.Context
-import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.Paint
 import android.text.SpannableStringBuilder
 import android.text.Spanned
-import android.text.TextPaint
 import android.text.style.ForegroundColorSpan
-import android.text.style.ReplacementSpan
+import android.text.style.RelativeSizeSpan
 import android.util.TypedValue
 import android.widget.TextView
 import com.holopengin.instantjpdict.util.PitchAccent
-import kotlin.math.roundToInt
 
 /**
  * Pitch-accent line (#43): one reading+position pair per item, all of them on
@@ -54,12 +50,15 @@ object PitchAccentLine {
      * Arrow marking the fall onto the unwritten particle slot: drawn when the
      * downstep lands past the final mora (odaka — position == mora count).
      * That particle is LOW (this is the textbook heiban/odaka split: heiban's
-     * particle stays high), hence [PLAIN_COLOR]. Sized down and vertically
-     * centered on the text line by [CenteredArrowSpan].
+     * particle stays high), hence [PLAIN_COLOR]. Drawn small on the baseline
+     * like any other character — no custom vertical positioning.
      */
     const val FALL_ARROW = "↓"
 
-    /** One colored run of the line. [arrow] runs draw via [CenteredArrowSpan]. */
+    /** Display size of [FALL_ARROW] relative to the morae. */
+    const val FALL_ARROW_SIZE_RATIO = 0.7f
+
+    /** One colored run of the line. [arrow] runs also get [FALL_ARROW_SIZE_RATIO]. */
     data class Segment(val text: String, val color: Int, val arrow: Boolean = false)
 
     /**
@@ -96,8 +95,20 @@ object PitchAccentLine {
         segs.forEach { seg ->
             val start = text.length
             text.append(seg.text)
-            val span = if (seg.arrow) CenteredArrowSpan(seg.color) else ForegroundColorSpan(seg.color)
-            text.setSpan(span, start, text.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            text.setSpan(
+                ForegroundColorSpan(seg.color),
+                start,
+                text.length,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+            )
+            if (seg.arrow) {
+                text.setSpan(
+                    RelativeSizeSpan(FALL_ARROW_SIZE_RATIO),
+                    start,
+                    text.length,
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+                )
+            }
         }
 
         return TextView(context).apply {
@@ -108,51 +119,6 @@ object PitchAccentLine {
                 android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
                 android.widget.LinearLayout.LayoutParams.WRAP_CONTENT,
             )
-        }
-    }
-
-    /**
-     * Small arrow pinned to the vertical middle of the text line. A reduced
-     * glyph on the baseline would sit low; this span shrinks the arrow and
-     * centers its own cap box on the line instead. The surrounding line
-     * height is left untouched.
-     */
-    private class CenteredArrowSpan(
-        private val color: Int,
-        private val sizeRatio: Float = 0.7f,
-    ) : ReplacementSpan() {
-        private var arrowWidth = 0f
-
-        override fun getSize(
-            paint: Paint,
-            text: CharSequence,
-            start: Int,
-            end: Int,
-            fm: Paint.FontMetricsInt?,
-        ): Int {
-            val p = TextPaint(paint).apply { textSize = paint.textSize * sizeRatio }
-            arrowWidth = p.measureText(text, start, end)
-            return arrowWidth.roundToInt()
-        }
-
-        override fun draw(
-            canvas: Canvas,
-            text: CharSequence,
-            start: Int,
-            end: Int,
-            x: Float,
-            top: Int,
-            y: Int,
-            bottom: Int,
-            paint: Paint,
-        ) {
-            val p = TextPaint(paint).apply {
-                textSize = paint.textSize * sizeRatio
-                color = this@CenteredArrowSpan.color
-            }
-            val metrics = p.fontMetrics
-            val baseline = (top + bottom) / 2f - (metrics.ascent + metrics.descent) / 2f
-            canvas.drawText(text, start, end, x, baseline, p)
         }
     }
 }
