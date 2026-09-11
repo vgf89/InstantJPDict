@@ -2,7 +2,14 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- #72: opt out of predictive back. Targeting SDK 35 enables it by default,
+         which routes back through the focused window's OnBackInvokedDispatcher.
+         An accessibility overlay window never gets that callback (see
+         OcrAccessibilityService.registerBackCallback), so back died on our
+         window. Opting out restores legacy KEYCODE_BACK dispatch, which this
+         service's key filtering does receive. -->
     <application
+        android:enableOnBackInvokedCallback="false"
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"

@@ -635,6 +635,23 @@ class OcrAccessibilityService : AccessibilityService() {
         }
         rootLayout.addView(debugTextView, debugParams)
 
+        // TEMP (#72) back probe: the status line above belongs to OCR progress,
+        // so this gets its own corner view. It reports whether the window's back
+        // dispatcher could be registered, and which path actually receives back.
+        // Remove once back is confirmed on-device.
+        val backProbeView = TextView(this).apply {
+            tag = "back_probe"
+            setTextColor(android.graphics.Color.YELLOW)
+            setBackgroundColor(android.graphics.Color.argb(180, 0, 0, 0))
+            setPadding(12, 6, 12, 6)
+            textSize = 11f
+            text = "back: (pending)"
+        }
+        rootLayout.addView(backProbeView, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT
+        ).apply { gravity = Gravity.BOTTOM or Gravity.START })
+
         val progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             isIndeterminate = true
         }
@@ -1965,6 +1982,8 @@ class OcrAccessibilityService : AccessibilityService() {
             if (keyEvent.action == KeyEvent.ACTION_DOWN) {
                 backProbe("key down")
                 (screenshotOverlay as? FrameLayout)?.let { closeNextLayer(it) }
+            } else {
+                backProbe("key up")
             }
             return true
         }
@@ -2053,10 +2072,17 @@ class OcrAccessibilityService : AccessibilityService() {
      * below API 33, where back is still a key event ([onKeyEvent] covers it).
      */
     private fun registerBackCallback(root: FrameLayout) {
-        if (android.os.Build.VERSION.SDK_INT < 33) return
-        val dispatcher = root.findOnBackInvokedDispatcher() ?: return
+        if (android.os.Build.VERSION.SDK_INT < 33) {
+            backProbe("register: api<33")
+            return
+        }
+        val dispatcher = root.findOnBackInvokedDispatcher()
+        if (dispatcher == null) {
+            backProbe("register: no dispatcher")
+            return
+        }
         val callback = android.window.OnBackInvokedCallback {
-            backProbe("callback")
+            backProbe("CALLBACK")
             closeNextLayer(root)
         }
         try {
@@ -2065,8 +2091,10 @@ class OcrAccessibilityService : AccessibilityService() {
             )
             backDispatcher = dispatcher
             backCallback = callback
+            backProbe("register: ok")
         } catch (e: Exception) {
             Log.e("OcrAccessibilityService", "Could not register back callback", e)
+            backProbe("register: failed ${e.javaClass.simpleName}")
         }
     }
 
@@ -2087,14 +2115,14 @@ class OcrAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * TEMP (#72): echoes the last back-related event into the overlay's status
-     * line, so a device can show whether the dispatcher callback or a key event
-     * actually fires — no logcat needed. Remove once back is confirmed on-device.
+     * TEMP (#72): echoes back-dispatch state into the overlay's corner probe so
+     * a device can show whether the dispatcher registered and which path fires
+     * — no logcat needed. Remove once back is confirmed on-device.
      */
     private fun backProbe(text: String) {
         (screenshotOverlay as? FrameLayout)
-            ?.findViewWithTag<TextView>("debug_text")
-            ?.let { tv -> tv.text = "back: $text" }
+            ?.findViewWithTag<TextView>("back_probe")
+            ?.let { tv -> tv.post { tv.text = "back: $text" } }
     }
 
     private fun handleGamepadBack(root: FrameLayout) {
