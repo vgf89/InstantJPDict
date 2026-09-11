@@ -126,8 +126,8 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
-        addButton(layout, "Install Bundled Pitch Dictionary") {
-            installBundledPitchDictionary()
+        addButton(layout, "Reinstall Bundled Pitch Dictionary") {
+            installBundledPitchDictionary(manual = true)
         }
 
         addButton(layout, "Refresh Status") {
@@ -400,6 +400,7 @@ class MainActivity : AppCompatActivity() {
 
         setContentView(root)
         refreshStatus()
+        ensureBundledPitchDictionary()
     }
 
     private fun addButton(parent: android.view.ViewGroup, text: String, onClick: () -> Unit) {
@@ -428,12 +429,31 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
+     * #43: first-launch install of the pitch dictionary vendored in the APK.
+     *
+     * Runs once. Now that the dictionary ships inside the app there is no
+     * reason to make the user find a button, and no network involved either —
+     * so the feature is simply ready the first time they look something up.
+     *
+     * The latch is a preference rather than a database lookup on purpose: the
+     * dictionary manager can delete dictionaries, and "is it present?" would
+     * resurrect one the user removed deliberately.
+     */
+    private fun ensureBundledPitchDictionary() {
+        if (PitchAccent.isBundledInstalled(this)) return
+        installBundledPitchDictionary(manual = false)
+    }
+
+    /**
      * #43: install the pitch dictionary vendored in the APK assets. No
      * network and no file picker — and because [DictionaryImporter.importBundledAsset]
-     * replaces any copy with the same title, tapping this twice is harmless.
+     * replaces any copy with the same title, running it twice is harmless.
+     *
+     * [manual] only affects the initial status line; the auto-install runs
+     * behind [refreshStatus]'s summary and reports itself when it has news.
      */
-    private fun installBundledPitchDictionary() {
-        tvStatus.text = "Installing bundled pitch dictionary..."
+    private fun installBundledPitchDictionary(manual: Boolean) {
+        if (manual) tvStatus.text = "Installing bundled pitch dictionary..."
         lifecycleScope.launch {
             try {
                 val importer = DictionaryImporter(applicationContext)
@@ -443,9 +463,10 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
                 withContext(Dispatchers.Main) {
-                    tvStatus.text = result.fold(
+                    result.fold(
                         onSuccess = { count ->
-                            if (PitchAccent.isEnabled(this@MainActivity)) {
+                            PitchAccent.setBundledInstalled(this@MainActivity, true)
+                            tvStatus.text = if (PitchAccent.isEnabled(this@MainActivity)) {
                                 "Pitch dictionary installed: $count entries"
                             } else {
                                 "Pitch dictionary installed: $count entries " +

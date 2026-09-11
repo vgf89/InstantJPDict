@@ -26,6 +26,19 @@ object PitchAccent {
     const val BUNDLED_ASSET = "pitch/kanjium_pitch_accents.zip"
 
     /**
+     * Set once the bundled dictionary has been installed successfully, so the
+     * auto-install runs on first launch only. Deliberately NOT derived from the
+     * database: the dictionary manager can delete dictionaries, and a
+     * presence-check would resurrect one the user removed on purpose.
+     *
+     * Written only after a successful import, so an install that is killed
+     * part-way (the title row lands before the entries do) is retried next
+     * launch instead of being mistaken for complete.
+     */
+    const val PREF_BUNDLED_INSTALLED = "pitch_bundled_installed"
+    const val DEF_BUNDLED_INSTALLED = false
+
+    /**
      * Small kana (拗音) fuse with the preceding kana into one mora: きょ is one
      * mora. っ, ー and ん each count as their OWN mora — がっこう is 4 morae
      * (が・っ・こ・う) and コーヒー is 4 (コ・ー・ヒ・ー).
@@ -35,6 +48,18 @@ object PitchAccent {
     fun isEnabled(ctx: Context): Boolean =
         ctx.getSharedPreferences(OcrEngine.PREFS_NAME, Context.MODE_PRIVATE)
             .getBoolean(PREF_PITCH_ENABLED, DEF_PITCH_ENABLED)
+
+    /** True once the bundled dictionary has been installed at least once. */
+    fun isBundledInstalled(ctx: Context): Boolean =
+        ctx.getSharedPreferences(OcrEngine.PREFS_NAME, Context.MODE_PRIVATE)
+            .getBoolean(PREF_BUNDLED_INSTALLED, DEF_BUNDLED_INSTALLED)
+
+    fun setBundledInstalled(ctx: Context, installed: Boolean) {
+        ctx.getSharedPreferences(OcrEngine.PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(PREF_BUNDLED_INSTALLED, installed)
+            .apply()
+    }
 
     fun setEnabled(ctx: Context, enabled: Boolean) {
         ctx.getSharedPreferences(OcrEngine.PREFS_NAME, Context.MODE_PRIVATE)
