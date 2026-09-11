@@ -15,9 +15,9 @@ import com.holopengin.instantjpdict.util.PitchAccent
  * per accent variant.
  *
  * Each item renders its morae with the accented mora in [ACCENT_COLOR] and the
- * rest in [PLAIN_COLOR], followed by the numeric position label. Heiban shows
- * all morae in [PLAIN_COLOR] — with no downstep there is no accented mora, and
- * the uniform gray is exactly that information.
+ * rest in [PLAIN_COLOR]. When the downstep lands past the final mora (odaka),
+ * the unwritten particle slot is drawn as [BEYOND_WORD] in [PLAIN_COLOR] — it
+ * is low. Heiban shows all morae in [PLAIN_COLOR] with no placeholder.
  *
  * Why color instead of a step line or tick: the accent position determines the
  * whole Tokyo contour, so highlighting the mora before the fall loses nothing —
@@ -45,9 +45,22 @@ object PitchAccentLine {
     data class Item(val reading: String, val position: Int)
 
     /**
+     * Placeholder for the unwritten mora the pitch falls onto: when the
+     * downstep lands past the final mora (odaka — position == mora count),
+     * the following particle carries the fall, so it is drawn as part of the
+     * item. That particle is LOW (this is the textbook heiban/odaka split:
+     * heiban's particle stays high), hence [PLAIN_COLOR].
+     */
+    const val BEYOND_WORD = "〇"
+
+    /**
      * Build the pitch line for [items], or null when there is nothing to show.
      * Items whose reading has no morae are dropped, and so is a lone trailing
      * separator — the line never ends in a comma.
+     *
+     * The accent position needs no numeric label: the white mora's index + 1
+     * IS the position (no white = heiban 0; white on the last mora plus [BEYOND_WORD]
+     * = odaka), so the encoding round-trips without digits.
      */
     fun build(context: Context, items: List<Item>, textSizePx: Float): TextView? {
         val usable = items.filter { it.reading.isNotEmpty() && PitchAccent.moraeOf(it.reading).isNotEmpty() }
@@ -68,14 +81,16 @@ object PitchAccentLine {
                     Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
                 )
             }
-            val labelStart = text.length
-            text.append(PitchAccent.formatPosition(item.position))
-            text.setSpan(
-                ForegroundColorSpan(LABEL_COLOR),
-                labelStart,
-                text.length,
-                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
-            )
+            if (PitchAccent.fallsBeyondWord(morae.size, item.position)) {
+                val start = text.length
+                text.append(BEYOND_WORD)
+                text.setSpan(
+                    ForegroundColorSpan(PLAIN_COLOR),
+                    start,
+                    text.length,
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+                )
+            }
         }
 
         return TextView(context).apply {

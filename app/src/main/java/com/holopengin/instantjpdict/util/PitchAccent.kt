@@ -67,11 +67,14 @@ object PitchAccent {
         return (position - 1).coerceIn(0, moraCount - 1)
     }
 
-    /** Numeric accent position, circled for 0..9 (Yomitan-style fallback label). */
-    fun formatPosition(position: Int): String {
-        val circled = "⓪①②③④⑤⑥⑦⑧⑨"
-        return if (position in 0..9) circled[position].toString() else position.toString()
-    }
+    /**
+     * True when the downstep lands past the final mora (odaka, or the one
+     * known-bad row whose position exceeds its mora count): the following
+     * particle carries the fall, so the renderer draws [beyond-word
+     * placeholder][com.holopengin.instantjpdict.PitchAccentLine.BEYOND_WORD].
+     */
+    fun fallsBeyondWord(moraCount: Int, position: Int): Boolean =
+        moraCount > 0 && position > 0 && position >= moraCount
 
     /**
      * Downstep positions from a stored definition payload, or null when this

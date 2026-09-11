@@ -63,12 +63,13 @@ class PitchAccentTest {
     }
 
     @Test
-    fun format_position_circled_then_plain() {
-        assertEquals("⓪", PitchAccent.formatPosition(0))
-        assertEquals("①", PitchAccent.formatPosition(1))
-        assertEquals("④", PitchAccent.formatPosition(4))
-        assertEquals("⑨", PitchAccent.formatPosition(9))
-        assertEquals("12", PitchAccent.formatPosition(12))
+    fun falls_beyond_word_only_for_odaka_and_overrange() {
+        assertFalse(PitchAccent.fallsBeyondWord(3, 0)) // heiban: no fall at all
+        assertFalse(PitchAccent.fallsBeyondWord(3, 1))
+        assertFalse(PitchAccent.fallsBeyondWord(3, 2))
+        assertTrue(PitchAccent.fallsBeyondWord(3, 3)) // odaka
+        assertTrue(PitchAccent.fallsBeyondWord(7, 8)) // known-bad row clamps here
+        assertFalse(PitchAccent.fallsBeyondWord(0, 1))
     }
 
     @Test
