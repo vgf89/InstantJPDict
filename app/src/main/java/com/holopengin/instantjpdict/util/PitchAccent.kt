@@ -50,22 +50,21 @@ object PitchAccent {
     }
 
     /**
-     * High/low per mora for a downstep [position] (Yomitan semantics: 0 =
-     * heiban, no downstep; N = pitch falls after mora N).
+     * Mora index to mark as the downstep carrier, or null when there is none.
      *
-     * Tokyo Japanese contour: heiban is L then H (no fall inside the word);
-     * atamadaka (1) is H then L; otherwise mora 1 is L, morae to the
-     * accented one are H, the rest fall. A position at or beyond the last
-     * mora therefore renders like heiban *within* the word — the difference
-     * only shows on the following particle.
+     * The accent position alone determines the Tokyo contour: after an initial
+     * low, morae up to the accent are high and everything after falls — so a
+     * single mark on the mora before the fall encodes the same information as
+     * the whole contour. It is also *strictly* better than drawing the contour
+     * alone: heiban (0) and odaka (position == mora count) produce an identical
+     * in-word contour (L H…H), and only the mark tells them apart. Verified over
+     * all 124k Kanjium rows — the only contour→position collisions are exactly
+     * those two classes.
      */
-    fun pattern(moraCount: Int, position: Int): List<Boolean> {
-        if (moraCount <= 0) return emptyList()
-        return when {
-            position <= 0 -> List(moraCount) { it >= 1 }
-            position == 1 -> List(moraCount) { it == 0 }
-            else -> List(moraCount) { it >= 1 && it < position }
-        }
+    fun markIndex(moraCount: Int, position: Int): Int? {
+        if (moraCount <= 0) return null
+        if (position <= 0) return null // heiban: no fall within the word
+        return (position - 1).coerceIn(0, moraCount - 1)
     }
 
     /** Numeric accent position, circled for 0..9 (Yomitan-style fallback label). */

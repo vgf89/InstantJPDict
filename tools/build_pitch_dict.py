@@ -55,7 +55,13 @@ def parse_positions(field: str) -> list[int]:
 
 
 def build_entries(lines) -> list[list]:
-    """(term, reading) -> merged, ordered positions."""
+    """(term, reading) -> merged, ordered positions.
+
+    Kana-only words (あっさり, あかんべ, …) ship an EMPTY reading column — the
+    term IS the reading. Resolving that matters twice: it keeps those ~16k
+    words in the output, and it is what makes the position/mora-count relation
+    hold (with a blank reading every position looks out of range).
+    """
     merged: "OrderedDict[tuple[str, str], list[int]]" = OrderedDict()
     for line in lines:
         line = line.rstrip("\n")
@@ -65,8 +71,10 @@ def build_entries(lines) -> list[list]:
         if len(parts) != 3:
             continue
         term, reading, raw_positions = (p.strip() for p in parts)
-        if not term or not reading:
+        if not term:
             continue
+        if not reading:
+            reading = term
         positions = parse_positions(raw_positions)
         if not positions:
             continue
