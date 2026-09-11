@@ -1221,7 +1221,7 @@ class OcrAccessibilityService : AccessibilityService() {
                     readingStack.addView(createKunOnRow("訓", it))
                 }
                 hw.onyomi?.takeIf { it.isNotEmpty() }?.let {
-                    readingStack.addView(createKunOnRow("音", it))
+                    readingStack.addView(createKunOnRow("音", it, topMarginPx = kunOnRowTightenPx))
                 }
                 kanjiHeader.addView(readingStack)
                 headwordList.addView(kanjiHeader)
@@ -1690,11 +1690,15 @@ class OcrAccessibilityService : AccessibilityService() {
             })
             addView(LinearLayout(this@OcrAccessibilityService).apply {
                 orientation = LinearLayout.VERTICAL
-                listOf("訓" to split.kun, "音" to split.on, "他" to split.other).forEach { (label, readings) ->
-                    if (readings.isNotEmpty()) {
-                        addView(createKunOnRow(label, readings.joinToString("、")))
+                listOf("訓" to split.kun, "音" to split.on, "他" to split.other)
+                    .filter { it.second.isNotEmpty() }
+                    .forEachIndexed { i, (label, readings) ->
+                        addView(createKunOnRow(
+                            label,
+                            readings.joinToString("、"),
+                            topMarginPx = if (i == 0) 0 else kunOnRowTightenPx
+                        ))
                     }
-                }
             })
         }
     }
@@ -1702,12 +1706,18 @@ class OcrAccessibilityService : AccessibilityService() {
     /**
      * #69: one 訓 / 音 / 他 row — label (12f, GRAY) beside its readings
      * (18f, LTGRAY). Shared by the kanji-entry and split-headword branches so
-     * every on/kun label renders identically.
+     * every on/kun label renders identically. [topMarginPx] pulls consecutive
+     * rows closer (negative tightens) — the 18f value text leaves more
+     * leading than the row visually needs.
      */
-    private fun createKunOnRow(label: String, readings: String): View {
+    private fun createKunOnRow(label: String, readings: String, topMarginPx: Int = 0): View {
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = topMarginPx }
             addView(TextView(this@OcrAccessibilityService).apply {
                 text = label
                 setTextColor(Color.GRAY)
@@ -1723,6 +1733,9 @@ class OcrAccessibilityService : AccessibilityService() {
             })
         }
     }
+
+    /** Vertical gap applied above every 訓/音 row after the first (#69). */
+    private val kunOnRowTightenPx = -6
 
     private fun createRubyStackView(base: String, ruby: String, isMini: Boolean): View {
         return LinearLayout(this).apply {
