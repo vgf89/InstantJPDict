@@ -360,6 +360,26 @@ class OcrAccessibilityService : AccessibilityService() {
         var onInterceptTouchForGestures: ((MotionEvent) -> Unit)? = null
 
         val rootLayout = object : FrameLayout(this) {
+            /**
+             * #72: with predictive back opted out, back comes back as a plain
+             * key event. If the platform delivers it to this window's view tree
+             * (rather than to the service's onKeyEvent, which is filtered), it
+             * lands here — and a plain FrameLayout would drop it silently, which
+             * is exactly the "back is blocked" symptom.
+             */
+            override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+                if (event.keyCode == KeyEvent.KEYCODE_BACK) {
+                    if (event.action == KeyEvent.ACTION_DOWN) {
+                        backProbe("view key down")
+                        closeNextLayer(this)
+                    } else {
+                        backProbe("view key up")
+                    }
+                    return true
+                }
+                return super.dispatchKeyEvent(event)
+            }
+
             private fun isTouchOnView(tag: String, ev: MotionEvent): Boolean {
                 val v = findViewWithTag<View>(tag) ?: return false
                 return v.isVisible && Rect().also { v.getGlobalVisibleRect(it) }.contains(ev.rawX.toInt(), ev.rawY.toInt())
@@ -2072,6 +2092,9 @@ class OcrAccessibilityService : AccessibilityService() {
      * below API 33, where back is still a key event ([onKeyEvent] covers it).
      */
     private fun registerBackCallback(root: FrameLayout) {
+        // #72: the dispatcher path needs the predictive-back opt-in to be
+        // honoured, so the manifest opt-out is tested alongside it: whichever
+        // path the platform actually uses, one of these receives back.
         if (android.os.Build.VERSION.SDK_INT < 33) {
             backProbe("register: api<33")
             return
