@@ -178,8 +178,8 @@ object JapaneseUtil {
      * back to a plain repeat otherwise (`まゞ` → `まま`, 537 real occurrences), which
      * is also what an already-voiced kana needs (`がゞ` → `がが`). A mark whose
      * preceding character is not kana of the matching script (line-initial, after a
-     * kanji or punctuation) is left as-is rather than folded into a guess — 1,061 of
-     * 139,270 real occurrences, validated across the Aozora corpus.
+     * kanji or punctuation) is left as-is rather than folded into a guess: 1,067 of
+     * 139,270 real occurrences, so 99.23% fold, measured across the Aozora corpus.
      */
     fun foldLookupVariants(text: String): String {
         if (text.isEmpty()) return text
