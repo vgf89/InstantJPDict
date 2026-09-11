@@ -45,6 +45,7 @@ import com.holopengin.instantjpdict.util.Deinflector
 import com.holopengin.instantjpdict.util.DeinflectionChain
 import com.holopengin.instantjpdict.util.FuriganaAligner
 import com.holopengin.instantjpdict.util.JapaneseUtil
+import com.holopengin.instantjpdict.util.RubyHeading
 import com.holopengin.instantjpdict.util.SplitReadings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -1241,8 +1242,11 @@ class OcrAccessibilityService : AccessibilityService() {
             // space for all of them so baselines align in the shared flow.
             // All-ruby and no-ruby groups behave exactly as before.
             val reserveRubySpace = group.headwords.any { hw -> hw.kanji != group.reading }
+            // #69: the left-align rule applies only to a lone headword; a row
+            // of alternative kanji/reading pairs stays centered.
+            val alignStart = group.headwords.size == 1
             group.headwords.forEachIndexed { i, hw ->
-                flow.addView(createRubyView(hw.kanji, group.reading, reserveRubySpace = reserveRubySpace))
+                flow.addView(createRubyView(hw.kanji, group.reading, reserveRubySpace = reserveRubySpace, allowAlignStart = alignStart))
                 if (i < group.headwords.size - 1) {
                     flow.addView(TextView(this).apply { text = "、"; setTextColor(Color.GRAY); textSize = 24f; setPadding(5, 0, 5, 0) })
                 }
@@ -1608,7 +1612,7 @@ class OcrAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun createRubyView(term: String, reading: String, isMini: Boolean = false, reserveRubySpace: Boolean = false): View {
+    private fun createRubyView(term: String, reading: String, isMini: Boolean = false, reserveRubySpace: Boolean = false, allowAlignStart: Boolean = false): View {
         if (term == reading) {
             if (!reserveRubySpace) return createBaseTextView(term, isMini)
             // #68: mixed group — reserve the same ruby row a furigana-bearing
@@ -1621,7 +1625,7 @@ class OcrAccessibilityService : AccessibilityService() {
         // plain base text. Falls back to full-reading ruby when unalignable.
         val segments = FuriganaAligner.align(term, reading)
         if (segments == null || segments.none { it.ruby != null }) {
-            return createFullRubyView(term, reading, isMini)
+            return createFullRubyView(term, reading, isMini, allowAlignStart)
         }
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -1654,20 +1658,24 @@ class OcrAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun createFullRubyView(term: String, reading: String, isMini: Boolean): View {
+    private fun createFullRubyView(term: String, reading: String, isMini: Boolean, allowAlignStart: Boolean = true): View {
+        // #69: a long merged reading wraps; centering the kanji under it reads
+        // as ragged, so those rows left-align. Single readings keep centering.
+        val alignStart = allowAlignStart && RubyHeading.shouldAlignStart(term, reading)
+        val itemGravity = if (alignStart) Gravity.START else Gravity.CENTER
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
+            gravity = if (alignStart) Gravity.START else Gravity.CENTER_HORIZONTAL
             isBaselineAligned = true
 
             addView(TextView(this@OcrAccessibilityService).apply {
                 text = reading
                 setTextColor(Color.LTGRAY)
                 textSize = if (isMini) 9f else 13f
-                gravity = Gravity.CENTER
+                gravity = itemGravity
                 includeFontPadding = false
             })
-            addView(createBaseTextView(term, isMini).apply { gravity = Gravity.CENTER })
+            addView(createBaseTextView(term, isMini).apply { gravity = itemGravity })
             baselineAlignedChildIndex = 1
         }
     }
