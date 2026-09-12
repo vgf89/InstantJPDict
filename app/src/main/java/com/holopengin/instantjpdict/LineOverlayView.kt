@@ -6,6 +6,7 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Rect
 import android.view.View
+import com.holopengin.instantjpdict.util.InferLog
 import kotlin.math.roundToInt
 
 /**
@@ -203,6 +204,11 @@ class LineOverlayView(
                 for (i in hitRects.indices) {
                     if (hitRects[i].contains(x, y)) {
                         downHitIdx = i
+                        // DIAG-ONLY (#44 blank tap): which character the overlay resolved the
+                        // touch to. A hit on the placeholder's index means the markers are
+                        // reachable and any remaining problem is downstream.
+                        InferLog.add("overlay tap hit idx=$i char=${line.text.getOrNull(i)} " +
+                            "rects=${hitRects.size} text=${line.text.length}")
                         tap.onDown(event.x, event.y)
                         // Deliberately NOT calling
                         // requestDisallowInterceptTouchEvent(true) here (#61):
@@ -217,6 +223,10 @@ class LineOverlayView(
                     }
                 }
                 downHitIdx = -1
+                // DIAG-ONLY (#44 blank tap): no rect covered the touch. Markers are drawn
+                // from charBoxes but hit-tested from hitRects, so a box the placeholder never
+                // got is visible-but-dead — this line is what tells the two apart.
+                InferLog.add("overlay tap miss x=$x y=$y rects=${hitRects.size} text=${line.text.length}")
                 tap.cancel()
                 return false
             }

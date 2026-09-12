@@ -1031,6 +1031,13 @@ class OcrAccessibilityService : AccessibilityService() {
         // into (decision 5: show nothing, stay clickable, because a manual entry mode exists).
         if (controller.isBlankAt(lineIdx, charIdx)) {
             controller.selectBlankPosition(lineIdx, charIdx)
+            // Highlight like any other character. Yellow is the only feedback that the tap
+            // landed, and the neighbour chips recompute their selection only inside
+            // updateNeighborHighlights — which a lookup calls and a blank never did, so a
+            // blank tap showed no selection anywhere (#44).
+            updateLookupHighlights(lineIdx, charIdx, 1)
+            rootLayout.findViewWithTag<LinearLayout>("neighbor_scroll_panel")
+                ?.let { updateNeighborHighlights(it) }
             // DIAG-ONLY (#44 blank tap): read back whether the tap reached here with the
             // expected index. If no such line appears in the in-app log, the touch never
             // resolved to the placeholder — a hit-rect problem, not a panel one.
