@@ -11,7 +11,8 @@ on corpus") is that accuracy is **flat from ~7 MB to 40 MB**, so the shipped
 model should be the smallest point on the plateau:
 
     order 4, prune the highest order at count >= 5, Aozora Bunko
-    => ~1.44M entries, ~7.2 MB packed (5 B/entry), ~17 MB as a UTF-8 text table
+    -    => ~1.44M entries, ~14.3 MB packed (10 B/entry: 4 UTF-16 units + a u16 count),
+    -       ~17 MB as a UTF-8 text table
        (measured on the first 5,000,000 chars of the mirror)
 
 This tool builds exactly that table deterministically from the documented
@@ -178,7 +179,11 @@ WIKI_ATTRIB = ("Contains information from ja.wikipedia.org, which is made "
 
 # Packed-asset estimate used consistently in the skill's sizing table. The
 # serialised UTF-8 table is larger; both are printed.
-BYTES_PER_ENTRY = 5
+# The packed record is 10 bytes: four little-endian UTF-16 code units (zero-padded) plus a
+# u16 count. tools/pack_char_lm.py reports this directly ("10.0 B/entry"), so an estimate
+# built on 5 understates the shipped asset by 2x - the shipped model is 14.28 MB packed,
+# not the 7.14 MB an earlier convention quoted.
+BYTES_PER_ENTRY = 10
 # Stupid backoff penalty, matching ngram_probe.py / oov_m3_lm.py so the
 # measured table is reproducible. Absolute PPL is not a KenLM number; only the
 # ordering across configurations is the signal.
@@ -746,7 +751,7 @@ def main():
     print(f"order {args.order}, min-count >= {args.min_count}: "
           f"{entries:,} entries  ({per_order})")
     print(f"estimated size: {entries * BYTES_PER_ENTRY / 1e6:.2f} MB packed "
-          f"({BYTES_PER_ENTRY} B/entry, the skill's sizing convention), "
+          f"({BYTES_PER_ENTRY} B/entry, the packed record size), "
           f"{len(payload) / 1e6:.2f} MB as UTF-8 text")
     print(f"table SHA-256: {sha}")
 
