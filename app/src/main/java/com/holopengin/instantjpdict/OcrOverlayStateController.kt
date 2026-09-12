@@ -5,6 +5,8 @@ import com.holopengin.instantjpdict.util.Deinflector
 import com.holopengin.instantjpdict.util.DeinflectionChain
 import com.holopengin.instantjpdict.util.DictionaryRedirects
 import com.holopengin.instantjpdict.util.OovCandidates
+import com.holopengin.instantjpdict.util.CharLm
+import com.holopengin.instantjpdict.util.GapCandidates
 import com.holopengin.instantjpdict.util.OovSuggestions
 import com.holopengin.instantjpdict.util.PitchAccent
 import com.holopengin.instantjpdict.data.DictionaryEntry
@@ -138,6 +140,11 @@ class OcrOverlayStateController {
      * list meanwhile, which is exactly the previous behaviour.
      */
     private var oovCandidates: OovCandidates? = null
+
+    /** Character LM for ranking gap candidates (#44). Null until the service loads it off
+     *  the main thread, and null forever if the asset is missing — either way the blank
+     *  just offers the placeholder alone. */
+    private var charLm: CharLm? = null
     private var suggestionsEnabled: () -> Boolean = { false }
     var deinflector: Deinflector? = null
     var dictionaryProvider: DictionaryProvider? = null
@@ -545,8 +552,17 @@ class OcrOverlayStateController {
      * can never disagree about what the list contains.
      */
     private fun alternativeCharsFor(line: LineResult, cIdx: Int): List<AlternativeChar>? {
-        val alts = line.alternatives.getOrNull(cIdx) ?: return null
         val current = line.text.getOrNull(cIdx)
+        val alts = line.alternatives.getOrNull(cIdx) ?: run {
+            // A placeholder inserted into a line whose `alternatives` did not grow with the
+            // text (the insertion leaves mismatched lists alone on purpose) has no entry at
+            // all, so a blank tap opened nothing. Synthesise one: the placeholder is its own
+            // only candidate until ranked candidates are generated for the gap (#44).
+            if (current == OcrEngine.GAP_CHAR) {
+                return gapCandidates(line, cIdx)
+            }
+            return null
+        }
         val head = alts.take(15).map { it.first }
         val suggestions = if (suggestionsEnabled() && oovCandidates != null && current != null) {
             OovSuggestions.assemble(current, head, oovCandidates)
@@ -556,6 +572,20 @@ class OcrOverlayStateController {
         return suggestions.map {
             AlternativeChar(it.char, isSelected = it.char == current, source = it.source)
         }
+    }
+
+    /**
+     * The blank's list: the placeholder itself (so the entry is selectable and carries the
+     * manual IME) followed by the LM-ranked kanji the recogniser offered along this line.
+     */
+    private fun gapCandidates(line: LineResult, cIdx: Int): List<AlternativeChar> {
+        val out = mutableListOf(
+            AlternativeChar(OcrEngine.GAP_CHAR, isSelected = true, source = OovSuggestions.Source.HEAD))
+        if (suggestionsEnabled()) {
+            GapCandidates.generate(line.text, line.rawAlternatives, cIdx, charLm)
+                .forEach { out.add(AlternativeChar(it, isSelected = false, source = OovSuggestions.Source.LM)) }
+        }
+        return out
     }
 
     fun navigateAlternatives(keyCode: Int, isLandscape: Boolean): Char? {
@@ -592,6 +622,15 @@ class OcrOverlayStateController {
     fun installOovSuggestions(candidates: OovCandidates, enabled: () -> Boolean) {
         oovCandidates = candidates
         suggestionsEnabled = enabled
+    }
+
+    /**
+     * The character LM the blank's candidates are ranked with (#44). Loaded by the service
+     * off the main thread like the component table; until it lands, and if the asset is
+     * missing, a blank offers the placeholder and the manual IME and nothing else.
+     */
+    fun installCharLm(lm: CharLm?) {
+        charLm = lm
     }
 
     fun getPanelDimensions(rootWidth: Int, rootHeight: Int): Pair<Float, Float> {

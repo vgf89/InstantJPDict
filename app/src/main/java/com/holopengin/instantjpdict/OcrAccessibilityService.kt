@@ -42,6 +42,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.isVisible
 import com.google.gson.Gson
 import com.holopengin.instantjpdict.util.BlankGaps
+import com.holopengin.instantjpdict.util.CharLm
 import com.holopengin.instantjpdict.util.InferLog
 import com.holopengin.instantjpdict.util.Deinflector
 import com.holopengin.instantjpdict.util.DeinflectionChain
@@ -181,6 +182,12 @@ class OcrAccessibilityService : AccessibilityService() {
             controller.installOovSuggestions(OovCandidates(table)) {
                 OovSuggestions.isEnabled(this@OcrAccessibilityService)
             }
+            // The 14 MB packed model behind the blank's candidate ranking. Mapped the same
+            // way and off the main thread; a failure here only narrows the blank's list.
+            controller.installCharLm(
+                withContext(Dispatchers.IO) {
+                    runCatching { CharLm.load(this@OcrAccessibilityService) }.getOrNull()
+                })
         }
     }
 

@@ -37,7 +37,7 @@ object OovSuggestions {
     const val MAX_VARIANT_CANDIDATES = 15
 
     /** Where a popup entry came from. The panel tints non-HEAD entries. */
-    enum class Source { HEAD, COMPONENTS, VARIANT }
+    enum class Source { HEAD, COMPONENTS, VARIANT, LM }
 
     data class Suggestion(val char: Char, val source: Source)
 

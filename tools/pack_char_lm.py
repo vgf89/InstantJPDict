@@ -27,7 +27,7 @@ import struct
 from pathlib import Path
 
 MAGIC = b"CLM1"
-HEADER = struct.Struct("<4sII")      # magic, entry count, max order
+HEADER = struct.Struct("<4sIII")     # magic, entry count, max order, corpus length (unigram mass)
 MAX_ORDER = 4
 MAX_COUNT = 65535
 
@@ -75,15 +75,23 @@ def main():
         if count > MAX_COUNT:
             saturated += 1
         records.append((key_of(ngram), min(count, MAX_COUNT)))
-    records.sort(key=lambda r: r[0])
+    # Sorted by the n-gram's own code-unit order, NOT by the packed bytes: little-endian
+    # packing puts the low byte of each unit first, so a byte-wise order is a different and
+    # opaque order from the one the Kotlin loader has to binary-search against.
+    records.sort(key=lambda r: struct.unpack("<4H", r[0]))
 
     keys = [k for k, _ in records]
     if len(set(keys)) != len(keys):
         raise SystemExit("duplicate n-gram keys after padding — refusing to write")
 
+    # Total mass of the 1-gram records, i.e. the corpus length: the unigram prior
+    # P(ch) = count(ch) / mass needs it, and packing it means the loader never scans
+    # 1.4M records to recover a single number.
+    unigram_mass = sum(c for k, c in records if k[2:] == b"\x00" * 6)
+
     out = Path(args.out)
     with out.open("wb") as f:
-        f.write(HEADER.pack(MAGIC, len(records), longest))
+        f.write(HEADER.pack(MAGIC, len(records), longest, unigram_mass))
         for key, count in records:
             f.write(key)
             f.write(struct.pack("<H", count))
@@ -96,7 +104,7 @@ def main():
 
     if args.verify:
         raw = out.read_bytes()
-        magic, count, order = HEADER.unpack_from(raw, 0)
+        magic, count, order, mass = HEADER.unpack_from(raw, 0)
         assert magic == MAGIC, magic
         assert count == len(records), (count, len(records))
         by_key = dict(records)
@@ -108,8 +116,9 @@ def main():
             want = by_key[key]
             assert got == want, (key, got, want)
             checked += 1
+        assert mass == unigram_mass, (mass, unigram_mass)
         print(f"verify       : {checked} sampled records match the text table, "
-              f"header count matches, order {order}")
+              f"header count matches, order {order}, corpus {mass:,} chars")
         # a search-order invariant the loader depends on: a prefix sorts before its extension
         first_of_2 = next(k for k, _ in records if k[2:4] != b"\x00\x00" and k[4:] == b"\x00" * 4)
         ext = first_of_2[:4] + b"\x00\x01\x00\x00"
