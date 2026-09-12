@@ -206,16 +206,23 @@ def clean(text):
 
 
 def _read_clean_head(fh, chars):
-    """First `chars` *cleaned* characters of a text file, streamed."""
+    """First `chars` *cleaned* characters of a text file, streamed.
+
+    `chars <= 0` means the whole file. It used to mean zero characters, which produced an
+    empty corpus and an empty table while exiting 0 - a silent-success failure that looks
+    exactly like a successful run until you check the output size.
+    """
+    unlimited = chars <= 0
     parts, got = [], 0
-    while got < chars:
+    while unlimited or got < chars:
         chunk = fh.read(1 << 20)
         if not chunk:
             break
         c = clean(chunk)
         parts.append(c)
         got += len(c)
-    return "".join(parts)[:chars]
+    text = "".join(parts)
+    return text if unlimited else text[:chars]
 
 
 # --------------------------------------------------------------------------- #

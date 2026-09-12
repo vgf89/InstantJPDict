@@ -98,7 +98,8 @@ def main():
 
     size = out.stat().st_size
     print(f"entries      : {len(records):,} (max order {longest})")
-    print(f"file         : {out} ({size:,} bytes, {size / len(records):.1f} B/entry)")
+    per_entry = size / len(records) if records else 0.0
+    print(f"file         : {out} ({size:,} bytes, {per_entry:.1f} B/entry)")
     print(f"saturated    : {saturated:,} counts clipped at {MAX_COUNT}")
     print(f"skipped      : {skipped_astral:,} n-grams containing supplementary-plane chars")
 
