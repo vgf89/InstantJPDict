@@ -1,8 +1,9 @@
 Kana size model — assets
 ========================
 
-Source      : retrain "nb_all", kanadiff fp32 ONNX, sha256 132bcc3259354d0016aa3f232db456bb5abc2737415b0941a0ab20dcdfc7dcb3
-              (47,425-param byte-CNN; era-inclusive training corpus, line-domain raster)
+Source      : retrain "nb_all", kanadiff fp32 ONNX, sha256 132bcc3259354d00…
+              converted to ncnn by the model author's pipeline, which writes the weight stream
+              itself with explicit fp32 tags and asserts its byte total
 Author      : trained by the collaborating agent against Aozora Bunko + Japanese Wikipedia
               (Aozora Bunko is public domain; Wikipedia is CC BY-SA 4.0)
 Licence     : model weights — see the model author's INTERFACE_NB.md for terms; the training
@@ -11,11 +12,13 @@ Licence     : model weights — see the model author's INTERFACE_NB.md for terms
 Files
 -----
 
-  byte_emb.f32     256 x 32   input byte embedding
-  base_emb.f32      20 x 16   pair index embedding (the BIG form is the base)
-  pos_block.f32     40 x 16   positional constant block added to every window
-  weights.bin     38273 floats   conv1.w, conv1.b, conv2.w, conv2.b, fc1.w, fc1.b, fc2.w, fc2.b
+  nb_all.param      1,585 B   17 layers; win (40 int32) + base (1 int32) -> logit
+  nb_all.bin      189,888 B   sequential weight stream, read in param order
 
-The window encoder stops context at 。 and newline (line-domain raster) and excludes the target
-character. See KanaSizeEncoder; KanaSizeEncoderTest pins the bytes against this artifact's
-validation_vectors.json.
+Verified
+--------
+
+The ten published logits in the artifact's validation_vectors.json reproduce to 3.8e-06 under
+ncnn (host harness, fp32 — fp16, bf16 and packing pinned off, since fp16 alone costs 1.5e-03).
+An independent direct C++ forward pass, since deleted, agreed to 5.8e-06. KanaSizeNcnn.selfCheck
+re-runs the same ten vectors through this device's own encoder and JNI.

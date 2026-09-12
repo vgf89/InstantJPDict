@@ -3,23 +3,24 @@ package com.holopengin.instantjpdict
 import android.content.Context
 import android.util.Log
 import com.holopengin.instantjpdict.util.KanaSizeEncoder
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
+import java.io.File
 
 /**
- * Kana size model (#44) — the direct implementation, not a converted graph.
+ * Kana size model (#44), run through the ncnn this app already links for OCR.
  *
  * A 47,425-param byte-CNN decides whether a confusable kana position is the small or the big
- * form. It is not hosted in ncnn: the conversion of this model produced degenerate output twice
- * (a degenerate `Permute 0=1` that never reordered, then a weight stream shifted by a layer
- * removed from the param while its bytes stayed in the bin), both failing silently. The
- * arithmetic is twelve float operations and lives in `kana_size_forward.cpp` instead — no ONNX,
- * no ncnn, no ML runtime — verified against the author's published logits to 2.86e-06.
+ * form. The converted graph reproduces the model author's ten published logits to 3.8e-06 on the
+ * host. Three conversion defects had to be fixed, none of which errored — each produced plausible
+ * numbers instead: an int64 initializer written as 8 bytes while the param declared 4, shifting
+ * every later weight block by one float; a 3-D conv input that `Convolution1D` reads as one
+ * channel; and fp16, which costs ~1.5e-03 against an fp32 reference. The native side pins fp32.
  *
  * Inputs match [KanaSizeEncoder] exactly: a 40-byte window of *context only* (the target
  * character is excluded; the pair identity travels via [base]) and the pair index.
  *
- * Callers should use [load] (idempotent, cached) and [logits] with one entry per position.
+ * ncnn loads from paths, so the param and bin are copied next to the app's files once per process
+ * — the same arrangement the OCR models use. Callers should use [load] (idempotent, cached) and
+ * [logits] with one entry per position.
  */
 class KanaSizeNcnn private constructor(private val handle: Long) {
 
@@ -44,10 +45,10 @@ class KanaSizeNcnn private constructor(private val handle: Long) {
     /**
      * Run the model author's ten published vectors through this device's own encoder and JNI.
      *
-     * This is the on-device form of the gate that was passed on the host: the same ten
-     * text/target/base triples with their expected logits. It proves the whole path (asset
-     * bytes, JNI marshalling, ARM float behaviour) without adb, and it costs ten positions.
-     * Expected values from the author's INTERFACE.md; the last four are real corpus rows.
+     * This is the on-device form of the numeric gate that was passed on the host: the same ten
+     * text/target/base triples with their expected logits from the artifact's
+     * `validation_vectors.json`. It proves the whole path (asset bytes, the param/bin load, JNI
+     * marshalling, ARM float behaviour) without adb, and it costs ten positions.
      */
     fun selfCheck(): String {
         val n = VECTORS.size
@@ -78,9 +79,40 @@ class KanaSizeNcnn private constructor(private val handle: Long) {
         private const val TAG = "KanaSizeNcnn"
         const val WINDOW_BYTES = KanaSizeEncoder.WINDOW_BYTES   // 40
 
-        private const val TABLES_FLOATS = 256 * 32 + 20 * 16 + 40 * 16
-        private const val WEIGHTS_FLOATS =
-            64 * 48 * 5 + 64 + 64 * 64 * 3 + 64 + 128 * 80 + 128 + 128 + 1
+        private const val PARAM_ASSET = "kana_size/nb_all.param"
+        private const val BIN_ASSET = "kana_size/nb_all.bin"
+        private const val PARAM_FILE = "kana_size.param"
+        private const val BIN_FILE = "kana_size.bin"
+
+        /**
+         * Copy an asset into the app's own files, where ncnn can open it by path.
+         *
+         * Always rewritten rather than compared by size: a future artifact swap can keep the same
+         * byte length, and a stale file would then be loaded silently. It is ~190 KB, once per
+         * process, because [load] caches.
+         */
+        private fun materialise(context: Context, asset: String, name: String): String? {
+            return try {
+                val data = context.assets.open(asset).use { it.readBytes() }
+                if (data.isEmpty()) {
+                    Log.e(TAG, "$asset is empty")
+                    return null
+                }
+                val out = File(context.filesDir, name)
+                out.writeBytes(data)
+                out.absolutePath
+            } catch (e: Exception) {
+                Log.e(TAG, "cannot materialise $asset", e)
+                null
+            }
+        }
+
+        /** Copies an asset and reports its size, for the trace. */
+        private fun materialiseTraced(context: Context, asset: String, name: String, trace: (String) -> Unit): String? {
+            val path = materialise(context, asset, name) ?: return null
+            trace("      ${File(path).length()} bytes -> $path")
+            return path
+        }
 
         /**
          * Run the self-check while tracing every step to `filesDir/kana_probe.log`, flushing
@@ -105,7 +137,7 @@ class KanaSizeNcnn private constructor(private val handle: Long) {
                 }
             }
 
-            trace("--- kana probe, attempt starting ---")
+            trace("--- kana probe, attempt starting (ncnn path) ---")
             // Local, so it closes over `trace`: a local named function cannot be passed where a
             // Function1 is expected.
             fun finish(verdict: String): String {
@@ -119,22 +151,19 @@ class KanaSizeNcnn private constructor(private val handle: Long) {
                 ensureLoaded()
                 trace("step 1 ok")
 
-                trace("step 2: read tables from assets")
-                val tables = concatFloats(
-                    context,
-                    listOf("kana_size/byte_emb.f32", "kana_size/base_emb.f32", "kana_size/pos_block.f32"),
-                    TABLES_FLOATS)
-                if (tables == null) return finish("step 2 FAILED: tables unavailable (assets missing or short)")
-                trace("step 2 ok ($TABLES_FLOATS floats)")
+                trace("step 2: materialise $PARAM_ASSET")
+                val param = materialiseTraced(context, PARAM_ASSET, PARAM_FILE, ::trace)
+                    ?: return finish("step 2 FAILED: param unavailable")
+                trace("step 2 ok")
 
-                trace("step 3: read weights.bin")
-                val weights = assetBuffer(context, "kana_size/weights.bin", WEIGHTS_FLOATS * 4)
-                if (weights == null) return finish("step 3 FAILED: weights unavailable")
-                trace("step 3 ok ($WEIGHTS_FLOATS floats)")
+                trace("step 3: materialise $BIN_ASSET")
+                val bin = materialiseTraced(context, BIN_ASSET, BIN_FILE, ::trace)
+                    ?: return finish("step 3 FAILED: bin unavailable")
+                trace("step 3 ok")
 
-                trace("step 4: native create()")
-                handle = create(tables, TABLES_FLOATS, weights, WEIGHTS_FLOATS)
-                if (handle == 0L) return finish("step 4 FAILED: native create refused the tables")
+                trace("step 4: native create(param, bin) - loads the graph")
+                handle = create(param, bin)
+                if (handle == 0L) return finish("step 4 FAILED: ncnn refused the converted model")
                 trace("step 4 ok (handle $handle)")
 
                 trace("step 5: native batch() over ${VECTORS.size} published vectors")
@@ -178,9 +207,9 @@ class KanaSizeNcnn private constructor(private val handle: Long) {
         @Volatile private var attempted = false
 
         /**
-         * Load once per process from the APK assets. Returns null when the tables are missing or
-         * the native layer refuses them — callers treat null as "correction unavailable" rather
-         * than falling back to anything.
+         * Load once per process from the APK assets. Returns null when the param or bin is missing
+         * or ncnn refuses them — callers treat null as "correction unavailable" rather than
+         * falling back to anything.
          */
         @Synchronized
         fun load(context: Context): KanaSizeNcnn? {
@@ -188,16 +217,14 @@ class KanaSizeNcnn private constructor(private val handle: Long) {
             if (attempted) return null
             attempted = true
             ensureLoaded()
-            val tables = concatFloats(
-                context, listOf("kana_size/byte_emb.f32", "kana_size/base_emb.f32", "kana_size/pos_block.f32"),
-                TABLES_FLOATS) ?: return null
-            val weights = assetBuffer(context, "kana_size/weights.bin", WEIGHTS_FLOATS * 4) ?: return null
-            val h = create(tables, TABLES_FLOATS, weights, WEIGHTS_FLOATS)
+            val param = materialise(context, PARAM_ASSET, PARAM_FILE) ?: return null
+            val bin = materialise(context, BIN_ASSET, BIN_FILE) ?: return null
+            val h = create(param, bin)
             if (h == 0L) {
-                Log.e(TAG, "native create refused the tables")
+                Log.e(TAG, "ncnn refused the converted model")
                 return null
             }
-            Log.i(TAG, "kana size model loaded")
+            Log.i(TAG, "kana size model loaded (ncnn)")
             return KanaSizeNcnn(h).also { instance = it }
         }
 
@@ -214,52 +241,7 @@ class KanaSizeNcnn private constructor(private val handle: Long) {
             }
         }
 
-        /** Raw asset bytes as a direct buffer, with the length asserted. */
-        private fun assetBuffer(context: Context, path: String, expectedBytes: Int): ByteBuffer? {
-            return try {
-                val data = context.assets.open(path).use { it.readBytes() }
-                if (data.size != expectedBytes) {
-                    Log.e(TAG, "$path: ${data.size} bytes, expected $expectedBytes")
-                    return null
-                }
-                ByteBuffer.allocateDirect(data.size).order(ByteOrder.nativeOrder()).apply {
-                    put(data)
-                    position(0)
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "cannot read asset $path", e)
-                null
-            }
-        }
-
-        /** The three lookup tables concatenated in the order the native code reads them. */
-        private fun concatFloats(context: Context, paths: List<String>, totalFloats: Int): ByteBuffer? {
-            val bb = ByteBuffer.allocateDirect(totalFloats * 4).order(ByteOrder.nativeOrder())
-            var seen = 0
-            for (p in paths) {
-                val data = try {
-                    context.assets.open(p).use { it.readBytes() }
-                } catch (e: Exception) {
-                    Log.e(TAG, "cannot read asset $p", e)
-                    return null
-                }
-                if (data.size % 4 != 0) {
-                    Log.e(TAG, "$p: ${data.size} bytes is not whole floats")
-                    return null
-                }
-                bb.put(data)
-                seen += data.size / 4
-            }
-            if (seen != totalFloats) {
-                Log.e(TAG, "tables hold $seen floats, expected $totalFloats")
-                return null
-            }
-            bb.position(0)
-            return bb
-        }
-
-        @JvmStatic private external fun create(
-            tables: ByteBuffer, tablesFloats: Int, weights: ByteBuffer, weightsFloats: Int): Long
+        @JvmStatic private external fun create(paramPath: String, binPath: String): Long
         @JvmStatic private external fun destroy(handle: Long)
         @JvmStatic private external fun batch(
             handle: Long, win: IntArray, base: IntArray, n: Int): FloatArray?
