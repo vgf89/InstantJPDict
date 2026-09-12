@@ -41,6 +41,29 @@ build/verify in a throwaway container; on-device verification via the APK-over-H
 **copyrighted-book material (the user's EPUBs, the game benches) stays in `/tmp`** — only
 derived facts or public-domain (Aozora) examples may be committed or posted to the issue.
 
+### Direction (finalized after Phase 0)
+
+| # | what ships | status |
+|---|---|---|
+| 1 | **Feature 1 = the alternatives list only.** Component-derived candidates (characters the head cannot emit) are appended to the per-character popup the app already has (`LineResult.alternatives` / `AlternativesUiState`). No text change, no threshold, no trigger, no over-correction risk. | ship |
+| 2 | **Substitution auto-apply = PARKED.** Revival test is a single host run of the **word gate**: build an inflected-surface/reading index from JMdict and require the candidate to form a known word with the surrounding kana while the emitted character does not. Expected ceiling stated up front: pool coverage (~35–45% of substitutions) caps it to a narrow auto-apply on ~15–30% of substitutions. If the gate fails, general correction is **#73** (visual verifier / learned corrector). | parked |
+| 3 | **Variants = table-driven.** Lookup folding (shipped) plus offering the obsolete form in the popup; never auto-rewrite displayed text to a variant. | ship |
+| 4 | **Feature 2 = clickable blank, vertical-first.** Contest-blank candidates where evidence exists, manual IME entry always available, **no auto-fill**. | ship |
+| 5 | **LM asset = conditional.** Ship Step 1 with IDF-mass ranking only; add the ~7 MB model only if it earns its place (measured delta: top-3 42–49% → 56%). | conditional |
+| 6 | Blank auto-fill and substitution auto-apply stay recorded as **open**, with their measured gates (M4/M6 and §3b M1). Neither blocks Steps 1–3. | open |
+
+Sequencing, with the acceptance measure for each step:
+
+- **Step 1 — no new assets.** `ComponentTable` + component-derived candidates in the alternatives
+  list, ranked by IDF mass. Acceptance: on the rendered benches, how often the list contains the
+  truth (pool coverage), entries added per character (median), and whether the paired-bench list
+  stays clean (no noise).
+- **Step 2 — LM, only if it earns it.** Add `CharLm` (~7 MB), re-measure the same numbers, keep only
+  if the top-3 improvement justifies the asset and the load cost. Phase 1's LM half is gated on this.
+- **Step 3 — Feature 2, vertical-first.** Clickable blank on the vertical trigger, populated per the
+  contest/confident split; manual IME entry always; no auto-fill.
+- Optional: a `#44` comment carrying the Phase 0 tables (Aozora excerpts only).
+
 ---
 
 ## 1. What is measured (the basis for every threshold)
