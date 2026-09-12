@@ -856,6 +856,9 @@ class OcrAccessibilityService : AccessibilityService() {
                     val orderedLines = finishedLines.sortedBy { it.first }
                     val correctedLines = KanaSizeFix.applyIfEnabled(
                         this@OcrAccessibilityService, orderedLines.map { it.second })
+                    // Surface the outcome: without this the correction is invisible whether or not
+                    // it fired, which makes "on vs off" impossible to judge from the outside.
+                    InferLog.add(KanaSizeFix.lastSummary)
                     for ((i, entry) in orderedLines.withIndex()) {
                         if (screenshotOverlay == null) break
                         addLineToResults(rootLayout, clicksLayer, entry.first, correctedLines[i])
@@ -864,7 +867,10 @@ class OcrAccessibilityService : AccessibilityService() {
                         updateCursor()
                     }
                     val recMs = System.currentTimeMillis() - startTime
-                    postStatus(gen, "${finishedLines.size} ln | ${controller.activeAllChars.size} chr | Det ${detMs}ms | Rec ${recMs}ms", hideProgress = true)
+                    // The kana outcome is part of the status line: whether it fired is otherwise
+                    // invisible from outside the app, which makes on-vs-off impossible to judge.
+                    val kanaNote = KanaSizeFix.lastSummary.removePrefix("kana fix: ")
+                    postStatus(gen, "${finishedLines.size} ln | ${controller.activeAllChars.size} chr | Det ${detMs}ms | Rec ${recMs}ms | kana: $kanaNote", hideProgress = true)
                 } else {
                     postStatus(gen, "Error: OCR Engine not ready", hideProgress = true)
                 }

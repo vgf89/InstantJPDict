@@ -76,7 +76,12 @@ object KanaSizeFix {
 
     /** Apply the correction to a whole page when the setting is on, else return it unchanged. */
     fun applyIfEnabled(ctx: Context, lines: List<LineResult>): List<LineResult> {
-        if (!isEnabled(ctx)) return lines
+        if (!isEnabled(ctx)) {
+            // Recorded rather than left stale, so the diagnostics can say "off" instead of
+            // showing the result of some earlier run.
+            lastSummary = "kana fix: off"
+            return lines
+        }
         return try {
             val model = KanaSizeNcnn.load(ctx)
             if (model == null) {
