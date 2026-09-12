@@ -75,6 +75,28 @@ Sequencing, with the acceptance measure for each step:
   `仲`, whose cap-5 fills with obscure supersets (`俜` has seven components to `仲`'s three). An
   agreement metric that penalises the candidate's extra mass (IDF Jaccard) is the obvious next
   measurement, and it must be re-measured on the bench before shipping, not swapped in blind.
+
+  **Confirmed on-device, and the variant half grew a second source** (`3a9af1d`, `8201b9d`, plus
+  the caps change): the popup walks the kanji form space — suggestions are assembled from the
+  *current* character, so choosing a generated entry rebuilds the list around it (now pinned by a
+  test). That mattered because the shipped variant table could not express Japanese old orthography
+  at all: Unihan carries the shinjitai/kyujitai relation on its simplified/traditional axis
+  (`U+6451 kSimplifiedVariant U+63B4` and the reverse) and the vocabulary direction rule drops
+  every both-emittable pair, so none of `發 會 國 學 摑 燈 萬` was reachable. The table is now the
+  union of both sources, the second being **JMdict's oK/rK tags ∩ Unihan's s/t axis** — neither
+  alone is safe (Unihan's axis links different words: 誌/志, 製/制; JMdict's tags link rare
+  spellings: 長 for 丈, 階 for 品). Table 593 → 669 pairs, fold 92 → 165, direction always from
+  JMdict, chains resolved to the terminal canonical, cycles excluded from the fold. Lookups now
+  search the raw form alongside the folded one, so an old form's own entries stay reachable
+  instead of being replaced by the redirect.
+
+  Maintainer raised the generated-group caps to **15/15** (from 5/3) to keep the form space
+  explorable; the measured ranking still orders entries, so the useful ones stay in front.
+
+  **Consequence for the lever below:** old-orthography misses are now covered by data, so the
+  component tier's remaining value is *shape* errors — the tier re-measurement should be judged
+  against that narrower population, and its score against the pre-variant-table baseline is
+  probably overstated.
 - **Step 2 — LM, only if it earns it.** Add `CharLm` (~7 MB), re-measure the same numbers, keep only
   if the top-3 improvement justifies the asset and the load cost. Phase 1's LM half is gated on this.
 - **Step 3 — Feature 2, vertical-first.** Clickable blank on the vertical trigger, populated per the

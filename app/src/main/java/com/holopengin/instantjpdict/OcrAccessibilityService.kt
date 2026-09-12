@@ -41,6 +41,7 @@ import android.view.ViewGroup
 import androidx.core.content.ContextCompat
 import androidx.core.view.isVisible
 import com.google.gson.Gson
+import com.holopengin.instantjpdict.util.BlankGaps
 import com.holopengin.instantjpdict.util.Deinflector
 import com.holopengin.instantjpdict.util.DeinflectionChain
 import com.holopengin.instantjpdict.util.ComponentTable
@@ -860,8 +861,12 @@ class OcrAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun addLineToResults(rootLayout: FrameLayout, clicksLayer: FrameLayout, lineIdx: Int, line: LineResult) {
+    private fun addLineToResults(rootLayout: FrameLayout, clicksLayer: FrameLayout, lineIdx: Int, lineIn: LineResult) {
         if (screenshotOverlay == null) return
+        // #44 Feature 2: materialise measured gaps as tappable placeholders *before* the click
+        // views are built, so the placeholder gets a view like any other character. Vertical
+        // only and idempotent — see BlankGaps for the measured trigger.
+        val line = BlankGaps.applyIfEnabled(this, lineIn)
         controller.activeLineResults[lineIdx] = line
         controller.updateGlobalData()
 
@@ -1020,6 +1025,15 @@ class OcrAccessibilityService : AccessibilityService() {
     }
 
     private fun performLookup(lineIdx: Int, charIdx: Int, rootLayout: FrameLayout, skipCenter: Boolean = false) {
+        // #44 Feature 2: a blank has no definition to look up. The tap belongs to the
+        // alternatives panel, which carries the manual IME entry the ground truth is typed
+        // into (decision 5: show nothing, stay clickable, because a manual entry mode exists).
+        if (controller.isBlankAt(lineIdx, charIdx)) {
+            controller.selectBlankPosition(lineIdx, charIdx)
+            toggleAlternativesPanel(rootLayout, lineIdx, charIdx, rootLayout.width > rootLayout.height)
+            return
+        }
+
         // Instant visual feedback for the cursor movement
         updateLookupHighlights(lineIdx, charIdx, 1)
 

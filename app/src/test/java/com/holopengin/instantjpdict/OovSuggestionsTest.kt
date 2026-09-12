@@ -74,24 +74,29 @@ class OovSuggestionsTest {
 
     @Test
     fun variant_forms_are_offered_last_and_capped() {
-        val forms = (0 until 5).map { (0x5F00 + it).toChar() }
+        // Twenty forms, so the cap — not the supply — is what bounds the group.
+        val forms = (0 until 20).map { (0x5F00 + it).toChar() }
         val out = OovSuggestions.assemble('仲', listOf('仲'), oov) { forms }
         val variantEntries = out.filter { it.source == OovSuggestions.Source.VARIANT }
         assertEquals(OovSuggestions.MAX_VARIANT_CANDIDATES, variantEntries.size)
         assertEquals(OovSuggestions.MAX_VARIANT_CANDIDATES, out.lastIndex - out.indexOfFirst {
             it.source == OovSuggestions.Source.VARIANT
         } + 1)
+        // A set smaller than the cap is offered whole, in order.
+        val few = listOf('囘', '欝')
+        val small = OovSuggestions.assemble('回', listOf('回'), oov) { few }
+        assertEquals(few, small.filter { it.source == OovSuggestions.Source.VARIANT }.map { it.char })
     }
 
     @Test
     fun component_group_is_capped() {
-        // Emitted 仲 = 化 + 中, with 化 carried by 7 of 31 kanji and 中 by 25: a candidate
-        // sharing only 化 scores ln(31/7)/(ln(31/7)+ln(31/25)) ≈ 0.87, clear of the tier, so
-        // six of them qualify and the cap — not the tier — is what bounds the list.
+        // Emitted 仲 = 化 + 中, with 化 carried by 17 of 911 kanji and 中 by 895: a candidate
+        // sharing only 化 scores ln(911/17)/(ln(911/17)+ln(911/895)) ≈ 0.995, clear of the
+        // tier, so sixteen qualify and the cap — not the tier — bounds the list.
         val wide = StringBuilder()
         wide.append("仲:化 中\n")
-        for (i in 0 until 6) wide.append("%c:化\n".format(0x6C00 + i))
-        for (i in 0 until 24) wide.append("%c:中\n".format(0x4E00 + i))
+        for (i in 0 until 16) wide.append("%c:化\n".format(0x6C00 + i))
+        for (i in 0 until 894) wide.append("%c:中\n".format(0x4E00 + i))
         val out = OovSuggestions.assemble(
             '仲', listOf('仲'), OovCandidates(ComponentTable.parse(wide.toString()))
         ) { emptyList() }

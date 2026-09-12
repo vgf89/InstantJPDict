@@ -22,10 +22,19 @@ object OovSuggestions {
     const val PREF_ENABLED = "oov_suggestions_enabled"
     const val DEF_ENABLED = true
 
-    /** IDF mass a candidate must share with the emitted character (measured tier). */
+    /**
+     * IDF mass a candidate must share with the emitted character (measured tier).
+     */
     const val MIN_IDF_FRACTION = 0.7f
-    const val MAX_COMPONENT_CANDIDATES = 5
-    const val MAX_VARIANT_CANDIDATES = 3
+
+    /**
+     * Caps on the generated groups. Raised from 5/3 to 15/15 at the maintainer's request
+     * (#44): tapping a generated entry rebuilds the list around it, so a longer list is
+     * what makes the kanji form space walkable, and the popup scrolls. The measured
+     * ranking still decides the order, so the useful entries stay at the front.
+     */
+    const val MAX_COMPONENT_CANDIDATES = 15
+    const val MAX_VARIANT_CANDIDATES = 15
 
     /** Where a popup entry came from. The panel tints non-HEAD entries. */
     enum class Source { HEAD, COMPONENTS, VARIANT }

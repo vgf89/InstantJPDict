@@ -373,13 +373,34 @@ class OcrOverlayStateController {
         }
     }
 
+    /**
+     * True when the character at [lineIdx]/[charIdx] is the reversible blank placeholder
+     * (#44 Feature 2). [lookup] returns null for a placeholder, so the tap path branches on
+     * this and opens the alternatives panel instead of doing dictionary work.
+     */
+    fun isBlankAt(lineIdx: Int, charIdx: Int): Boolean =
+        activeLineResults.getOrNull(lineIdx)?.text?.getOrNull(charIdx) == OcrEngine.GAP_CHAR
+
+    /**
+     * Anchor the tapped position on a blank without running a lookup. The alternatives state
+     * then carries the placeholder (marked selected) plus the manual input entry, which is
+     * how the ground-truth character gets typed in; filling it writes an ordinary override,
+     * so it reverts like any other correction.
+     */
+    fun selectBlankPosition(lineIdx: Int, charIdx: Int) {
+        currentTappedIdx = getGlobalIdx(lineIdx, charIdx)
+        currentTappedLineIdx = lineIdx
+        currentTappedCharIdxInLine = charIdx
+    }
+
     suspend fun lookup(lineIdx: Int, charIdx: Int): Result? {
         val deinf = deinflector ?: return null
         val provider = dictionaryProvider ?: return null
         val g = gson ?: return null
 
         val line = activeLineResults.getOrNull(lineIdx) ?: return null
-        // Skip lookup on placeholder characters — user must pick an alternative first
+        // A placeholder has no definition. The tap path routes it to the alternatives panel
+        // instead (see [isBlankAt] / [selectBlankPosition]), where the manual IME fills it.
         if (line.text.getOrNull(charIdx) == OcrEngine.GAP_CHAR) return null
 
         val globalIdx = getGlobalIdx(lineIdx, charIdx)

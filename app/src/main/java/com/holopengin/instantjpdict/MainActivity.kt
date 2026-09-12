@@ -27,6 +27,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.holopengin.instantjpdict.data.AppDatabase
 import com.holopengin.instantjpdict.data.DictionaryImporter
+import com.holopengin.instantjpdict.util.BlankGaps
 import com.holopengin.instantjpdict.util.InferLog
 import com.holopengin.instantjpdict.util.OovSuggestions
 import com.holopengin.instantjpdict.util.PitchAccent
@@ -152,6 +153,20 @@ class MainActivity : AppCompatActivity() {
             setOnCheckedChangeListener { _, checked ->
                 OovSuggestions.setEnabled(this@MainActivity, checked)
                 Log.d("MainActivity", "oov_suggestions_enabled=$checked")
+            }
+        })
+
+        // #44 Feature 2: clickable blanks where the vertical spacing says a character was
+        // dropped. Vertical only (the horizontal trigger measured 13% false), and the blank
+        // is filled through the alternatives panel's manual IME entry.
+        layout.addView(CheckBox(this).apply {
+            text = "Clickable blanks where a character looks missing (vertical text)"
+            isChecked = BlankGaps.isEnabled(this@MainActivity)
+            textSize = 14f
+            setPadding(0, 20, 0, 8)
+            setOnCheckedChangeListener { _, checked ->
+                BlankGaps.setEnabled(this@MainActivity, checked)
+                Log.d("MainActivity", "blank_gaps_enabled=$checked")
             }
         })
 
