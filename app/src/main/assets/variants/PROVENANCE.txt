@@ -1,22 +1,710 @@
-Kanji variant table (Unihan kSemanticVariant + kZVariant) — vendored, do not edit by hand.
+Kanji variant table — vendored, do not edit by hand.
 
-Entries    : 593 pairs over 523 distinct variants
-             (59 variants have more than one canonical candidate in Unihan;
-             the file keeps every pair and the lookup fold resolves them on the
-             corpus — see docs/bundled-dictionaries.md)
+Entries    : 669 pairs over 600 distinct variants
+             (593 from Unihan kSemanticVariant/kZVariant;
+              77 from JMdict oK/rK intersected with Unihan's
+              simplified/traditional axis — see the builder's docstring)
+             (58 variants have more than one canonical candidate; the file
+             keeps every pair and the lookup fold resolves them on the corpus —
+             see docs/bundled-dictionaries.md)
 File       : kanji_variants.txt
-Size       : 4744 bytes
-SHA-256    : 248babc2899179aa0e3878d1bb20fdc730a3d81d7b0228b7e79ec8407569023e
+Size       : 5352 bytes
+SHA-256    : 20fc831dedf53e884a91e6fd20b791198afc53a19768e3d38aa89b5b17b824b8
 
-Source     : https://www.unicode.org/Public/UCD/latest/ucd/Unihan.zip
+Source 1   : https://www.unicode.org/Public/UCD/latest/ucd/Unihan.zip
 Files      : Unihan_Variants.txt (8 files in the bundle)
 Revision   : Unicode 17.0.0, data of 2025-07-24 00:00:00 GMT [KL]
+Source 2   : http://ftp.edrdg.org/pub/Nihongo/JMdict_e.gz
+Revision   : ?
 Retrieved  : 2026-09-12
 License    : Unicode License v3 (https://www.unicode.org/license.txt)
+             CC BY-SA 4.0 (EDRDG, https://www.edrdg.org/edrdg/licence.html)
 
-Direction  : variant -> canonical, where canonical is the side present in
-             PP-OCRv6_small_ncnn/vocab.json and variant is the side that is
-             not. Both-sides-known and both-sides-unknown pairs are dropped;
-             only BMP CJK pairs are kept (the Kotlin API is Char-based).
+Direction  : variant -> canonical. Unihan half: canonical is the side present in
+             PP-OCRv6_small_ncnn/vocab.json, variant the side that is not; both-known
+             and both-unknown pairs dropped. JMdict half: both sides emittable, the
+             direction taken from JMdict's out-dated/rarely-used kanji tag.
+             Only BMP CJK pairs (the Kotlin API is Char-based).
 
+Cycle pairs (both directions present, fold must exclude them): 2
+  乾 <-> 干
+  干 <-> 乾
+
+Chains resolved to the terminal canonical (5):
+  㓁 -> 网 -> 網
+  冩 -> 寫 -> 写
+  斈 -> 學 -> 学
+  礼 -> 禮 -> 礼
+  葁 -> 薑 -> 姜
+
+Per-pair citations:
+  㐀 -> 丘	Unihan kSemanticVariant U+3400->U+4E18
+  㐅 -> 五	Unihan kSemanticVariant U+3405->U+4E94
+  㐫 -> 凶	Unihan kSemanticVariant U+342B->U+51F6
+  㐮 -> 襄	Unihan kSemanticVariant U+342E->U+8944
+  㐯 -> 庸	Unihan kSemanticVariant U+342F->U+5EB8
+  㐴 -> 攀	Unihan kSemanticVariant U+3434->U+6500
+  㐵 -> 儒	Unihan kSemanticVariant U+3435->U+5112
+  㑄 -> 侮	Unihan kSemanticVariant U+3444->U+4FAE
+  㒇 -> 儛	Unihan kSemanticVariant U+3487->U+511B
+  㒋 -> 厮	Unihan kSemanticVariant U+348B->U+53AE
+  㒋 -> 廝	Unihan kSemanticVariant U+348B->U+5EDD
+  㒚 -> 穩	Unihan kSemanticVariant U+349A->U+7A69
+  㒰 -> 全	Unihan kSemanticVariant U+34B0->U+5168
+  㒲 -> 財	Unihan kSemanticVariant U+34B2->U+8CA1
+  㒷 -> 興	Unihan kSemanticVariant U+34B7->U+8208
+  㓁 -> 網	Unihan kSemanticVariant U+34C1->U+7F51 [chained via 网]
+  㓮 -> 彫	Unihan kSemanticVariant U+34EE->U+5F6B
+  㓮 -> 雕	Unihan kSemanticVariant U+34EE->U+96D5
+  㓷 -> 劓	Unihan kSemanticVariant U+34F7->U+5293
+  㓸 -> 斲	Unihan kSemanticVariant U+34F8->U+65B2
+  㔱 -> 斞	Unihan kSemanticVariant U+3531->U+659E
+  㕚 -> 爪	Unihan kSemanticVariant U+355A->U+722A
+  㕞 -> 刷	Unihan kSemanticVariant U+355E->U+5237
+  㗖 -> 啖	Unihan kSemanticVariant U+35D6->U+5556
+  㗖 -> 啗	Unihan kSemanticVariant U+35D6->U+5557
+  㗖 -> 噉	Unihan kSemanticVariant U+35D6->U+5649
+  㗳 -> 嗒	Unihan kSemanticVariant U+35F3->U+55D2
+  㘅 -> 啣	Unihan kSemanticVariant U+3605->U+5563
+  㘅 -> 銜	Unihan kSemanticVariant U+3605->U+929C
+  㘽 -> 栽	Unihan kSemanticVariant U+363D->U+683D
+  㙮 -> 塔	Unihan kSemanticVariant U+366E->U+5854
+  㙳 -> 轗	Unihan kSemanticVariant U+3673->U+8F57
+  㚝 -> 奎	Unihan kSemanticVariant U+369D->U+594E
+  㚣 -> 姣	Unihan kSemanticVariant U+36A3->U+59E3
+  㛛 -> 娠	Unihan kSemanticVariant U+36DB->U+5A20
+  㝃 -> 娩	Unihan kSemanticVariant U+3743->U+5A29
+  㝦 -> 寯	Unihan kSemanticVariant U+3766->U+5BEF
+  㝵 -> 碍	Unihan kSemanticVariant U+3775->U+788D
+  㝵 -> 礙	Unihan kSemanticVariant U+3775->U+7919
+  㞐 -> 居	Unihan kSemanticVariant U+3790->U+5C45
+  㟗 -> 豳	Unihan kSemanticVariant U+37D7->U+8C73
+  㟗 -> 邠	Unihan kSemanticVariant U+37D7->U+90A0
+  㟢 -> 埼	Unihan kSemanticVariant U+37E2->U+57FC
+  㟢 -> 崎	Unihan kSemanticVariant U+37E2->U+5D0E
+  㟢 -> 嵜	Unihan kSemanticVariant U+37E2->U+5D5C
+  㟢 -> 碕	Unihan kSemanticVariant U+37E2->U+7895
+  㟢 -> 陭	Unihan kSemanticVariant U+37E2->U+966D
+  㠊 -> 嶇	Unihan kSemanticVariant U+380A->U+5D87
+  㡿 -> 斥	Unihan kSemanticVariant U+387F->U+65A5
+  㢴 -> 西	Unihan kSemanticVariant U+38B4->U+897F
+  㣶 -> 邅	Unihan kSemanticVariant U+38F6->U+9085
+  㣺 -> 心	Unihan kSemanticVariant U+38FA->U+5FC3
+  㣼 -> 忍	Unihan kSemanticVariant U+38FC->U+5FCD
+  㤒 -> 笨	Unihan kSemanticVariant U+3912->U+7B28
+  㤵 -> 慈	Unihan kSemanticVariant U+3935->U+6148
+  㥃 -> 悶	Unihan kSemanticVariant U+3943->U+60B6
+  㥃 -> 懣	Unihan kSemanticVariant U+3943->U+61E3
+  㥵 -> 慁	Unihan kSemanticVariant U+3975->U+6141
+  㦧 -> 憯	Unihan kSemanticVariant U+39A7->U+61AF
+  㧃 -> 收	Unihan kSemanticVariant U+39C3->U+6536
+  㧖 -> 扼	Unihan kSemanticVariant U+39D6->U+627C
+  㧖 -> 搤	Unihan kSemanticVariant U+39D6->U+6424
+  㧜 -> 擸	Unihan kSemanticVariant U+39DC->U+64F8
+  㨉 -> 抿	Unihan kSemanticVariant U+3A09->U+62BF
+  㨼 -> 撂	Unihan kSemanticVariant U+3A3C->U+6482
+  㩁 -> 搉	Unihan kSemanticVariant U+3A41->U+6409
+  㩜 -> 擥	Unihan kSemanticVariant U+3A5C->U+64E5
+  㩜 -> 攬	Unihan kSemanticVariant U+3A5C->U+652C
+  㪅 -> 更	Unihan kSemanticVariant U+3A85->U+66F4
+  㪯 -> 舉	Unihan kSemanticVariant U+3AAF->U+8209
+  㫃 -> 偃	Unihan kSemanticVariant U+3AC3->U+5043
+  㫎 -> 幑	Unihan kSemanticVariant U+3ACE->U+5E51
+  㫚 -> 昒	Unihan kSemanticVariant U+3ADA->U+6612
+  㫚 -> 曶	Unihan kZVariant U+3ADA->U+66F6
+  㬅 -> 曼	Unihan kSemanticVariant U+3B05->U+66FC
+  㬱 -> 朁	Unihan kSemanticVariant U+3B31->U+6701
+  㭒 -> 耜	Unihan kSemanticVariant U+3B52->U+801C
+  㭨 -> 椰	Unihan kSemanticVariant U+3B68->U+6930
+  㯃 -> 桼	Unihan kSemanticVariant U+3BC3->U+687C
+  㯃 -> 漆	Unihan kSemanticVariant U+3BC3->U+6F06
+  㯭 -> 櫓	Unihan kSemanticVariant U+3BED->U+6AD3
+  㯶 -> 棕	Unihan kSemanticVariant U+3BF6->U+68D5
+  㯽 -> 檳	Unihan kSemanticVariant U+3BFD->U+6AB3
+  㰍 -> 櫳	Unihan kSemanticVariant U+3C0D->U+6AF3
+  㱿 -> 壳	Unihan kSemanticVariant U+3C7F->U+58F3
+  㱿 -> 殼	Unihan kSemanticVariant U+3C7F->U+6BBC
+  㴑 -> 溯	Unihan kSemanticVariant U+3D11->U+6EAF
+  㵒 -> 沸	Unihan kSemanticVariant U+3D52->U+6CB8
+  㷉 -> 熨	Unihan kSemanticVariant U+3DC9->U+71A8
+  㷠 -> 燐	Unihan kSemanticVariant U+3DE0->U+71D0
+  㷠 -> 粦	Unihan kSemanticVariant U+3DE0->U+7CA6
+  㷻 -> 煳	Unihan kSemanticVariant U+3DFB->U+7173
+  㽣 -> 域	Unihan kSemanticVariant U+3F63->U+57DF
+  㽽 -> 痼	Unihan kSemanticVariant U+3F7D->U+75FC
+  㿟 -> 皎	Unihan kSemanticVariant U+3FDF->U+768E
+  㿟 -> 皦	Unihan kSemanticVariant U+3FDF->U+76A6
+  㿷 -> 糙	Unihan kSemanticVariant U+3FF7->U+7CD9
+  䀋 -> 鹽	Unihan kSemanticVariant U+400B->U+9E7D
+  䀠 -> 瞿	Unihan kSemanticVariant U+4020->U+77BF
+  䀡 -> 覘	Unihan kSemanticVariant U+4021->U+8998
+  䀢 -> 瞬	Unihan kSemanticVariant U+4022->U+77AC
+  䀹 -> 睫	Unihan kSemanticVariant U+4039->U+776B
+  䂫 -> 夯	Unihan kSemanticVariant U+40AB->U+592F
+  䃉 -> 珉	Unihan kSemanticVariant U+40C9->U+73C9
+  䃘 -> 硜	Unihan kSemanticVariant U+40D8->U+785C
+  䄃 -> 殃	Unihan kSemanticVariant U+4103->U+6B83
+  䄍 -> 蜡	Unihan kSemanticVariant U+410D->U+8721
+  䄺 -> 稊	Unihan kSemanticVariant U+413A->U+7A0A
+  䆋 -> 秋	Unihan kSemanticVariant U+418B->U+79CB
+  䆫 -> 窓	Unihan kSemanticVariant U+41AB->U+7A93
+  䆫 -> 窗	Unihan kSemanticVariant U+41AB->U+7A97
+  䆼 -> 窠	Unihan kSemanticVariant U+41BC->U+7AA0
+  䈇 -> 罩	Unihan kSemanticVariant U+4207->U+7F69
+  䉵 -> 饌	Unihan kSemanticVariant U+4275->U+994C
+  䊜 -> 糰	Unihan kSemanticVariant U+429C->U+7CF0
+  䋲 -> 繩	Unihan kSemanticVariant U+42F2->U+7E69
+  䌥 -> 縯	Unihan kSemanticVariant U+4325->U+7E2F
+  䌫 -> 纜	Unihan kSemanticVariant U+432B->U+7E9C
+  䏕 -> 飪	Unihan kSemanticVariant U+43D5->U+98EA
+  䐰 -> 饈	Unihan kSemanticVariant U+4430->U+9948
+  䒒 -> 苕	Unihan kSemanticVariant U+4492->U+82D5
+  䕌 -> 稚	Unihan kSemanticVariant U+454C->U+7A1A
+  䕭 -> 蕁	Unihan kSemanticVariant U+456D->U+8541
+  䖈 -> 虐	Unihan kSemanticVariant U+4588->U+8650
+  䖍 -> 虔	Unihan kSemanticVariant U+458D->U+8654
+  䖏 -> 処	Unihan kSemanticVariant U+458F->U+51E6
+  䖏 -> 處	Unihan kSemanticVariant U+458F->U+8655
+  䖟 -> 蝱	Unihan kSemanticVariant U+459F->U+8771
+  䖣 -> 蚤	Unihan kSemanticVariant U+45A3->U+86A4
+  䗦 -> 䗬	Unihan kSemanticVariant U+45E6->U+45EC
+  䘺 -> 綻	Unihan kSemanticVariant U+463A->U+7DBB
+  䙝 -> 褻	Unihan kSemanticVariant U+465D->U+893B
+  䛡 -> 話	Unihan kSemanticVariant U+46E1->U+8A71
+  䛻 -> 誘	Unihan kSemanticVariant U+46FB->U+8A98
+  䛼 -> 譭	Unihan kSemanticVariant U+46FC->U+8B6D
+  䜊 -> 嘈	Unihan kSemanticVariant U+470A->U+5608
+  䜶 -> 豇	Unihan kSemanticVariant U+4736->U+8C47
+  䝋 -> 豵	Unihan kSemanticVariant U+474B->U+8C75
+  䝜 -> 狻	Unihan kSemanticVariant U+475C->U+72FB
+  䝤 -> 獠	Unihan kSemanticVariant U+4764->U+7360
+  䞓 -> 赬	Unihan kSemanticVariant U+4793->U+8D6C
+  䠊 -> 剕	Unihan kSemanticVariant U+480A->U+5255
+  䠱 -> 躅	Unihan kSemanticVariant U+4831->U+8E85
+  䢙 -> 敗	Unihan kSemanticVariant U+4899->U+6557
+  䢜 -> 歸	Unihan kSemanticVariant U+489C->U+6B78
+  䣩 -> 醇	Unihan kSemanticVariant U+48E9->U+9187
+  䤠 -> 鍺	Unihan kSemanticVariant U+4920->U+937A
+  䥀 -> 捵	Unihan kSemanticVariant U+4940->U+6375
+  䥨 -> 鑢	Unihan kSemanticVariant U+4968->U+9462
+  䦓 -> 覘	Unihan kSemanticVariant U+4993->U+8998
+  䨘 -> 霰	Unihan kSemanticVariant U+4A18->U+9730
+  䩞 -> 韂	Unihan kSemanticVariant U+4A5E->U+97C2
+  䪿 -> 囟	Unihan kSemanticVariant U+4ABF->U+56DF
+  䬒 -> 颼	Unihan kSemanticVariant U+4B12->U+98BC
+  䬡 -> 翥	Unihan kSemanticVariant U+4B21->U+7FE5
+  䭾 -> 馱	Unihan kSemanticVariant U+4B7E->U+99B1
+  䯌 -> 尻	Unihan kSemanticVariant U+4BCC->U+5C3B
+  䯻 -> 髻	Unihan kSemanticVariant U+4BFB->U+9AFB
+  䰗 -> 鬮	Unihan kSemanticVariant U+4C17->U+9B2E
+  䰞 -> 煮	Unihan kSemanticVariant U+4C1E->U+716E
+  䱇 -> 鱓	Unihan kSemanticVariant U+4C47->U+9C53
+  䱷 -> 漁	Unihan kSemanticVariant U+4C77->U+6F01
+  䱽 -> 鯧	Unihan kSemanticVariant U+4C7D->U+9BE7
+  䳘 -> 鵝	Unihan kSemanticVariant U+4CD8->U+9D5D
+  䴸 -> 麩	Unihan kSemanticVariant U+4D38->U+9EA9
+  䴹 -> 餜	Unihan kSemanticVariant U+4D39->U+991C
+  䶏 -> 涕	Unihan kSemanticVariant U+4D8F->U+6D95
+  乚 -> 隱	Unihan kSemanticVariant U+4E5A->U+96B1
+  乾 -> 干	JMdict ent_seq 1169780 ke_inf rK
+  亁 -> 乾	Unihan kSemanticVariant U+4E7E->U+4E81
+  了 -> 瞭	JMdict ent_seq 1167000 ke_inf rK
+  亗 -> 岁	Unihan kSemanticVariant U+4E97->U+5C81
+  亗 -> 歲	Unihan kSemanticVariant U+4E97->U+6B72
+  亝 -> 齊	Unihan kSemanticVariant U+4E9D->U+9F4A
+  亻 -> 人	Unihan kSemanticVariant U+4EBA->U+4EBB
+  亼 -> 集	Unihan kSemanticVariant U+4EBC->U+96C6
+  仾 -> 低	Unihan kSemanticVariant U+4EFE->U+4F4E
+  來 -> 来	JMdict ent_seq 1467030 ke_inf oK
+  侎 -> 敉	Unihan kSemanticVariant U+4F8E->U+6549
+  俈 -> 嚳	Unihan kSemanticVariant U+4FC8->U+56B3
+  俠 -> 侠	JMdict ent_seq 1233990 ke_inf oK
+  俻 -> 備	Unihan kSemanticVariant U+4FFB->U+5099
+  倂 -> 併	Unihan kZVariant U+4F75->U+5002
+  偒 -> 蕩	Unihan kSemanticVariant U+5052->U+8569
+  傁 -> 叟	Unihan kSemanticVariant U+5081->U+53DF
+  傏 -> 搪	Unihan kSemanticVariant U+508F->U+642A
+  儍 -> 傻	Unihan kSemanticVariant U+50BB->U+510D
+  儭 -> 襯	Unihan kSemanticVariant U+512D->U+896F
+  兦 -> 亡	Unihan kSemanticVariant U+4EA1->U+5166
+  冋 -> 冂	Unihan kSemanticVariant U+5182->U+518B
+  冋 -> 坰	Unihan kSemanticVariant U+518B->U+5770
+  册 -> 冊	JMdict ent_seq 1509790 ke_inf oK
+  冩 -> 写	Unihan kSemanticVariant U+51A9->U+5BEB [chained via 寫]
+  冫 -> 冰	Unihan kSemanticVariant U+51AB->U+51B0
+  冫 -> 氷	Unihan kSemanticVariant U+51AB->U+6C37
+  凂 -> 浼	Unihan kSemanticVariant U+51C2->U+6D7C
+  准 -> 準	JMdict ent_seq 1341500 ke_inf rK
+  凉 -> 涼	JMdict ent_seq 1554370 ke_inf rK
+  凣 -> 凡	Unihan kSemanticVariant U+51E1->U+51E3
+  凴 -> 憑	Unihan kSemanticVariant U+51F4->U+6191
+  凾 -> 函	Unihan kSemanticVariant U+51FD->U+51FE
+  凾 -> 圅	Unihan kSemanticVariant U+51FE->U+5705
+  刅 -> 創	Unihan kSemanticVariant U+5205->U+5275
+  刋 -> 刊	Unihan kSemanticVariant U+520A->U+520B
+  刴 -> 剁	Unihan kSemanticVariant U+5234->U+5241
+  剝 -> 剥	JMdict ent_seq 1474390 ke_inf rK
+  剦 -> 閹	Unihan kSemanticVariant U+5266->U+95B9
+  劎 -> 劔	Unihan kSemanticVariant U+528E->U+5294
+  劒 -> 劍	Unihan kSemanticVariant U+528D->U+5292
+  勄 -> 敏	Unihan kSemanticVariant U+52C4->U+654F
+  勹 -> 包	Unihan kSemanticVariant U+52F9->U+5305
+  匘 -> 腦	Unihan kSemanticVariant U+5318->U+8166
+  匧 -> 篋	Unihan kSemanticVariant U+5327->U+7BCB
+  匳 -> 奩	Unihan kSemanticVariant U+5333->U+5969
+  匵 -> 櫝	Unihan kSemanticVariant U+5335->U+6ADD
+  卄 -> 廿	Unihan kSemanticVariant U+5344->U+5EFF
+  卭 -> 卬	Unihan kSemanticVariant U+536C->U+536D
+  厪 -> 廑	Unihan kSemanticVariant U+53AA->U+5ED1
+  厶 -> 某	Unihan kSemanticVariant U+53B6->U+67D0
+  厷 -> 肱	Unihan kSemanticVariant U+53B7->U+80B1
+  叅 -> 參	Unihan kSemanticVariant U+53C3->U+53C5
+  叜 -> 叟	Unihan kSemanticVariant U+53DC->U+53DF
+  叴 -> 厹	Unihan kSemanticVariant U+53B9->U+53F4
+  后 -> 後	JMdict ent_seq 1268990 ke_inf rK
+  吿 -> 告	Unihan kSemanticVariant U+543F->U+544A
+  呠 -> 噴	Unihan kSemanticVariant U+5460->U+5674
+  呠 -> 歕	Unihan kSemanticVariant U+5460->U+6B55
+  呡 -> 吻	Unihan kSemanticVariant U+543B->U+5461
+  哴 -> 喨	Unihan kSemanticVariant U+54F4->U+55A8
+  唊 -> 硤	Unihan kSemanticVariant U+550A->U+7864
+  喐 -> 郁	Unihan kSemanticVariant U+5590->U+90C1
+  噐 -> 器	Unihan kSemanticVariant U+5650->U+5668
+  噑 -> 嚎	Unihan kSemanticVariant U+5651->U+568E
+  噓 -> 嘘	JMdict ent_seq 1413080 ke_inf oK
+  嚮 -> 向	JMdict ent_seq 1587200 ke_inf rK
+  囑 -> 嘱	JMdict ent_seq 1357140 ke_inf oK
+  囘 -> 回	Unihan kSemanticVariant U+56D8->U+56DE
+  囬 -> 回	Unihan kSemanticVariant U+56DE->U+56EC
+  國 -> 国	JMdict ent_seq 1435920 ke_inf oK
+  圕 -> 圖	Unihan kSemanticVariant U+5715->U+5716
+  圝 -> 圞	Unihan kSemanticVariant U+571D->U+571E
+  坂 -> 阪	JMdict ent_seq 1233370 ke_inf rK
+  坆 -> 墳	Unihan kSemanticVariant U+5746->U+58B3
+  堭 -> 隍	Unihan kSemanticVariant U+582D->U+968D
+  塐 -> 塑	Unihan kSemanticVariant U+5850->U+5851
+  墤 -> 隤	Unihan kSemanticVariant U+58A4->U+96A4
+  墰 -> 罈	Unihan kSemanticVariant U+58B0->U+7F48
+  壍 -> 塹	Unihan kSemanticVariant U+5879->U+58CD
+  壜 -> 罈	Unihan kSemanticVariant U+58DC->U+7F48
+  壽 -> 寿	JMdict ent_seq 1330170 ke_inf oK
+  夅 -> 降	Unihan kSemanticVariant U+5905->U+964D
+  夣 -> 夢	Unihan kSemanticVariant U+5922->U+5923
+  奞 -> 奎	Unihan kSemanticVariant U+594E->U+595E
+  娬 -> 嫵	Unihan kSemanticVariant U+5A2C->U+5AF5
+  媍 -> 婦	Unihan kSemanticVariant U+5A66->U+5A8D
+  學 -> 学	JMdict ent_seq 1206560 ke_inf oK
+  孾 -> 嬰	Unihan kSemanticVariant U+5B30->U+5B7E
+  宐 -> 宜	Unihan kSemanticVariant U+5B90->U+5B9C
+  宻 -> 密	Unihan kSemanticVariant U+5BBB->U+5BC6
+  宼 -> 寇	Unihan kSemanticVariant U+5BBC->U+5BC7
+  寚 -> 宝	Unihan kSemanticVariant U+5B9D->U+5BDA
+  寚 -> 寳	Unihan kSemanticVariant U+5BDA->U+5BF3
+  寫 -> 写	JMdict ent_seq 1490140 ke_inf oK
+  寶 -> 宝	JMdict ent_seq 2091920 ke_inf oK
+  尀 -> 叵	Unihan kSemanticVariant U+53F5->U+5C00
+  將 -> 将	JMdict ent_seq 1181570 ke_inf oK
+  尣 -> 尢	Unihan kSemanticVariant U+5C22->U+5C23
+  尲 -> 尷	Unihan kSemanticVariant U+5C32->U+5C37
+  尸 -> 屍	JMdict ent_seq 1853420 ke_inf rK
+  屆 -> 届	JMdict ent_seq 1457210 ke_inf oK
+  屬 -> 属	JMdict ent_seq 1601840 ke_inf oK
+  峽 -> 峡	JMdict ent_seq 2568690 ke_inf oK
+  崪 -> 崒	Unihan kSemanticVariant U+5D12->U+5D2A
+  嵠 -> 谿	Unihan kSemanticVariant U+5D60->U+8C3F
+  嶎 -> 蔚	Unihan kSemanticVariant U+5D8E->U+851A
+  巤 -> 鬣	Unihan kSemanticVariant U+5DE4->U+9B23
+  帋 -> 紙	Unihan kSemanticVariant U+5E0B->U+7D19
+  帒 -> 袋	Unihan kSemanticVariant U+5E12->U+888B
+  帲 -> 帡	Unihan kZVariant U+5E21->U+5E32
+  干 -> 乾	JMdict ent_seq 1577610 ke_inf rK
+  并 -> 併	JMdict ent_seq 1603190 ke_inf rK
+  庅 -> 麼	Unihan kSemanticVariant U+5E85->U+9EBC
+  庅 -> 麽	Unihan kSemanticVariant U+5E85->U+9EBD
+  廀 -> 廋	Unihan kSemanticVariant U+5EC0->U+5ECB
+  彌 -> 弥	JMdict ent_seq 1150070 ke_inf oK
+  彑 -> 彐	Unihan kSemanticVariant U+5F50->U+5F51
+  徤 -> 健	Unihan kSemanticVariant U+5065->U+5FA4
+  忄 -> 心	Unihan kSemanticVariant U+5FC3->U+5FC4
+  怌 -> 懷	Unihan kSemanticVariant U+600C->U+61F7
+  悋 -> 吝	Unihan kSemanticVariant U+541D->U+608B
+  悋 -> 恡	Unihan kSemanticVariant U+6061->U+608B
+  惽 -> 惛	Unihan kSemanticVariant U+60DB->U+60FD
+  愻 -> 遜	Unihan kSemanticVariant U+613B->U+905C
+  慙 -> 慚	Unihan kSemanticVariant U+6159->U+615A
+  懜 -> 懵	Unihan kSemanticVariant U+61DC->U+61F5
+  戀 -> 恋	JMdict ent_seq 1558670 ke_inf oK
+  扌 -> 手	Unihan kSemanticVariant U+624B->U+624C
+  扵 -> 于	Unihan kSemanticVariant U+4E8E->U+6275
+  扵 -> 亏	Unihan kSemanticVariant U+4E8F->U+6275
+  扵 -> 於	Unihan kSemanticVariant U+6275->U+65BC
+  抍 -> 拯	Unihan kSemanticVariant U+628D->U+62EF
+  挭 -> 骾	Unihan kSemanticVariant U+632D->U+9ABE
+  挭 -> 鯁	Unihan kSemanticVariant U+632D->U+9BC1
+  挷 -> 搒	Unihan kSemanticVariant U+6337->U+6412
+  挾 -> 挟	JMdict ent_seq 1600740 ke_inf oK
+  捓 -> 揶	Unihan kSemanticVariant U+6353->U+63F6
+  捝 -> 挩	Unihan kZVariant U+6329->U+635D
+  捬 -> 撫	Unihan kSemanticVariant U+636C->U+64AB
+  搃 -> 摠	Unihan kSemanticVariant U+6403->U+6460
+  搃 -> 總	Unihan kSemanticVariant U+6403->U+7E3D
+  搇 -> 撳	Unihan kSemanticVariant U+6407->U+64B3
+  摑 -> 掴	JMdict ent_seq 1008070 ke_inf oK
+  摣 -> 揸	Unihan kSemanticVariant U+63F8->U+6463
+  撆 -> 撇	Unihan kSemanticVariant U+6486->U+6487
+  撍 -> 揝	Unihan kSemanticVariant U+63DD->U+648D
+  撘 -> 搭	Unihan kSemanticVariant U+642D->U+6498
+  擃 -> 攮	Unihan kSemanticVariant U+64C3->U+652E
+  攅 -> 攢	Unihan kSemanticVariant U+6505->U+6522
+  攵 -> 攴	Unihan kSemanticVariant U+6534->U+6535
+  敃 -> 暋	Unihan kSemanticVariant U+6543->U+668B
+  敚 -> 敓	Unihan kZVariant U+6553->U+655A
+  敠 -> 敪	Unihan kSemanticVariant U+6560->U+656A
+  斆 -> 鏰	Unihan kSemanticVariant U+6586->U+93F0
+  斈 -> 学	Unihan kSemanticVariant U+5B78->U+6588 [chained via 學]
+  斚 -> 斝	Unihan kSemanticVariant U+659A->U+659D
+  斾 -> 旆	Unihan kSemanticVariant U+65BE->U+65C6
+  旈 -> 旒	Unihan kSemanticVariant U+65C8->U+65D2
+  旘 -> 幟	Unihan kSemanticVariant U+5E5F->U+65D8
+  无 -> 無	JMdict ent_seq 1956960 ke_inf rK
+  旪 -> 協	Unihan kSemanticVariant U+5354->U+65EA
+  旹 -> 时	Unihan kSemanticVariant U+65F6->U+65F9
+  旹 -> 時	Unihan kSemanticVariant U+65F9->U+6642
+  昻 -> 昂	Unihan kSemanticVariant U+6602->U+663B
+  晝 -> 昼	JMdict ent_seq 1426250 ke_inf oK
+  會 -> 会	JMdict ent_seq 1499190 ke_inf oK
+  朙 -> 明	Unihan kSemanticVariant U+660E->U+6719
+  杸 -> 殳	Unihan kSemanticVariant U+6778->U+6BB3
+  枬 -> 楠	Unihan kSemanticVariant U+67AC->U+6960
+  枾 -> 柹	Unihan kSemanticVariant U+67BE->U+67F9
+  栖 -> 棲	JMdict ent_seq 1887210 ke_inf rK
+  栛 -> 荔	Unihan kSemanticVariant U+681B->U+8354
+  梹 -> 檳	Unihan kSemanticVariant U+68B9->U+6AB3
+  棅 -> 柄	Unihan kSemanticVariant U+67C4->U+68C5
+  棥 -> 樊	Unihan kSemanticVariant U+68E5->U+6A0A
+  榝 -> 樧	Unihan kZVariant U+699D->U+6A27
+  槖 -> 橐	Unihan kSemanticVariant U+69D6->U+6A50
+  槪 -> 㮣	Unihan kSemanticVariant U+3BA3->U+69EA
+  樐 -> 櫓	Unihan kSemanticVariant U+6A10->U+6AD3
+  樓 -> 楼	JMdict ent_seq 1603700 ke_inf oK
+  樚 -> 轆	Unihan kSemanticVariant U+6A1A->U+8F46
+  樷 -> 叢	Unihan kSemanticVariant U+53E2->U+6A37
+  樸 -> 朴	JMdict ent_seq 1320750 ke_inf rK
+  橆 -> 無	Unihan kSemanticVariant U+6A46->U+7121
+  橊 -> 榴	Unihan kSemanticVariant U+69B4->U+6A4A
+  檴 -> 穫	Unihan kSemanticVariant U+6AB4->U+7A6B
+  欓 -> 檔	Unihan kSemanticVariant U+6A94->U+6B13
+  欝 -> 鬱	Unihan kSemanticVariant U+6B1D->U+9B31
+  欼 -> 啜	Unihan kSemanticVariant U+555C->U+6B3C
+  欼 -> 歠	Unihan kSemanticVariant U+6B3C->U+6B60
+  歗 -> 嘯	Unihan kSemanticVariant U+562F->U+6B57
+  歱 -> 踵	Unihan kSemanticVariant U+6B71->U+8E35
+  歺 -> 歹	Unihan kSemanticVariant U+6B79->U+6B7A
+  氜 -> 阳	Unihan kSemanticVariant U+6C1C->U+9633
+  氜 -> 陽	Unihan kSemanticVariant U+6C1C->U+967D
+  氥 -> 氙	Unihan kSemanticVariant U+6C19->U+6C25
+  氭 -> 氡	Unihan kSemanticVariant U+6C21->U+6C2D
+  氵 -> 水	Unihan kSemanticVariant U+6C34->U+6C35
+  氼 -> 溺	Unihan kSemanticVariant U+6C3C->U+6EBA
+  沲 -> 沱	Unihan kSemanticVariant U+6CB1->U+6CB2
+  涚 -> 涗	Unihan kZVariant U+6D97->U+6D9A
+  涶 -> 唾	Unihan kSemanticVariant U+553E->U+6DB6
+  渊 -> 淵	JMdict ent_seq 1501530 ke_inf rK
+  湌 -> 餐	Unihan kSemanticVariant U+6E4C->U+9910
+  湏 -> 須	Unihan kSemanticVariant U+6E4F->U+9808
+  滺 -> 悠	Unihan kSemanticVariant U+60A0->U+6EFA
+  潛 -> 潜	JMdict ent_seq 1391240 ke_inf oK
+  潣 -> 浼	Unihan kSemanticVariant U+6D7C->U+6F63
+  潨 -> 漎	Unihan kSemanticVariant U+6F0E->U+6F68
+  澷 -> 漫	Unihan kSemanticVariant U+6F2B->U+6FB7
+  濤 -> 涛	JMdict ent_seq 2093730 ke_inf oK
+  濵 -> 濱	Unihan kSemanticVariant U+6FF1->U+6FF5
+  濵 -> 瀕	Unihan kSemanticVariant U+6FF5->U+7015
+  瀒 -> 澀	Unihan kSemanticVariant U+6F80->U+7012
+  瀒 -> 濇	Unihan kSemanticVariant U+6FC7->U+7012
+  灑 -> 洒	JMdict ent_seq 1568880 ke_inf rK
+  灣 -> 湾	JMdict ent_seq 1412840 ke_inf oK
+  灬 -> 火	Unihan kSemanticVariant U+706B->U+706C
+  烕 -> 滅	Unihan kSemanticVariant U+6EC5->U+70D5
+  烟 -> 煙	JMdict ent_seq 1177180 ke_inf rK
+  焧 -> 熜	Unihan kSemanticVariant U+7127->U+719C
+  燈 -> 灯	JMdict ent_seq 1013460 ke_inf oK
+  燺 -> 熇	Unihan kSemanticVariant U+7187->U+71FA
+  爫 -> 爪	Unihan kSemanticVariant U+722A->U+722B
+  牜 -> 牛	Unihan kSemanticVariant U+725B->U+725C
+  犭 -> 犬	Unihan kSemanticVariant U+72AC->U+72AD
+  犲 -> 豺	Unihan kSemanticVariant U+72B2->U+8C7A
+  狵 -> 尨	Unihan kSemanticVariant U+5C28->U+72F5
+  甆 -> 瓷	Unihan kSemanticVariant U+74F7->U+7506
+  甎 -> 磚	Unihan kSemanticVariant U+750E->U+78DA
+  甤 -> 蕤	Unihan kSemanticVariant U+7524->U+8564
+  畄 -> 留	Unihan kSemanticVariant U+7544->U+7559
+  畄 -> 畱	Unihan kSemanticVariant U+7544->U+7571
+  畆 -> 畝	Unihan kSemanticVariant U+7546->U+755D
+  當 -> 当	JMdict ent_seq 1513060 ke_inf oK
+  痮 -> 脹	Unihan kSemanticVariant U+75EE->U+8139
+  瘂 -> 啞	Unihan kSemanticVariant U+555E->U+7602
+  瘨 -> 癲	Unihan kSemanticVariant U+7628->U+7672
+  瘶 -> 嗽	Unihan kSemanticVariant U+55FD->U+7636
+  癢 -> 痒	JMdict ent_seq 1399980 ke_inf rK
+  皃 -> 貌	Unihan kSemanticVariant U+7683->U+8C8C
+  皡 -> 皞	Unihan kSemanticVariant U+769E->U+76A1
+  皥 -> 皞	Unihan kSemanticVariant U+769E->U+76A5
+  盙 -> 簠	Unihan kSemanticVariant U+76D9->U+7C20
+  眎 -> 視	Unihan kSemanticVariant U+770E->U+8996
+  瞯 -> 瞷	Unihan kSemanticVariant U+77AF->U+77B7
+  瞹 -> 曖	Unihan kSemanticVariant U+66D6->U+77B9
+  砇 -> 珉	Unihan kSemanticVariant U+73C9->U+7807
+  碯 -> 瑙	Unihan kSemanticVariant U+7459->U+78AF
+  磇 -> 砒	Unihan kSemanticVariant U+7812->U+78C7
+  磒 -> 隕	Unihan kSemanticVariant U+78D2->U+9695
+  礟 -> 礮	Unihan kSemanticVariant U+791F->U+792E
+  礶 -> 罐	Unihan kSemanticVariant U+7936->U+7F50
+  礻 -> 示	Unihan kSemanticVariant U+793A->U+793B
+  祿 -> 禄	JMdict ent_seq 1515320 ke_inf oK
+  禀 -> 稟	JMdict ent_seq 1570140 ke_inf oK
+  禦 -> 御	JMdict ent_seq 1520330 ke_inf rK
+  禪 -> 禅	JMdict ent_seq 1396420 ke_inf oK
+  禮 -> 礼	JMdict ent_seq 1295320 ke_inf oK
+  禱 -> 祷	JMdict ent_seq 1222750 ke_inf oK
+  秄 -> 耔	Unihan kSemanticVariant U+79C4->U+8014
+  秇 -> 埶	Unihan kSemanticVariant U+57F6->U+79C7
+  秇 -> 蓺	Unihan kSemanticVariant U+79C7->U+84FA
+  秇 -> 藝	Unihan kSemanticVariant U+79C7->U+85DD
+  秌 -> 秋	Unihan kSemanticVariant U+79CB->U+79CC
+  秐 -> 耘	Unihan kSemanticVariant U+79D0->U+8018
+  穪 -> 偁	Unihan kSemanticVariant U+5041->U+7A6A
+  穪 -> 稱	Unihan kSemanticVariant U+7A31->U+7A6A
+  竆 -> 窮	Unihan kSemanticVariant U+7AAE->U+7AC6
+  竒 -> 奇	Unihan kSemanticVariant U+5947->U+7AD2
+  笋 -> 筍	JMdict ent_seq 1596900 ke_inf rK
+  篢 -> 槓	Unihan kSemanticVariant U+69D3->U+7BE2
+  簛 -> 篩	Unihan kSemanticVariant U+7BE9->U+7C1B
+  簛 -> 簁	Unihan kSemanticVariant U+7C01->U+7C1B
+  簞 -> 箪	JMdict ent_seq 1418990 ke_inf oK
+  籄 -> 簣	Unihan kSemanticVariant U+7C23->U+7C44
+  籄 -> 蕢	Unihan kSemanticVariant U+7C44->U+8562
+  籑 -> 饌	Unihan kSemanticVariant U+7C51->U+994C
+  粮 -> 糧	JMdict ent_seq 1602300 ke_inf oK
+  糓 -> 穀	Unihan kSemanticVariant U+7A40->U+7CD3
+  糡 -> 糨	Unihan kSemanticVariant U+7CE1->U+7CE8
+  糤 -> 饊	Unihan kSemanticVariant U+7CE4->U+994A
+  絚 -> 緪	Unihan kSemanticVariant U+7D5A->U+7DEA
+  絥 -> 鞴	Unihan kSemanticVariant U+7D65->U+97B4
+  綂 -> 統	Unihan kSemanticVariant U+7D71->U+7D82
+  緫 -> 總	Unihan kSemanticVariant U+7DEB->U+7E3D
+  縆 -> 緪	Unihan kSemanticVariant U+7DEA->U+7E06
+  纎 -> 纖	Unihan kSemanticVariant U+7E8E->U+7E96
+  缻 -> 缶	Unihan kSemanticVariant U+7F36->U+7F3B
+  罁 -> 堈	Unihan kSemanticVariant U+5808->U+7F41
+  罁 -> 缸	Unihan kSemanticVariant U+7F38->U+7F41
+  网 -> 網	JMdict ent_seq 1857100 ke_inf rK
+  羮 -> 羹	Unihan kSemanticVariant U+7FAE->U+7FB9
+  耻 -> 恥	JMdict ent_seq 1421610 ke_inf rK
+  耼 -> 聃	Unihan kSemanticVariant U+803C->U+8043
+  聦 -> 聰	Unihan kSemanticVariant U+8066->U+8070
+  聲 -> 声	JMdict ent_seq 1380440 ke_inf oK
+  肈 -> 肇	Unihan kSemanticVariant U+8087->U+8088
+  肬 -> 疣	Unihan kSemanticVariant U+75A3->U+80AC
+  肳 -> 吻	Unihan kSemanticVariant U+543B->U+80B3
+  脉 -> 脈	JMdict ent_seq 1528440 ke_inf rK
+  脺 -> 膵	Unihan kSemanticVariant U+813A->U+81B5
+  腁 -> 胼	Unihan kZVariant U+80FC->U+8141
+  膓 -> 腸	Unihan kSemanticVariant U+8178->U+8193
+  舃 -> 舄	Unihan kSemanticVariant U+8203->U+8204
+  舊 -> 旧	JMdict ent_seq 1230760 ke_inf oK
+  舓 -> 舐	Unihan kSemanticVariant U+8210->U+8213
+  艢 -> 檣	Unihan kSemanticVariant U+6AA3->U+8262
+  艥 -> 楫	Unihan kSemanticVariant U+696B->U+8265
+  艥 -> 檝	Unihan kSemanticVariant U+6A9D->U+8265
+  艪 -> 櫓	Unihan kSemanticVariant U+6AD3->U+826A
+  苢 -> 苡	Unihan kSemanticVariant U+82E1->U+82E2
+  苿 -> 茉	Unihan kZVariant U+82FF->U+8309
+  莀 -> 農	Unihan kSemanticVariant U+8380->U+8FB2
+  莖 -> 茎	JMdict ent_seq 2058380 ke_inf oK
+  萬 -> 万	JMdict ent_seq 1526020 ke_inf oK
+  葁 -> 姜	Unihan kSemanticVariant U+8441->U+8591 [chained via 薑]
+  著 -> 着	JMdict ent_seq 1423000 ke_inf rK
+  葢 -> 盖	Unihan kSemanticVariant U+76D6->U+8462
+  葢 -> 蓋	Unihan kSemanticVariant U+8462->U+84CB
+  薑 -> 姜	JMdict ent_seq 1379620 ke_inf rK
+  蘯 -> 盪	Unihan kSemanticVariant U+76EA->U+862F
+  蘯 -> 蕩	Unihan kSemanticVariant U+8569->U+862F
+  蘽 -> 藟	Unihan kSemanticVariant U+85DF->U+863D
+  號 -> 号	JMdict ent_seq 1284220 ke_inf oK
+  蚦 -> 蚺	Unihan kSemanticVariant U+86A6->U+86BA
+  蜝 -> 蜞	Unihan kSemanticVariant U+871D->U+871E
+  蜶 -> 蟀	Unihan kSemanticVariant U+8736->U+87C0
+  蜹 -> 蚋	Unihan kSemanticVariant U+868B->U+8739
+  螆 -> 蚝	Unihan kSemanticVariant U+869D->U+8786
+  螆 -> 蛓	Unihan kSemanticVariant U+86D3->U+8786
+  蟚 -> 蟛	Unihan kSemanticVariant U+87DA->U+87DB
+  蟬 -> 蝉	JMdict ent_seq 1387080 ke_inf oK
+  蟲 -> 虫	JMdict ent_seq 1426680 ke_inf oK
+  蠶 -> 蚕	JMdict ent_seq 1304000 ke_inf oK
+  衤 -> 衣	Unihan kSemanticVariant U+8863->U+8864
+  裌 -> 袷	Unihan kSemanticVariant U+88B7->U+88CC
+  褃 -> 裉	Unihan kSemanticVariant U+88C9->U+8903
+  褏 -> 褎	Unihan kSemanticVariant U+890E->U+890F
+  褺 -> 褻	Unihan kSemanticVariant U+893A->U+893B
+  襉 -> 襇	Unihan kSemanticVariant U+8947->U+8949
+  襍 -> 雜	Unihan kSemanticVariant U+894D->U+96DC
+  襵 -> 褶	Unihan kSemanticVariant U+8936->U+8975
+  覉 -> 羇	Unihan kSemanticVariant U+7F87->U+8989
+  覊 -> 羈	Unihan kSemanticVariant U+7F88->U+898A
+  覐 -> 覺	Unihan kSemanticVariant U+8990->U+89BA
+  覔 -> 覓	Unihan kSemanticVariant U+8993->U+8994
+  覥 -> 靦	Unihan kSemanticVariant U+89A5->U+9766
+  覰 -> 覷	Unihan kSemanticVariant U+89B0->U+89B7
+  觧 -> 解	Unihan kSemanticVariant U+89E3->U+89E7
+  觵 -> 觥	Unihan kSemanticVariant U+89E5->U+89F5
+  訠 -> 矧	Unihan kSemanticVariant U+77E7->U+8A20
+  訦 -> 諶	Unihan kSemanticVariant U+8A26->U+8AF6
+  註 -> 注	JMdict ent_seq 1203950 ke_inf rK
+  訽 -> 詬	Unihan kSemanticVariant U+8A3D->U+8A6C
+  詋 -> 呪	Unihan kSemanticVariant U+546A->U+8A4B
+  詤 -> 謊	Unihan kSemanticVariant U+8A64->U+8B0A
+  詾 -> 訩	Unihan kSemanticVariant U+8A29->U+8A7E
+  誐 -> 哦	Unihan kSemanticVariant U+54E6->U+8A90
+  誩 -> 競	Unihan kSemanticVariant U+7AF6->U+8AA9
+  諁 -> 啜	Unihan kSemanticVariant U+555C->U+8AC1
+  諊 -> 鞫	Unihan kSemanticVariant U+8ACA->U+97AB
+  諩 -> 譜	Unihan kSemanticVariant U+8AE9->U+8B5C
+  讁 -> 謫	Unihan kSemanticVariant U+8B2B->U+8B81
+  讍 -> 諤	Unihan kSemanticVariant U+8AE4->U+8B8D
+  讛 -> 囈	Unihan kSemanticVariant U+56C8->U+8B9B
+  豓 -> 艶	Unihan kSemanticVariant U+8276->U+8C53
+  豓 -> 豔	Unihan kSemanticVariant U+8C53->U+8C54
+  豘 -> 豚	Unihan kSemanticVariant U+8C58->U+8C5A
+  豣 -> 豜	Unihan kSemanticVariant U+8C5C->U+8C63
+  豴 -> 蹢	Unihan kSemanticVariant U+8C74->U+8E62
+  賍 -> 贓	Unihan kSemanticVariant U+8CCD->U+8D13
+  賍 -> 贜	Unihan kSemanticVariant U+8CCD->U+8D1C
+  賷 -> 齎	Unihan kSemanticVariant U+8CF7->U+9F4E
+  贃 -> 賺	Unihan kSemanticVariant U+8CFA->U+8D03
+  贒 -> 賢	Unihan kSemanticVariant U+8CE2->U+8D12
+  趒 -> 跳	Unihan kSemanticVariant U+8D92->U+8DF3
+  趦 -> 趑	Unihan kSemanticVariant U+8D91->U+8DA6
+  踁 -> 硜	Unihan kSemanticVariant U+785C->U+8E01
+  蹮 -> 躚	Unihan kSemanticVariant U+8E6E->U+8E9A
+  蹹 -> 蹋	Unihan kSemanticVariant U+8E4B->U+8E79
+  躛 -> 躗	Unihan kSemanticVariant U+8E97->U+8E9B
+  躧 -> 屣	Unihan kSemanticVariant U+5C63->U+8EA7
+  躧 -> 蹝	Unihan kSemanticVariant U+8E5D->U+8EA7
+  躱 -> 躲	Unihan kSemanticVariant U+8EB1->U+8EB2
+  躷 -> 矮	Unihan kSemanticVariant U+77EE->U+8EB7
+  軄 -> 職	Unihan kSemanticVariant U+8077->U+8EC4
+  軆 -> 体	Unihan kSemanticVariant U+4F53->U+8EC6
+  軰 -> 輩	Unihan kSemanticVariant U+8EF0->U+8F29
+  輓 -> 挽	JMdict ent_seq 1482090 ke_inf rK
+  輙 -> 輒	Unihan kSemanticVariant U+8F12->U+8F19
+  輧 -> 軿	Unihan kZVariant U+8EFF->U+8F27
+  辤 -> 辞	Unihan kSemanticVariant U+8F9E->U+8FA4
+  辤 -> 辭	Unihan kSemanticVariant U+8FA4->U+8FAD
+  辶 -> 辵	Unihan kSemanticVariant U+8FB5->U+8FB6
+  迊 -> 匝	Unihan kSemanticVariant U+531D->U+8FCA
+  迊 -> 帀	Unihan kSemanticVariant U+5E00->U+8FCA
+  迯 -> 逃	Unihan kSemanticVariant U+8FEF->U+9003
+  迹 -> 跡	JMdict ent_seq 1383680 ke_inf rK
+  逷 -> 逖	Unihan kSemanticVariant U+9016->U+9037
+  遉 -> 偵	Unihan kSemanticVariant U+5075->U+9049
+  遙 -> 遥	JMdict ent_seq 1546930 ke_inf oK
+  遟 -> 遲	Unihan kSemanticVariant U+905F->U+9072
+  鄕 -> 郷	Unihan kZVariant U+90F7->U+9115
+  鄕 -> 鄉	Unihan kSemanticVariant U+9109->U+9115
+  醡 -> 榨	Unihan kSemanticVariant U+69A8->U+91A1
+  醩 -> 糟	Unihan kSemanticVariant U+7CDF->U+91A9
+  釐 -> 厘	JMdict ent_seq 1555420 ke_inf oK
+  釒 -> 金	Unihan kSemanticVariant U+91D1->U+91D2
+  銁 -> 鈞	Unihan kSemanticVariant U+921E->U+9281
+  銒 -> 鈃	Unihan kSemanticVariant U+9203->U+9292
+  鋑 -> 鐫	Unihan kSemanticVariant U+92D1->U+942B
+  鋑 -> 鑴	Unihan kSemanticVariant U+92D1->U+9474
+  鍫 -> 鍬	Unihan kSemanticVariant U+936B->U+936C
+  鎋 -> 轄	Unihan kSemanticVariant U+8F44->U+938B
+  鎙 -> 槊	Unihan kSemanticVariant U+69CA->U+9399
+  鏁 -> 鎖	Unihan kSemanticVariant U+9396->U+93C1
+  鏥 -> 銹	Unihan kSemanticVariant U+92B9->U+93E5
+  鏥 -> 鏽	Unihan kSemanticVariant U+93E5->U+93FD
+  閙 -> 鬧	Unihan kSemanticVariant U+9599->U+9B27
+  闗 -> 関	Unihan kSemanticVariant U+95A2->U+95D7
+  闗 -> 關	Unihan kSemanticVariant U+95D7->U+95DC
+  阧 -> 陡	Unihan kSemanticVariant U+9627->U+9661
+  隂 -> 陰	Unihan kSemanticVariant U+9670->U+9682
+  隖 -> 塢	Unihan kSemanticVariant U+5862->U+9696
+  隝 -> 塢	Unihan kSemanticVariant U+5862->U+969D
+  雙 -> 双	JMdict ent_seq 2847949 ke_inf rK
+  霡 -> 霢	Unihan kSemanticVariant U+9721->U+9722
+  霥 -> 濛	Unihan kSemanticVariant U+6FDB->U+9725
+  靀 -> 濛	Unihan kSemanticVariant U+6FDB->U+9740
+  靝 -> 天	Unihan kSemanticVariant U+5929->U+975D
+  鞉 -> 鞀	Unihan kSemanticVariant U+9780->U+9789
+  鞉 -> 鼗	Unihan kSemanticVariant U+9789->U+9F17
+  鞟 -> 鞹	Unihan kSemanticVariant U+979F->U+97B9
+  韈 -> 襪	Unihan kSemanticVariant U+896A->U+97C8
+  韒 -> 鞘	Unihan kSemanticVariant U+9798->U+97D2
+  韤 -> 襪	Unihan kSemanticVariant U+896A->U+97E4
+  頋 -> 顧	Unihan kSemanticVariant U+980B->U+9867
+  頟 -> 額	Unihan kSemanticVariant U+981F->U+984D
+  頣 -> 頤	Unihan kSemanticVariant U+9823->U+9824
+  顖 -> 囟	Unihan kSemanticVariant U+56DF->U+9856
+  颱 -> 台	JMdict ent_seq 1596780 ke_inf rK
+  飃 -> 飄	Unihan kSemanticVariant U+98C3->U+98C4
+  飇 -> 猋	Unihan kSemanticVariant U+730B->U+98C7
+  飇 -> 颮	Unihan kSemanticVariant U+98AE->U+98C7
+  飇 -> 飆	Unihan kSemanticVariant U+98C6->U+98C7
+  飠 -> 食	Unihan kSemanticVariant U+98DF->U+98E0
+  飤 -> 飼	Unihan kSemanticVariant U+98E4->U+98FC
+  飦 -> 饘	Unihan kSemanticVariant U+98E6->U+9958
+  餘 -> 余	JMdict ent_seq 1543840 ke_inf oK
+  餙 -> 飾	Unihan kSemanticVariant U+98FE->U+9919
+  馿 -> 驢	Unihan kSemanticVariant U+99BF->U+9A62
+  駞 -> 駝	Unihan kSemanticVariant U+99DD->U+99DE
+  駦 -> 騰	Unihan kSemanticVariant U+99E6->U+9A30
+  騈 -> 駢	Unihan kSemanticVariant U+99E2->U+9A08
+  騐 -> 驗	Unihan kSemanticVariant U+9A10->U+9A57
+  騗 -> 騙	Unihan kSemanticVariant U+9A17->U+9A19
+  騘 -> 驄	Unihan kSemanticVariant U+9A18->U+9A44
+  驘 -> 騾	Unihan kSemanticVariant U+9A3E->U+9A58
+  骻 -> 胯	Unihan kSemanticVariant U+80EF->U+9ABB
+  髗 -> 顱	Unihan kSemanticVariant U+9871->U+9AD7
+  髠 -> 髡	Unihan kSemanticVariant U+9AE0->U+9AE1
+  髤 -> 髹	Unihan kSemanticVariant U+9AE4->U+9AF9
+  髩 -> 鬢	Unihan kSemanticVariant U+9AE9->U+9B22
+  鬂 -> 鬢	Unihan kSemanticVariant U+9B02->U+9B22
+  鬦 -> 鬥	Unihan kSemanticVariant U+9B25->U+9B26
+  鬭 -> 鬥	Unihan kSemanticVariant U+9B25->U+9B2D
+  鬴 -> 釜	Unihan kSemanticVariant U+91DC->U+9B34
+  鬽 -> 魅	Unihan kSemanticVariant U+9B3D->U+9B45
+  鮧 -> 鯷	Unihan kSemanticVariant U+9BA7->U+9BF7
+  鱑 -> 鰉	Unihan kSemanticVariant U+9C09->U+9C51
+  鳮 -> 雞	Unihan kSemanticVariant U+96DE->U+9CEE
+  鳮 -> 鷄	Unihan kSemanticVariant U+9CEE->U+9DC4
+  鴺 -> 鵜	Unihan kSemanticVariant U+9D3A->U+9D5C
+  鵶 -> 鴉	Unihan kSemanticVariant U+9D09->U+9D76
+  鶃 -> 鶂	Unihan kSemanticVariant U+9D82->U+9D83
+  鶽 -> 隼	Unihan kSemanticVariant U+96BC->U+9DBD
+  鸎 -> 鶯	Unihan kSemanticVariant U+9DAF->U+9E0E
+  麄 -> 粗	Unihan kSemanticVariant U+7C97->U+9E84
+  麄 -> 觕	Unihan kSemanticVariant U+89D5->U+9E84
+  麄 -> 麤	Unihan kSemanticVariant U+9E84->U+9EA4
+  麕 -> 麇	Unihan kSemanticVariant U+9E87->U+9E95
+  麫 -> 麵	Unihan kSemanticVariant U+9EAB->U+9EB5
+  麴 -> 麹	JMdict ent_seq 2693250 ke_inf oK
+  麸 -> 麩	JMdict ent_seq 2832143 ke_inf rK
+  點 -> 点	JMdict ent_seq 1575360 ke_inf oK
+  鼄 -> 蛛	Unihan kSemanticVariant U+86DB->U+9F04
+  鼔 -> 皷	Unihan kSemanticVariant U+76B7->U+9F14
+  鼔 -> 鼓	Unihan kSemanticVariant U+9F13->U+9F14
+  齅 -> 嗅	Unihan kSemanticVariant U+55C5->U+9F45
+  龡 -> 吹	Unihan kSemanticVariant U+5439->U+9FA1
+  龥 -> 籲	Unihan kSemanticVariant U+7C72->U+9FA5
+  鿌 -> 涼	Unihan kSemanticVariant U+6DBC->U+9FCC
+  﨑 -> 埼	Unihan kSemanticVariant U+57FC->U+FA11
+  﨑 -> 崎	Unihan kSemanticVariant U+5D0E->U+FA11
+  﨑 -> 嵜	Unihan kSemanticVariant U+5D5C->U+FA11
+  﨑 -> 碕	Unihan kSemanticVariant U+7895->U+FA11
+  﨑 -> 陭	Unihan kSemanticVariant U+966D->U+FA11
+  益 -> 益	Unihan kSemanticVariant U+76CA->U+FA17
+  礼 -> 礼	Unihan kSemanticVariant U+79AE->U+FA18 [chained via 禮]
 Generated by tools/build_kanji_variants.py — rerun rather than editing.

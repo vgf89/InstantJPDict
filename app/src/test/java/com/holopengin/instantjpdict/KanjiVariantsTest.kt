@@ -16,11 +16,46 @@ class KanjiVariantsTest {
     @Test
     fun parses_the_committed_asset() {
         val lines = TestAssets.variantsFile().readText().lines().count { it.isNotBlank() }
-        assertEquals(593, lines)
-        // 523 distinct variants: Unihan gives 59 of them more than one canonical
+        assertEquals(669, lines)
+        // 600 distinct variants: Unihan gives 58 of them more than one canonical
         // candidate, and the table keeps every pair (the fold picks one — see
-        // JapaneseUtilVariantFoldTest)
-        assertEquals(523, table().size)
+        // JapaneseUtilVariantFoldTest). 593 of the pairs come from Unihan's
+        // kSemanticVariant/kZVariant; the other 76 come from JMdict's oK/rK tags
+        // intersected with Unihan's simplified/traditional axis.
+        assertEquals(600, table().size)
+    }
+
+    @Test
+    fun the_jmdict_half_reaches_old_orthography_the_vocab_rule_could_not() {
+        val t = table()
+        // Both forms are emittable, so the original "canonical = the side present in
+        // vocab.json" rule dropped these pairs outright — 摑 could be neither offered in
+        // the popup nor folded onto the headword (#44 report).
+        assertEquals('掴', t.canonical('摑'))
+        assertEquals('国', t.canonical('國'))
+        assertEquals('会', t.canonical('會'))
+        assertEquals('灯', t.canonical('燈'))
+        assertEquals('当', t.canonical('當'))
+        // Traps the intersection exists to exclude: Unihan links each of these, but they are
+        // different words in Japanese and JMdict never tags one as an old form of the other.
+        assertEquals('誌', t.canonical('誌'))
+        assertEquals('製', t.canonical('製'))
+        // JMdict tags these as out-dated spellings of a *different* word (丈/たけ, 品/しな);
+        // Unihan does not link the characters, so they stay out of the table.
+        assertEquals('長', t.canonical('長'))
+        assertEquals('階', t.canonical('階'))
+    }
+
+    @Test
+    fun chains_resolve_to_the_form_a_dictionary_indexes() {
+        val t = table()
+        // 冩 -> 寫 -> 写: the fold is a single character pass, so a chain left 冩 pointing at
+        // 寫, which no dictionary indexes. Both hops now reach 写.
+        assertEquals('写', t.canonical('冩'))
+        assertEquals('写', t.canonical('寫'))
+        // A genuine cycle (干 <-> 乾) is kept as-is rather than guessed at.
+        assertEquals('干', t.canonical('乾'))
+        assertEquals('乾', t.canonical('干'))
     }
 
     @Test

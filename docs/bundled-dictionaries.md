@@ -196,35 +196,59 @@ the field to single digits, conjugation noise stops mattering.
 
 ## Kanji variants — `variants/kanji_variants.txt`
 
-Unihan's orthographic variants of one character (`kSemanticVariant` + `kZVariant`),
-used to normalise a lookup query onto the form a dictionary keys on (see #44).
+Two sources, because the relation needs two signals (#44):
+
+* **Unihan's orthographic variants** (`kSemanticVariant` + `kZVariant`) — "the same
+  character written differently". Direction is decided by the recogniser's vocabulary
+  (see *The direction rule* below).
+* **JMdict's out-dated/rarely-used kanji tags** (`oK`/`rK` on kanji forms),
+  **intersected with Unihan's simplified/traditional axis** — Japanese old orthography
+  (旧字体) that the vocabulary rule cannot reach at all, because both forms are emittable
+  (`掴`/`摑`, `国`/`國`) and that rule drops both-known pairs. One source alone is unsafe:
+  Unihan's s/t axis also links characters that are *different words* in Japanese
+  (`誌`/`志`, `製`/`制`), and JMdict's tags alone also mark rare *spellings* of another
+  word (`長` for 丈/たけ, `階` for 品/しな). The intersection is the 旧字体 class, and the
+  direction comes from JMdict — never from Unihan, whose s/t orientation is the Chinese one
+  and disagrees for a measurable share of pairs (it calls 煙 the old form of 烟).
+
 One line per pair, `variant<TAB>canonical`, sorted by variant codepoint:
 
 ```
 囘	回
+摑	掴
 欝	鬱
-壜	罈
 ```
 
-Consumed by `util/KanjiVariants.kt` (`canonical(ch)`, `obsoleteFormsOf(ch)`) and,
-for the measured subset, by `JapaneseUtil.foldLookupVariants`.
+Consumed by `util/KanjiVariants.kt` (`canonical(ch)`, `obsoleteFormsOf(ch)`) — the latter
+is what puts the obsolete form in the popup's alternatives — and, for the measured subset,
+by `JapaneseUtil.foldLookupVariants`.
 
 | | |
 |---|---|
-| Source | [Unihan](https://www.unicode.org/Public/UCD/latest/ucd/Unihan.zip) — `Unihan_Variants.txt` |
-| Revision | Unicode 17.0.0, data of 2025-07-24 (recorded in `PROVENANCE.txt`) |
-| License | Unicode License v3 |
-| Entries | 593 pairs over 523 distinct variants |
-| Generator | `tools/build_kanji_variants.py` |
+| Sources | [Unihan](https://www.unicode.org/Public/UCD/latest/ucd/Unihan.zip) — `Unihan_Variants.txt`; [JMdict](http://ftp.edrdg.org/pub/Nihongo/JMdict_e.gz) — kanji-form tags |
+| Revision | Unicode 17.0.0, data of 2025-07-24; JMdict revision in `PROVENANCE.txt` |
+| License | Unicode License v3; JMdict CC BY-SA 4.0 (EDRDG) |
+| Entries | 669 pairs over 600 distinct variants (593 Unihan half + 76 JMdict half) |
+| Generators | `tools/build_kanji_variants.py` (table), `tools/build_variant_fold.py` (fold) |
 
 Regenerate:
 
 ```sh
 curl -L -o /tmp/Unihan.zip https://www.unicode.org/Public/UCD/latest/ucd/Unihan.zip
-python3 tools/build_kanji_variants.py --zip /tmp/Unihan.zip \
+curl -L -o /tmp/JMdict_e.gz http://ftp.edrdg.org/pub/Nihongo/JMdict_e.gz
+python3 tools/build_kanji_variants.py --zip /tmp/Unihan.zip --jmdict /tmp/JMdict_e.gz \
   --vocab app/src/main/assets/PP-OCRv6_small_ncnn/vocab.json \
-  --out-dir app/src/main/assets/variants --check 囘:回 欝:鬱
+  --out-dir app/src/main/assets/variants \
+  --check 囘:回 欝:鬱 摑:掴 國:国 會:会 --reject 誌:志 製:制 長:丈 階:品
+python3 tools/build_variant_fold.py --table app/src/main/assets/variants/kanji_variants.txt \
+  --provenance app/src/main/assets/variants/PROVENANCE.txt --counts /tmp/kanji_counts.json \
+  --kotlin app/src/main/java/com/holopengin/instantjpdict/util/JapaneseUtil.kt
 ```
+
+Chains (`冩` -> `寫` -> `写`) are resolved to the terminal canonical: the fold is a single
+character pass, so a chained entry would stop one step short of the form dictionaries index.
+Genuine cycles (`干` <-> `乾`) stay in the table and are excluded from the fold.
+`PROVENANCE.txt` records the per-pair citation, the resolved chains and the cycles.
 
 Output is byte-deterministic (sorted, LF) apart from the `Retrieved:` date line in
 `PROVENANCE.txt`, which is passed in and defaults to today.

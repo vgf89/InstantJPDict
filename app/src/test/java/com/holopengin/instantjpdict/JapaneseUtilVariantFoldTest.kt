@@ -169,17 +169,43 @@ class JapaneseUtilVariantFoldTest {
             if (parts.size != 2 || parts[0].length != 1 || parts[1].length != 1) continue
             asset.getOrPut(parts[0][0]) { mutableSetOf() }.add(parts[1][0])
         }
-        assertEquals(92, JapaneseUtil.MEASURED_VARIANT_FOLD.size)
-        assertEquals(523, asset.size)
+        assertEquals(165, JapaneseUtil.MEASURED_VARIANT_FOLD.size)
+        assertEquals(600, asset.size)
+        val foldKeys = JapaneseUtil.MEASURED_VARIANT_FOLD.keys
         for ((variant, canonical) in JapaneseUtil.MEASURED_VARIANT_FOLD) {
             val target = canonical.single()
             val candidates = asset[variant]
             assertNotNull("'$variant' is not in kanji_variants.txt", candidates)
             assertTrue("asset has '$variant' -> $candidates, not '$target'",
                 target in candidates!!)
-            assertFalse("canonical '$target' is itself a variant — fold would chain",
-                asset.containsKey(target))
+            // Idempotence is a property of the FOLD, not of the asset. A canonical may
+            // legitimately be a variant in the table — the asset keeps genuine cycles
+            // (干 <-> 乾) and the fold is a single character pass — so what must not happen
+            // is a canonical that is itself a key *here*, which would leave the query one
+            // step short of the form dictionaries index.
+            assertFalse("canonical '$target' is itself a fold key — fold would chain",
+                target in foldKeys)
         }
+    }
+
+    @Test
+    fun folds_the_jmdict_half_and_leaves_modern_forms_alone() {
+        // Old orthography the head can emit — both forms are in the vocab, which is exactly
+        // why the original direction rule dropped these pairs. The queried old form resolves
+        // to the headword a dictionary indexes.
+        assertEquals("掴", JapaneseUtil.foldLookupVariants("摑"))
+        assertEquals("国", JapaneseUtil.foldLookupVariants("國"))
+        assertEquals("会", JapaneseUtil.foldLookupVariants("會"))
+        assertEquals("灯", JapaneseUtil.foldLookupVariants("燈"))
+        // The modern side is a key for nothing, so it must resolve to itself: folding it
+        // would rewrite the form the dictionaries actually index.
+        assertEquals("掴", JapaneseUtil.foldLookupVariants("掴"))
+        assertEquals("国", JapaneseUtil.foldLookupVariants("国"))
+        // A chain (冩 -> 寫 -> 写) reaches the terminal form in one pass.
+        assertEquals("写", JapaneseUtil.foldLookupVariants("冩"))
+        // 坂 is NOT folded to 阪: the corpus prefers 坂 (大阪), so that pair failed the
+        // direction guard and stays out of the fold.
+        assertEquals("坂", JapaneseUtil.foldLookupVariants("坂"))
     }
 
     @Test

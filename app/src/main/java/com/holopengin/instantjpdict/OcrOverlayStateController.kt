@@ -673,7 +673,14 @@ class OcrOverlayStateController {
             val queryTextRaw = followingText.substring(0, len)
             val queryText = JapaneseUtil.normalize(queryTextRaw)
 
+            // The RAW prefix is searched alongside its folded form. The fold is a
+            // substitution, so folding alone replaced the queried form outright: an old
+            // form the head can emit (摑) resolved to the modern headword and the old
+            // form's OWN entries — a kanjidic row, a dictionary that indexes 摑 — were
+            // never looked up at all (#44). Searching both keeps the redirect *and* the
+            // entries the old form has in dictionaries that carry it.
             val variants = listOf(
+                queryTextRaw,
                 queryText,
                 JapaneseUtil.katakanaToHiragana(queryText),
                 JapaneseUtil.collapseEmphatic(queryText)
