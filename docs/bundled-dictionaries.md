@@ -132,3 +132,92 @@ Scoring the same candidates with an n-gram trained on kanji-only subsequences
 rank 3 of 7 against the plain model's 1 of 7. Once the component filter has cut
 the field to single digits, conjugation noise stops mattering.
 
+## Kanji variants — `variants/kanji_variants.txt`
+
+Unihan's orthographic variants of one character (`kSemanticVariant` + `kZVariant`),
+used to normalise a lookup query onto the form a dictionary keys on (see #44).
+One line per pair, `variant<TAB>canonical`, sorted by variant codepoint:
+
+```
+囘	回
+欝	鬱
+壜	罈
+```
+
+Consumed by `util/KanjiVariants.kt` (`canonical(ch)`, `obsoleteFormsOf(ch)`) and,
+for the measured subset, by `JapaneseUtil.foldLookupVariants`.
+
+| | |
+|---|---|
+| Source | [Unihan](https://www.unicode.org/Public/UCD/latest/ucd/Unihan.zip) — `Unihan_Variants.txt` |
+| Revision | Unicode 17.0.0, data of 2025-07-24 (recorded in `PROVENANCE.txt`) |
+| License | Unicode License v3 |
+| Entries | 593 pairs over 523 distinct variants |
+| Generator | `tools/build_kanji_variants.py` |
+
+Regenerate:
+
+```sh
+curl -L -o /tmp/Unihan.zip https://www.unicode.org/Public/UCD/latest/ucd/Unihan.zip
+python3 tools/build_kanji_variants.py --zip /tmp/Unihan.zip \
+  --vocab app/src/main/assets/PP-OCRv6_small_ncnn/vocab.json \
+  --out-dir app/src/main/assets/variants --check 囘:回 欝:鬱
+```
+
+Output is byte-deterministic (sorted, LF) apart from the `Retrieved:` date line in
+`PROVENANCE.txt`, which is passed in and defaults to today.
+
+### The direction rule
+
+Unihan lists variants in both directions and says nothing about which form a
+Japanese dictionary keys on. The surviving direction is decided by the shipped
+recogniser's own dictionary:
+
+- **canonical** = the side present in `PP-OCRv6_small_ncnn/vocab.json`;
+- **variant** = the side that is not.
+
+A fold exists to map a form the pipeline cannot handle onto one it can, so the
+target must be the form the dictionary already knows. Pairs where both sides are
+known (nothing to gain) or neither is (the miss just moves) are dropped, as are
+supplementary-plane pairs — the API is `Char`-based, one UTF-16 code unit. That
+rule is verified in the build: `囘 -> 回` and `欝 -> 鬱` are the asserted pairs.
+
+### Which pairs reach the fold, and why 112 of 593
+
+`JapaneseUtil.foldLookupVariants` carries only pairs whose **variant side actually
+occurs in real Japanese text** — otherwise the entry is a guess with no evidence
+behind it. Measured over the whole Aozora Bunko corpus as streamed from the HF
+clean mirror (16,950 works, 230,196,565 characters, `scripts/variant_count.py`'s
+set-then-count pattern):
+
+| variant | occurrences | folds to |
+|---|---|---|
+| 囘 | 1,493 | 回 |
+| 欝 | 1,431 | 鬱 |
+| 壜 | 1,322 | 罈 |
+| 劒 | 387 | 劍 |
+| 慙 | 357 | 慚 |
+| 厶 | 305 | 某 |
+| 噐 / 輙 | 74 each | 器 / 輒 |
+| 齅 / 覉 | 30 each | 嗅 / 羇 |
+| … | 1 each (27 variants) | |
+
+**112 of the 593 pairs** qualify, 7,917 occurrences in total. Where Unihan offers
+several canonical candidates for one variant (15 of the 112) the fold takes the
+form that dominates that same corpus rather than an arbitrary first — `葢 → 蓋`
+(蓋 6,811 vs 盖 92), `悋 → 吝` (760 vs 恡 0), `冫 → 氷` (10,435 vs 冰 88),
+`﨑 → 崎` (15,233 vs 埼 431). No canonical is itself a key, so the fold is
+idempotent, and every pair is asserted against this committed file by
+`JapaneseUtilVariantFoldTest`.
+
+### What the fold can and cannot do
+
+It is **query-side only** — `normalize()` builds the lookup key, displayed OCR text
+is never rewritten — and it cannot restore a character the head failed to produce.
+Every variant in the table is absent from `vocab.json`, so no OCR line can contain
+one: on model output these lines still fail as *deletions* (the proposal layer's
+job, `docs/ocr-oov-correction-plan.md`). The fold serves text that reached lookup
+without the model — a character typed into a manual override, or dictionary-side
+text — and is the cheap, zero-over-correction half of the variant problem: true
+variant pairs (`囘`→`回`, `欝`→`鬱`) were the named table work that the OOV census
+separated out from the modelling work.

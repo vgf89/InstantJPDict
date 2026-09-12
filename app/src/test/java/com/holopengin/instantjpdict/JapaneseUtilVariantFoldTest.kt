@@ -95,6 +95,91 @@ class JapaneseUtilVariantFoldTest {
         assertEquals("日々", JapaneseUtil.normalize("日々"))
     }
 
+    // ── #44: the Unihan-derived half of the table ────────────────────────────────
+    // Direction is variant -> canonical (canonical = the side in vocab.json), and a
+    // pair ships only if its variant side occurs in real text (112 of 593, measured
+    // over 230M characters of Aozora). These characters have no class in the shipped
+    // head, so the fold fires on text that did not come from the model — a manual
+    // override, dictionary-side text — never on OCR output.
+
+    @Test
+    fun folds_measured_unihan_variants() {
+        // the pair the direction rule was validated on, and the corpus's most
+        // frequent variant forms
+        assertEquals("回", JapaneseUtil.foldLookupVariants("囘"))
+        assertEquals("鬱", JapaneseUtil.foldLookupVariants("欝"))
+        assertEquals("罈", JapaneseUtil.foldLookupVariants("壜"))
+        assertEquals("劍", JapaneseUtil.foldLookupVariants("劒"))
+        assertEquals("慚", JapaneseUtil.foldLookupVariants("慙"))
+        // and inside a word, which is how the fold is actually reached
+        assertEquals("回想", JapaneseUtil.foldLookupVariants("囘想"))
+        assertEquals("鬱々", JapaneseUtil.foldLookupVariants("欝々"))
+        assertEquals("慚愧", JapaneseUtil.foldLookupVariants("慙愧"))
+        assertEquals("逃げる", JapaneseUtil.foldLookupVariants("迯げる"))
+        assertEquals("器械", JapaneseUtil.foldLookupVariants("噐械"))
+        assertEquals("逃", JapaneseUtil.foldLookupVariants("迯"))
+    }
+
+    @Test
+    fun unihan_fold_picks_the_corpus_dominant_canonical() {
+        // 15 of the 112 variants have several canonical candidates in Unihan; the fold
+        // takes the form that dominates the same Aozora corpus, not an arbitrary first
+        // (葢 -> 蓋 6,811 vs 盖 92; 悋 -> 吝 760 vs 恡 0; 冫 -> 氷 10,435 vs 冰 88)
+        assertEquals("蓋", JapaneseUtil.foldLookupVariants("葢"))
+        assertEquals("吝", JapaneseUtil.foldLookupVariants("悋"))
+        assertEquals("氷", JapaneseUtil.foldLookupVariants("冫"))
+        assertEquals("藝", JapaneseUtil.foldLookupVariants("秇"))
+        assertEquals("崎", JapaneseUtil.foldLookupVariants("﨑"))
+    }
+
+    @Test
+    fun unihan_fold_does_not_run_backwards() {
+        // the canonical side is what the dictionary already keys on: folding it would
+        // move the query to a form the recogniser cannot emit
+        assertEquals("回", JapaneseUtil.foldLookupVariants("回"))
+        assertEquals("鬱", JapaneseUtil.foldLookupVariants("鬱"))
+        assertEquals("蓋", JapaneseUtil.foldLookupVariants("蓋"))
+        assertEquals("回想", JapaneseUtil.normalize("回想"))
+    }
+
+    @Test
+    fun unihan_fold_is_idempotent_and_leaves_unknown_characters_alone() {
+        val plain = "日本語のテキストです。"
+        assertEquals(plain, JapaneseUtil.foldLookupVariants(plain))
+        for (s in listOf("囘想", "欝々", "迯げる", "噐械", "壜", "﨑", "囘囘回")) {
+            val once = JapaneseUtil.normalize(s)
+            assertEquals(once, JapaneseUtil.normalize(once))
+        }
+    }
+
+    @Test
+    fun measured_variant_fold_matches_the_committed_asset() {
+        // Drift guard: every pair folded here must exist in variants/kanji_variants.txt
+        // in the same direction (and no canonical may itself be a key, or the fold
+        // would not be idempotent). Multi-candidate variants are checked against the
+        // asset's *whole* candidate set, because the fold's choice among them is a
+        // corpus measurement the asset does not carry (e.g. 冫 -> 氷, while the asset
+        // also offers 冰, its lowest-codepoint candidate).
+        val asset = mutableMapOf<Char, MutableSet<Char>>()
+        for (line in TestAssets.variantsFile().readText().lines()) {
+            if (line.isBlank() || line.startsWith("#")) continue
+            val parts = line.split('\t')
+            if (parts.size != 2 || parts[0].length != 1 || parts[1].length != 1) continue
+            asset.getOrPut(parts[0][0]) { mutableSetOf() }.add(parts[1][0])
+        }
+        assertEquals(112, JapaneseUtil.MEASURED_VARIANT_FOLD.size)
+        assertEquals(523, asset.size)
+        for ((variant, canonical) in JapaneseUtil.MEASURED_VARIANT_FOLD) {
+            val target = canonical.single()
+            val candidates = asset[variant]
+            assertNotNull("'$variant' is not in kanji_variants.txt", candidates)
+            assertTrue("asset has '$variant' -> $candidates, not '$target'",
+                target in candidates!!)
+            assertFalse("canonical '$target' is itself a variant — fold would chain",
+                asset.containsKey(target))
+        }
+    }
+
     @Test
     fun normalize_applies_the_fold() {
         assertEquals("こころ", JapaneseUtil.normalize("こゝろ"))

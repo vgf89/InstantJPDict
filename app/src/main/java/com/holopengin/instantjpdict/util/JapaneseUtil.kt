@@ -142,16 +142,78 @@ object JapaneseUtil {
     )
 
     /**
+     * Unihan variant forms that real Japanese text uses, folded onto the form the
+     * shipped dictionary carries (#44). Same direction rule as [KanjiVariants] and
+     * `tools/build_kanji_variants.py`: canonical = the side present in
+     * `PP-OCRv6_small_ncnn/vocab.json`, variant = the side that is not.
+     *
+     * Unlike the curated entries below, **these characters have no class in the
+     * shipped head at all**, so an OCR line can never contain one. They are not dead
+     * entries, they are the other direction: lookup also runs over text that did not
+     * come from the model (a character typed into a manual override, dictionary-side
+     * text), and there the obsolete form is exactly what needs normalising. On model
+     * *output* a variant the head cannot emit still fails as a deletion and needs the
+     * proposal layer, not a fold.
+     *
+     * Subset rule — measured, not guessed: a pair ships only if its variant side
+     * actually occurs in real text. 112 of the table's 593 pairs qualify, measured
+     * over the whole Aozora Bunko corpus as streamed from the HF clean mirror
+     * (16,950 works, 230,196,565 characters): 囘 1,493; 欝 1,431; 壜 1,322; 劒 387;
+     * 慙 357; 厶 305; 噐 74; 齅 30; the rest tail off to a single occurrence.
+     *
+     * Where Unihan offers several canonical candidates for one variant (15 of the
+     * 112) the fold takes the form that dominates that same corpus rather than an
+     * arbitrary first: 葢→蓋 (蓋 6,811 vs 盖 92), 悋→吝 (760 vs 恡 0), 冫→氷 (10,435
+     * vs 冰 88), 秇→藝 (7,036), 穪→稱 (2,032), 﨑→崎 (15,233 vs 埼 431). Every pair
+     * here is also present in `variants/kanji_variants.txt` with the same direction —
+     * JapaneseUtilVariantFoldTest checks that — and no canonical is itself a key, so
+     * the fold stays idempotent. All pairs are single-character, so unlike the Roman
+     * numerals below they never change query length.
+     */
+    internal val MEASURED_VARIANT_FOLD: Map<Char, String> = mapOf(
+        '㕞' to "刷", '㘅' to "啣", '㝵' to "碍", '䖟' to "蝱",
+        '䙝' to "褻", '䬒' to "颼", '䯻' to "髻", '䰗' to "鬮",
+        '亻' to "人", '冩' to "寫", '冫' to "氷", '凴' to "憑",
+        '凾' to "函", '刋' to "刊", '劒' to "劍", '勹' to "包",
+        '匳' to "奩", '匵' to "櫝", '卭' to "卬", '厶' to "某",
+        '噐' to "器", '囘' to "回", '堭' to "隍", '壜' to "罈",
+        '娬' to "嫵", '崪' to "崒", '巤' to "鬣", '帋' to "紙",
+        '帒' to "袋", '悋' to "吝", '慙' to "慚", '懜' to "懵",
+        '捬' to "撫", '攅' to "攢", '攵' to "攴", '朙' to "明",
+        '槖' to "橐", '樷' to "叢", '欝' to "鬱", '氵' to "水",
+        '涶' to "唾", '濵' to "濱", '犭' to "犬", '甎' to "磚",
+        '甤' to "蕤", '畄' to "留", '畆' to "畝", '瘂' to "啞",
+        '皃' to "貌", '皡' to "皞", '眎' to "視", '瞹' to "曖",
+        '碯' to "瑙", '礟' to "礮", '秇' to "藝", '秌' to "秋",
+        '穪' to "稱", '竆' to "窮", '竒' to "奇", '糓' to "穀",
+        '纎' to "纖", '缻' to "缶", '羮' to "羹", '耼' to "聃",
+        '膓' to "腸", '艪' to "櫓", '苢' to "苡", '葢' to "蓋",
+        '蘯' to "蕩", '蚦' to "蚺", '蜹' to "蚋", '襍' to "雜",
+        '覉' to "羇", '覊' to "羈", '覔' to "覓", '覰' to "覷",
+        '觧' to "解", '誐' to "哦", '賍' to "贓", '賷' to "齎",
+        '趦' to "趑", '躱' to "躲", '軆' to "体", '輙' to "輒",
+        '辶' to "辵", '迯' to "逃", '遉' to "偵", '鍫' to "鍬",
+        '鏁' to "鎖", '閙' to "鬧", '隂' to "陰", '隖' to "塢",
+        '霡' to "霢", '韈' to "襪", '頣' to "頤", '顖' to "囟",
+        '飃' to "飄", '飇' to "飆", '駞' to "駝", '髗' to "顱",
+        '髠' to "髡", '髩' to "鬢", '鬂' to "鬢", '鬭' to "鬥",
+        '鮧' to "鯷", '鵶' to "鴉", '鶽' to "隼", '鸎' to "鶯",
+        '麄' to "粗", '麕' to "麇", '齅' to "嗅", '﨑' to "崎",
+    )
+
+    /**
      * Characters the recogniser *can* emit that dictionaries do not use, folded
      * to the form lookup expects (#44, layer 1). Measured over 225M characters of
      * Aozora plus the calibration benches.
      *
-     * Absent on purpose: characters the quantised head has **no class for** —
-     * `ゐ`, `ヱ`, `─`, `｜`, `〳`, `〴`, `〻`, `〃`, fullwidth ASCII, the Ainu small
-     * katakana. They can never appear in the model's output, so an entry would be
-     * dead code; those lines fail as *deletions* and no fold can restore them.
-     * `々` is absent too: dictionary headwords contain it (`日々`), so expanding it
-     * would lose matches rather than gain them.
+     * Absent on purpose from *this curated half*: characters the quantised head has
+     * **no class for** — `ゐ`, `ヱ`, `─`, `｜`, `〳`, `〴`, `〻`, `〃`, fullwidth ASCII,
+     * the Ainu small katakana. They can never appear in the model's output, so for
+     * *model output* an entry would do nothing; those lines fail as *deletions* and
+     * no fold can restore them. [MEASURED_VARIANT_FOLD] below is the deliberate
+     * exception, because it serves text that did not come from the model.
+     * `々` is absent from both: dictionary headwords contain it (`日々`), so expanding
+     * it would lose matches rather than gain them.
      */
     private val LOOKUP_VARIANT_MAP: Map<Char, String> = mapOf(
         // Roman numerals (NFKC behaviour; the benches show `Ⅶ` where text has `VII`)
@@ -170,8 +232,10 @@ object JapaneseUtil {
         // tools/prune_ctc_head.py cut it and the head cannot produce it — an entry
         // for it is dead code. Check membership against rec_remap.txt, not
         // vocab.json, which still lists the 5,517 classes we pruned.
-        '况' to "況", '查' to "査"
-    )
+        '况' to "況", '查' to "査",
+        // The Unihan-derived half of the table — see [MEASURED_VARIANT_FOLD] for the
+        // direction rule and the corpus measurement that selects the pairs.
+    ) + MEASURED_VARIANT_FOLD
 
     /**
      * Fold the variant characters of [LOOKUP_VARIANT_MAP] and expand the iteration
