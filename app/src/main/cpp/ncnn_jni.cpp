@@ -88,14 +88,16 @@ Java_com_holopengin_instantjpdict_RecNcnn_destroy(JNIEnv *, jclass, jlong handle
 // recogniser, not like a stale constant. Derive the width instead; never hardcode it.
 //
 // Layout is [w=numClasses, h=seqLen] with w innermost (one float per class per timestep).
-// Any other shape is refused: no text beats wrong text.
+// Do NOT compare against total() == h*w: ncnn's Mat::total() carries up to 3 elements of
+// height padding, so that test rejects every tensor whose timestep count is not a multiple
+// of 4 (measured: h=63 -> total = h*w+1, h=45 -> h*w+3, h=40 and h=52 -> exact). Check the
+// dims and that the storage can hold the rows we are about to read; refuse anything else.
 static int recClassWidth(const ncnn::Mat &out, int seqLen) {
     if (seqLen <= 0 || out.w <= 0) return 0;
-    if ((out.dims == 2 || (out.dims == 3 && out.c == 1)) && out.h == seqLen &&
-        (int)out.total() == seqLen * out.w) {
-        return out.w;
-    }
-    return 0;
+    if (!(out.dims == 2 || (out.dims == 3 && out.c == 1))) return 0;
+    if (out.h < seqLen) return 0;
+    if ((size_t)out.total() < (size_t)seqLen * (size_t)out.w) return 0;
+    return out.w;
 }
 
 JNIEXPORT jfloatArray JNICALL
