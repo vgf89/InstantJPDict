@@ -89,13 +89,28 @@ class KanaSizeFixTest {
     }
 
     @Test
-    fun `withholds on a page carrying the legacy fingerprint`() {
-        // 100 kana with 3 emitted 大つ the model calls small: 3.0 per 100 kana, above the gate's
-        // measured threshold, and pre-reform text writes sokuon as a large つ.
-        val text = "あ".repeat(30) + "つ" + "あ".repeat(30) + "つ" + "あ".repeat(30) + "つ" + "あ".repeat(7)
-        val out = KanaSizeFix.apply(listOf(line(text)), Stub(logitsFor(text) { if (it == 'つ') -10f else 0f }).score())
+    fun `withholds on a page carrying the legacy fingerprint when protection is on`() {
+        // ~124 kana with 4 emitted 大つ the model calls small: 3.2 per 100 kana, above the gate's
+        // measured threshold and over its hit bar. Pre-reform texts write sokuon as a large つ.
+        val text = "あ".repeat(30) + "つ" + "あ".repeat(30) + "つ" + "あ".repeat(30) + "つ" + "あ".repeat(10) + "つ" + "あ".repeat(20)
+        val out = KanaSizeFix.apply(
+            listOf(line(text)),
+            honourLegacy = true,
+            score = Stub(logitsFor(text) { if (it == 'つ') -10f else 0f }).score())
         assertEquals("legacy text must not be rewritten", text, out[0].text)
         assertTrue(out[0].overrides.isEmpty())
+    }
+
+    /**
+     * The default posture: pre-reform protection is off, so the correction runs on any text and is
+     * tuned for modern Japanese. The same page that is withheld above is corrected here.
+     */
+    @Test
+    fun `corrects a legacy-looking page when protection is off, which is the default`() {
+        val text = "あ".repeat(30) + "つ" + "あ".repeat(30) + "つ" + "あ".repeat(30) + "つ" + "あ".repeat(10) + "つ" + "あ".repeat(20)
+        val out = KanaSizeFix.apply(listOf(line(text)), Stub(logitsFor(text) { if (it == 'つ') -10f else 0f }).score())
+        assertEquals("every large つ is flipped, since nothing withholds it", text.replace('つ', 'っ'), out[0].text)
+        assertEquals(4, out[0].overrides.size)
     }
 
     @Test
@@ -117,14 +132,14 @@ class KanaSizeFixTest {
 
     @Test
     fun `a failed scorer leaves the page untouched`() {
-        val out = KanaSizeFix.apply(listOf(line(smallText))) { _, _ -> null }
+        val out = KanaSizeFix.apply(listOf(line(smallText)), score = { _, _ -> null })
         assertEquals(smallText, out[0].text)
         assertTrue(out[0].overrides.isEmpty())
     }
 
     @Test
     fun `a short result array is rejected rather than half-applied`() {
-        val out = KanaSizeFix.apply(listOf(line(smallText))) { _, bases -> FloatArray(bases.size + 1) { 10f } }
+        val out = KanaSizeFix.apply(listOf(line(smallText)), score = { _, bases -> FloatArray(bases.size + 1) { 10f } })
         assertEquals(smallText, out[0].text)
         assertTrue(out[0].overrides.isEmpty())
     }
@@ -148,9 +163,10 @@ class KanaSizeFixTest {
     fun `the gate sees every line of the page, not just the one being corrected`() {
         // The つ evidence lives in the first line; the flip candidate in the second. If the gate
         // only saw the second line there would be too little evidence and the flip would apply.
-        val legacy = "あ".repeat(30) + "つ" + "あ".repeat(30) + "つ" + "あ".repeat(30) + "つ" + "あ".repeat(7)
+        val legacy = "あ".repeat(30) + "つ" + "あ".repeat(30) + "つ" + "あ".repeat(30) + "つ" + "あ".repeat(10) + "つ" + "あ".repeat(20)
         val logits = logitsFor(legacy, smallText) { if (it == 'つ') -10f else if (it == 'っ') 10f else 0f }
-        val out = KanaSizeFix.apply(listOf(line(legacy), line(smallText)), Stub(logits).score())
+        val out = KanaSizeFix.apply(
+            listOf(line(legacy), line(smallText)), honourLegacy = true, score = Stub(logits).score())
         assertEquals(legacy, out[0].text)
         assertEquals("the whole page is treated as pre-reform", smallText, out[1].text)
         assertNull(out[1].overrides[1])

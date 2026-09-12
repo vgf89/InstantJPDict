@@ -38,8 +38,8 @@ class LegacyOrthographyGateTest {
     @Test
     fun `a legacy pattern suppresses correction`() {
         val g = gate()
-        // enough kana to judge, and repeated 大つ the model insists are small
-        g.observeLine("かれはだつた。それでよかつた。まつてくれ。だれもこなかつた。それがよかつたのだ。")
+        // Enough kana to judge (the floor is 60), and repeated 大つ the model insists are small.
+        g.observeLine("かれはだつた。それでよかつた。まつてくれ。だれもこなかつた。それがよかつたのだ。".repeat(3))
         repeat(4) { g.observePosition('つ', 0.002f) }
         assertTrue(g.isLegacy())
         assertFalse(g.allowsCorrection())
@@ -48,9 +48,24 @@ class LegacyOrthographyGateTest {
     @Test
     fun `an isolated disagreement does not`() {
         val g = gate()
-        g.observeLine("かれはだつた。それでよかつた。まつてくれ。だれもこなかつた。それがよかつたのだ。")
+        g.observeLine("かれはだつた。それでよかつた。まつてくれ。だれもこなかつた。それがよかつたのだ。".repeat(3))
         g.observePosition('つ', 0.002f)
-        assertFalse("one hit in 36 kana is inside the modern range", g.isLegacy())
+        assertFalse("one hit among enough kana is inside the modern range", g.isLegacy())
+    }
+
+    /**
+     * Pins the hit bar. Three hits on ~108 kana is 2.8 per 100 - above the rate threshold - so
+     * under the earlier `minHits = 2` this suppressed correction, and one marginal extra hit was
+     * enough to swing a screen-sized page. Legacy text produces dozens of hits, so requiring four
+     * costs nothing there and removes the coin-flip.
+     */
+    @Test
+    fun `three hits is not yet evidence of pre-reform text`() {
+        val g = gate()
+        g.observeLine("かれはだつた。それでよかつた。まつてくれ。だれもこなかつた。それがよかつたのだ。".repeat(3))
+        repeat(3) { g.observePosition('つ', 0.002f) }
+        assertFalse(g.isLegacy())
+        assertTrue(g.allowsCorrection())
     }
 
     @Test
@@ -106,8 +121,8 @@ class LegacyOrthographyGateTest {
     @Test
     fun `katakana big tsu counts as a hit too`() {
         val g = gate()
-        g.observeLine("ベツドとポケツトをかう。それがいいとおもうよ。わたしはそうおもうのだ。")
-        repeat(4) { g.observePosition('ツ', 0.001f) }
+        g.observeLine("ベツドとポケツトをかう。それがいいとおもうよ。わたしはそうおもうのだ。".repeat(3))
+        repeat(5) { g.observePosition('ツ', 0.001f) }
         assertTrue(g.isLegacy())
     }
 

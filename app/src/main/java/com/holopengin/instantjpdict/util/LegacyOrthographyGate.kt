@@ -40,7 +40,17 @@ class LegacyOrthographyGate(
     /** Hits per 100 kana; the measured separation is 25.7-25.9 (legacy) against 0.06-0.29
      *  (modern), so 2.0 sits ~7x above the worst modern case and ~13x below legacy. */
     private val rateThreshold: Float = 2.0f,
-    private val minHits: Int = 2,
+    /**
+     * Hits required before the gate will call a page pre-reform.
+     *
+     * At 2 this was a knife edge: on a screen-sized page (100-200 kana) one marginal hit moved
+     * the ratio across the threshold, and because a legacy verdict withholds *every* flip on the
+     * page, a slight scroll could flip the whole page's correction. Legacy pages are nowhere near
+     * this bar - they run ~25 hits per 100 kana, so a few hundred kana gives dozens of hits -
+     * while modern pages sit at 0.06-0.29 per 100. Raising it costs nothing on real legacy text
+     * and removes the coin-flip.
+     */
+    private val minHits: Int = 4,
     private val minKana: Int = MIN_KANA,
 ) {
     /** Characters that cannot occur in modern orthography. */
@@ -94,10 +104,15 @@ class LegacyOrthographyGate(
     companion object {
         /**
          * Sample floor. Below this many kana the gate has no opinion, and having no opinion
-         * means modern: correction is allowed.
+         * means modern: correction is allowed. Raised from 30: two marginal hits on 30 kana read
+         * as 6.7 per 100 and on 200 kana as 1.0, so a short page cannot tell the populations
+         * apart, and short pages are exactly where the ratio was swinging.
          */
-        const val MIN_KANA = 30
+        const val MIN_KANA = 60
 
         private val KANA = ('\u3041'..'\u309f').toSet() + ('\u30a0'..'\u30ff').toSet()
     }
+
+    /** Evidence behind the current verdict, for the diagnostics line. */
+    fun evidence(): String = "%d hits, %d kana, %.2f per 100".format(hits, kana, rate())
 }

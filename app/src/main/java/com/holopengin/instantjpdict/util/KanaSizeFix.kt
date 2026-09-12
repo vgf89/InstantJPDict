@@ -45,11 +45,18 @@ object KanaSizeFix {
     const val PREF_ENABLED = "kana_size_fix_enabled"
 
     /**
-     * Off by default. It rewrites recognised text, so it is opt-in — the same posture as the
-     * other text-changing features, and the measured net effect is small enough that a user
-     * should be able to compare with and without.
+     * Whether pre-reform orthography is protected. Off by default: the model is trained for
+     * modern Japanese, the overwhelming majority of text, and a gate that can silently withhold
+     * correction for a whole page is worse than one the reader has to ask for. Turning it on
+     * restores the era gate for 旧仮名 texts, which write sokuon as a large つ.
      */
-    const val DEF_ENABLED = false
+    const val PREF_LEGACY = "kana_size_legacy_support"
+
+    /**
+     * Active by default, tuned for modern Japanese. It rewrites recognised text, so the setting
+     * exists to compare with and without rather than to be opt-in.
+     */
+    const val DEF_ENABLED = true
 
     /** Certainty required to flip; the middle band is deliberately left untouched. */
     const val EPSILON = 0.01f
@@ -74,6 +81,16 @@ object KanaSizeFix {
             .edit().putBoolean(PREF_ENABLED, enabled).apply()
     }
 
+    /** Whether pre-reform texts are protected from the correction. Off by default. */
+    fun isLegacySupportEnabled(ctx: Context): Boolean =
+        ctx.getSharedPreferences(OcrEngine.PREFS_NAME, Context.MODE_PRIVATE)
+            .getBoolean(PREF_LEGACY, false)
+
+    fun setLegacySupportEnabled(ctx: Context, enabled: Boolean) {
+        ctx.getSharedPreferences(OcrEngine.PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().putBoolean(PREF_LEGACY, enabled).apply()
+    }
+
     /** Apply the correction to a whole page when the setting is on, else return it unchanged. */
     fun applyIfEnabled(ctx: Context, lines: List<LineResult>): List<LineResult> {
         if (!isEnabled(ctx)) {
@@ -88,7 +105,10 @@ object KanaSizeFix {
                 lastSummary = "kana fix: model unavailable"
                 lines
             } else {
-                val corrected = apply(lines) { wins, bases -> model.logits(wins, bases) }
+                val corrected = apply(
+                    lines,
+                    score = { wins, bases -> model.logits(wins, bases) },
+                    honourLegacy = isLegacySupportEnabled(ctx))
                 Log.d(TAG, lastSummary)
                 corrected
             }
@@ -108,6 +128,8 @@ object KanaSizeFix {
     internal fun apply(
         lines: List<LineResult>,
         score: (IntArray, IntArray) -> FloatArray?,
+        /** When true, pre-reform text is protected by the era gate. Off by default. */
+        honourLegacy: Boolean = false,
     ): List<LineResult> {
         data class Cand(val line: Int, val index: Int, val char: Char, val base: Int)
 
@@ -140,32 +162,47 @@ object KanaSizeFix {
             return lines
         }
 
-        // Era gate: every line contributes its kana count, and every position its disagreement.
+        // Era gate. The evidence is always gathered so the diagnostics can report it, but it is
+        // only *honoured* when the reader has asked for pre-reform protection: the model is tuned
+        // for modern Japanese, and a gate that can silently withhold a whole page is worse than
+        // one that has to be switched on.
         val gate = LegacyOrthographyGate()
         for (line in lines) gate.observeLine(line.text)
         for ((k, c) in cands.withIndex()) gate.observePosition(c.char, probBig(logits[k]))
-        if (!gate.allowsCorrection()) {
-            lastSummary = "kana fix: pre-reform text (%.1f per 100 kana) - withheld".format(gate.rate())
+        val preReform = !gate.allowsCorrection()
+        if (preReform && honourLegacy) {
+            lastSummary = "kana fix: pre-reform, withheld (gate %s)".format(gate.evidence())
             return lines
+        }
+        val gateNote = when {
+            !honourLegacy -> "%s, not protected".format(gate.evidence())
+            preReform -> "%s, PROTECTED".format(gate.evidence())
+            else -> "%s, modern".format(gate.evidence())
         }
 
         val flips = HashMap<Int, MutableList<Pair<Int, Pair<Char, Float>>>>()
         var small = 0
         var big = 0
+        var marginal = 0
         for ((k, c) in cands.withIndex()) {
             val p = probBig(logits[k])
             val isSmall = KanaSizeEncoder.isSmall(c.char)
-            // Parenthesised so `?:` covers both branches: a nullable target here would have
-            // propagated into the override map's type and failed to compile.
             val target = (if (isSmall) KanaSizeEncoder.bigFormOf(c.char) else SMALL_OF[c.char]) ?: continue
             val flipsIt = if (isSmall) p > 1f - EPSILON else p < EPSILON
-            if (!flipsIt) continue
+            if (!flipsIt) {
+                // Count how many positions sit within 10x of the threshold but did not fire: a
+                // large count next to zero flips means the decision boundary, not the model, is
+                // what the user is seeing move between presses.
+                if (if (isSmall) p > 1f - 10f * EPSILON else p < 10f * EPSILON) marginal++
+                continue
+            }
             if (isSmall) small++ else big++
             flips.getOrPut(c.line) { mutableListOf() }.add(c.index to (target to p))
         }
 
         if (flips.isEmpty()) {
-            lastSummary = "kana fix: %d positions considered, none certain enough".format(cands.size)
+            lastSummary = "kana fix: %d pos, none certain (%d near-threshold) | gate %s"
+                .format(cands.size, marginal, gateNote)
             return lines
         }
 
@@ -183,8 +220,8 @@ object KanaSizeFix {
             }
             out[li] = line.copy(text = String(chars), overrides = overrides)
         }
-        lastSummary = "kana fix: %d positions, %d small->big, %d big->small on %d lines"
-            .format(cands.size, small, big, flips.size)
+        lastSummary = "kana fix: %d pos, %d small->big, %d big->small, %d near on %d lines | gate %s"
+            .format(cands.size, small, big, marginal, flips.size, gateNote)
         return out
     }
 

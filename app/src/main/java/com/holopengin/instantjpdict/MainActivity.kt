@@ -186,6 +186,20 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
+        // Pre-reform orthography is not protected by default: the model is tuned for modern
+        // Japanese, and the era gate can withhold correction for a whole page at once, which is
+        // a far worse failure than a reader having to ask for 旧仮名 handling.
+        layout.addView(CheckBox(this).apply {
+            text = "Protect pre-modern orthography (旧仮名 keeps its large つ)"
+            isChecked = KanaSizeFix.isLegacySupportEnabled(this@MainActivity)
+            textSize = 14f
+            setPadding(0, 8, 0, 8)
+            setOnCheckedChangeListener { _, checked ->
+                KanaSizeFix.setLegacySupportEnabled(this@MainActivity, checked)
+                Log.d("MainActivity", "kana_size_legacy_support=$checked")
+            }
+        })
+
         // One tap, on the device, runs the model author's ten published vectors through this
         // phone's own encoder + JNI path and copies the result. It proves the asset bytes, the
         // marshalling and the ARM float behaviour without adb — and it is the same gate that was
