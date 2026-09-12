@@ -47,6 +47,21 @@ class OovSuggestionsTest {
     }
 
     @Test
+    fun the_variant_group_walks_the_form_space_from_the_current_selection() {
+        // Suggestions are assembled from whatever character is *current*, so choosing a
+        // generated entry rebuilds the candidates around it: 摑 -> 掴 -> 摑 is reachable by
+        // tapping through the popup, which is what makes the kanji form space explorable
+        // (#44). Pinned so a refactor cannot quietly make the list depend on the character
+        // the recogniser originally emitted instead of the current selection.
+        val fromOld = OovSuggestions.assemble('摑', listOf('摑'), null) { listOf('掴') }
+        assertEquals(OovSuggestions.Source.VARIANT, fromOld.last().source)
+        assertEquals('掴', fromOld.last().char)
+        val fromModern = OovSuggestions.assemble('掴', listOf('掴'), null) { listOf('摑') }
+        assertEquals(OovSuggestions.Source.VARIANT, fromModern.last().source)
+        assertEquals('摑', fromModern.last().char)
+    }
+
+    @Test
     fun a_single_component_character_gets_no_component_suggestions() {
         // The IDF fraction is relative to the emitted character, so a one-component
         // character makes every one of its carriers a full match (fraction 1.0): the tier
