@@ -47,12 +47,14 @@ class GapCandidatesTest {
     }
 
     @Test
-    fun the_pool_is_kanji_only_and_deduplicated() {
+    fun the_pool_keeps_kana_and_punctuation_and_deduplicates() {
         val alts = listOf(
-            listOf('\u25CC' to 0.9f, 'の' to 0.5f, '思' to 0.3f),
+            listOf('\u25CC' to 0.9f, '、' to 0.5f, '思' to 0.3f),
             listOf('思' to 0.8f, '阿' to 0.2f),
         )
-        assertEquals(listOf('思', '阿'), GapCandidates.generate("私\u25CCう", alts, 1, null))
+        // A kanji-only pool would come back empty here, which is the reported bug: the
+        // evidence for the gap in vertical text is very often punctuation.
+        assertEquals(listOf('、', '思', '阿'), GapCandidates.generate("私\u25CCう", alts, 1, null))
     }
 
     @Test
@@ -72,8 +74,8 @@ class GapCandidatesTest {
     }
 
     @Test
-    fun a_line_with_no_kanji_offers_nothing() {
-        val alts = listOf(listOf('の' to 0.9f, '。' to 0.5f))
-        assertTrue(GapCandidates.generate("の\u25CC。", alts, 1, null).isEmpty())
+    fun a_line_with_no_evidence_offers_nothing() {
+        assertTrue(GapCandidates.generate("の\u25CC。", emptyList(), 1, null).isEmpty())
+        assertTrue(GapCandidates.generate("の\u25CC。", listOf(listOf(' ' to 1f)), 1, null).isEmpty())
     }
 }

@@ -28,6 +28,15 @@ object GapCandidates {
         ch.code in CJK_UNIFIED_START..CJK_UNIFIED_END || ch.code in CJK_EXT_A_START..CJK_EXT_A_END
 
     /**
+     * Whether a character the recogniser proposed is worth offering. Kanji, kana and
+     * punctuation alike: the gap in vertical Japanese text is very often a 読点 or a bracket
+     * (a line's own evidence for it is punctuation), so a kanji-only pool comes back empty
+     * exactly where the evidence was there.
+     */
+    fun isOfferable(ch: Char): Boolean =
+        ch != OcrEngine.GAP_CHAR && !ch.isWhitespace() && !ch.isISOControl()
+
+    /**
      * Candidates for the blank at [index], best first. [alternatives] is the line's
      * per-character top-K (anything else is ignored), and [lm] reorders the pool; without
      * one the pool keeps its discovery order.
@@ -42,7 +51,7 @@ object GapCandidates {
         val pool = LinkedHashSet<Char>()
         for (alts in alternatives) {
             for ((ch, _) in alts) {
-                if (ch != OcrEngine.GAP_CHAR && isKanji(ch)) pool.add(ch)
+                if (isOfferable(ch)) pool.add(ch)
             }
         }
         if (pool.isEmpty()) return emptyList()

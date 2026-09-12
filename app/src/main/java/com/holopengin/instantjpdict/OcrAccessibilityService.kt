@@ -1045,11 +1045,6 @@ class OcrAccessibilityService : AccessibilityService() {
             updateLookupHighlights(lineIdx, charIdx, 1)
             rootLayout.findViewWithTag<LinearLayout>("neighbor_scroll_panel")
                 ?.let { updateNeighborHighlights(it) }
-            // DIAG-ONLY (#44 blank tap): read back whether the tap reached here with the
-            // expected index. If no such line appears in the in-app log, the touch never
-            // resolved to the placeholder — a hit-rect problem, not a panel one.
-            InferLog.add("tap blank line=$lineIdx char=$charIdx " +
-                "len=${controller.activeLineResults.getOrNull(lineIdx)?.text?.length}")
             // The panel *toggles*, so a list left over from an earlier lookup would make this
             // tap close it instead of showing the blank's own entry. Clear it first.
             rootLayout.findViewWithTag<FrameLayout>("alternatives_container")?.let { container ->
@@ -1059,7 +1054,16 @@ class OcrAccessibilityService : AccessibilityService() {
                     controller.isAlternativesVisible = false
                 }
             }
-            toggleAlternativesPanel(rootLayout, lineIdx, charIdx, rootLayout.width > rootLayout.height)
+            // A tap always opens the dictionary view, even with nothing to show: a blank has
+            // no entry, so the view opens empty with the blank's candidates beside it.
+            // controller.lookup() returns null for a placeholder — that null was why the
+            // view never appeared at all.
+            val box = controller.activeLineResults.getOrNull(lineIdx)?.charBoxes?.getOrNull(charIdx)
+            if (box != null) {
+                showResultsUi(rootLayout, emptyList(), box, skipCenter)
+                toggleAlternativesPanel(rootLayout, lineIdx, charIdx,
+                                        rootLayout.width > rootLayout.height)
+            }
             return
         }
 
