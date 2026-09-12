@@ -82,6 +82,98 @@ class KanaSizeNcnn private constructor(private val handle: Long) {
         private const val WEIGHTS_FLOATS =
             64 * 48 * 5 + 64 + 64 * 64 * 3 + 64 + 128 * 80 + 128 + 128 + 1
 
+        /**
+         * Run the self-check while tracing every step to `filesDir/kana_probe.log`, flushing
+         * before each one, and return the trace.
+         *
+         * This exists because the app crashed when this was first wired up and the device has no
+         * accessible logcat. A line is written *before* the step it describes, so if the process
+         * dies inside a native call the trace still shows which call it was - readable on the
+         * next launch, since the file accumulates. Otherwise the probe is a plain sequence of
+         * guarded steps and cannot itself crash the app for a Java-level reason.
+         */
+        @Synchronized
+        fun probeWithTrace(context: Context): String {
+            val sb = StringBuilder()
+            val file = java.io.File(context.filesDir, "kana_probe.log")
+            fun trace(line: String) {
+                sb.append(line).append('\n')
+                try {
+                    file.appendText(line + "\n")
+                } catch (_: Throwable) {
+                    // tracing must never be the thing that fails
+                }
+            }
+
+            trace("--- kana probe, attempt starting ---")
+            // Local, so it closes over `trace`: a local named function cannot be passed where a
+            // Function1 is expected.
+            fun finish(verdict: String): String {
+                trace(verdict)
+                trace("--- attempt done ---")
+                return verdict
+            }
+            var handle = 0L
+            try {
+                trace("step 1: System.loadLibrary(ncnn_jni)")
+                ensureLoaded()
+                trace("step 1 ok")
+
+                trace("step 2: read tables from assets")
+                val tables = concatFloats(
+                    context,
+                    listOf("kana_size/byte_emb.f32", "kana_size/base_emb.f32", "kana_size/pos_block.f32"),
+                    TABLES_FLOATS)
+                if (tables == null) return finish("step 2 FAILED: tables unavailable (assets missing or short)")
+                trace("step 2 ok ($TABLES_FLOATS floats)")
+
+                trace("step 3: read weights.bin")
+                val weights = assetBuffer(context, "kana_size/weights.bin", WEIGHTS_FLOATS * 4)
+                if (weights == null) return finish("step 3 FAILED: weights unavailable")
+                trace("step 3 ok ($WEIGHTS_FLOATS floats)")
+
+                trace("step 4: native create()")
+                handle = create(tables, TABLES_FLOATS, weights, WEIGHTS_FLOATS)
+                if (handle == 0L) return finish("step 4 FAILED: native create refused the tables")
+                trace("step 4 ok (handle $handle)")
+
+                trace("step 5: native batch() over ${VECTORS.size} published vectors")
+                val n = VECTORS.size
+                val wins = IntArray(n * WINDOW_BYTES)
+                val bases = IntArray(n)
+                for ((i, v) in VECTORS.withIndex()) {
+                    KanaSizeEncoder.window(v.text, v.index).copyInto(wins, i * WINDOW_BYTES)
+                    bases[i] = v.base
+                }
+                val out = batch(handle, wins, bases, n) ?: return finish("step 5 FAILED: batch returned null")
+                trace("step 5 ok (${out.size} logits)")
+
+                var worst = 0f
+                var worstIdx = -1
+                for (i in 0 until n) {
+                    val d = kotlin.math.abs(out[i] - VECTORS[i].expected)
+                    if (d > worst) { worst = d; worstIdx = i }
+                }
+                trace("step 6: destroy()")
+                destroy(handle)
+                handle = 0L
+                trace("step 6 ok")
+                return finish(if (worst <= 1e-4f) {
+                    "kana model OK: worst %.2e over %d vectors".format(worst)
+                } else {
+                    "kana model MISMATCH: case %d off by %.3e (got %.6f, want %.6f)".format(
+                        worstIdx, worst, out[worstIdx], VECTORS[worstIdx].expected)
+                })
+            } catch (t: Throwable) {
+                trace("FAILED: ${t.javaClass.name}: ${t.message}")
+                return finish("kana model FAILED: ${t.javaClass.simpleName}: ${t.message}")
+            } finally {
+                if (handle != 0L) {
+                    try { destroy(handle) } catch (_: Throwable) {}
+                }
+            }
+        }
+
         @Volatile private var instance: KanaSizeNcnn? = null
         @Volatile private var attempted = false
 

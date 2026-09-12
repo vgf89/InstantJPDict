@@ -87,10 +87,11 @@ object KanaSizeFix {
                 Log.d(TAG, lastSummary)
                 corrected
             }
-        } catch (e: Exception) {
-            // A correction layer must never be able to break recognition.
-            Log.e(TAG, "kana size correction failed", e)
-            lastSummary = "kana fix: failed (${e.message})"
+        } catch (t: Throwable) {
+            // Throwable, not Exception: an UnsatisfiedLinkError from the native library is an
+            // Error, and catching only Exception would let it take down recognition.
+            Log.e(TAG, "kana size correction failed", t)
+            lastSummary = "kana fix: failed (${t.javaClass.simpleName}: ${t.message})"
             lines
         }
     }

@@ -191,16 +191,24 @@ class MainActivity : AppCompatActivity() {
         // marshalling and the ARM float behaviour without adb — and it is the same gate that was
         // passed on the host, so a pass here means the shipped path is the verified one.
         addButton(layout, "Check kana size model") {
-            val model = KanaSizeNcnn.load(this)
-            val text = if (model == null) {
-                "kana model: NOT LOADED (assets or JNI unavailable)"
-            } else {
-                model.selfCheck()
+            // Guarded end to end. Every step is traced to a file *before* it runs, so if the
+            // process dies inside a native call the trace still shows which one - readable on
+            // the next launch, since the file accumulates across attempts.
+            val verdict = try {
+                KanaSizeNcnn.probeWithTrace(this)
+            } catch (t: Throwable) {
+                "kana model FAILED: ${t.javaClass.simpleName}: ${t.message}"
+            }
+            val logFile = java.io.File(filesDir, "kana_probe.log")
+            val full = try {
+                if (logFile.exists()) logFile.readText() else verdict
+            } catch (t: Throwable) {
+                verdict
             }
             val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-            cm.setPrimaryClip(ClipData.newPlainText("kana-size-check", text))
-            Toast.makeText(this, text, Toast.LENGTH_LONG).show()
-            Log.d("MainActivity", "kana size self-check: $text")
+            cm.setPrimaryClip(ClipData.newPlainText("kana-size-check", full))
+            Toast.makeText(this, verdict, Toast.LENGTH_LONG).show()
+            Log.d("MainActivity", "kana size probe: $verdict")
         }
 
         addButton(layout, "Refresh Status") {
