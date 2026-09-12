@@ -859,6 +859,11 @@ class OcrAccessibilityService : AccessibilityService() {
                     // Surface the outcome: without this the correction is invisible whether or not
                     // it fired, which makes "on vs off" impossible to judge from the outside.
                     InferLog.add(KanaSizeFix.lastSummary)
+                    if (KanaSizeFix.lastDeclined.isNotEmpty()) {
+                        // Which positions the model declined, and how close they were. No
+                        // surrounding text: this log gets copied out and shared.
+                        InferLog.add("kana declined: " + KanaSizeFix.lastDeclined)
+                    }
                     for ((i, entry) in orderedLines.withIndex()) {
                         if (screenshotOverlay == null) break
                         addLineToResults(rootLayout, clicksLayer, entry.first, correctedLines[i])

@@ -462,6 +462,10 @@ class MainActivity : AppCompatActivity() {
         addTunable("X_OVERLAP_THRESHOLD", OcrEngine.PREF_X_OVERLAP, OcrEngine.DEF_X_OVERLAP, 0.0f, 1.0f, 0.01f, false)
         addTunable("REC_SQUISH_FACTOR", OcrEngine.PREF_REC_SQUISH, OcrEngine.DEF_REC_SQUISH, 0.2f, 1.0f, 0.1f, false)
         addTunable("OVERLAY_SCREENSHOT_ALPHA", OverlayBackdrop.PREF_SCREENSHOT_ALPHA, OverlayBackdrop.DEF_SCREENSHOT_ALPHA, 0.3f, 1.0f, 0.05f, false)
+        // Certainty required before the kana size model may rewrite a character. The measured
+        // tradeoff over 7,620 confusable bench positions: 0.01 -> 12 fixed / 4 broken,
+        // 0.03 -> 22/12, 0.10 -> 29/24.
+        addTunable("KANA_SIZE_EPSILON", KanaSizeFix.PREF_EPSILON, KanaSizeFix.DEF_EPSILON, 0.005f, 0.50f, 0.005f, false)
 
         addButton(tuningContainer, "Copy inference log") {
             val text = InferLog.dump()

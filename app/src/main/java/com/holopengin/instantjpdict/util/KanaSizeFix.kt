@@ -61,6 +61,14 @@ object KanaSizeFix {
     /** Certainty required to flip; the middle band is deliberately left untouched. */
     const val EPSILON = 0.01f
 
+    /** Tunable copy of [EPSILON], so the threshold can be found on-device without a rebuild. */
+    const val PREF_EPSILON = "kana_size_epsilon"
+    const val DEF_EPSILON = EPSILON
+
+    fun epsilon(ctx: Context): Float =
+        ctx.getSharedPreferences(OcrEngine.PREFS_NAME, Context.MODE_PRIVATE)
+            .getFloat(PREF_EPSILON, DEF_EPSILON)
+
     private const val TAG = "KanaSizeFix"
 
     /** Big form -> small form, inverted from the encoder's map. */
@@ -70,6 +78,15 @@ object KanaSizeFix {
     /** Human-readable outcome of the last run, for the in-app diagnostics. */
     @Volatile
     var lastSummary: String = "kana fix: idle"
+        private set
+
+    /**
+     * The positions the model declined to change, lowest confidence first, as
+     * `L<line>@<index> <char> p=<p>`. Deliberately no surrounding text: this is copied out of the
+     * app and shared, so it must not carry the book's own words.
+     */
+    @Volatile
+    var lastDeclined: String = ""
         private set
 
     fun isEnabled(ctx: Context): Boolean =
@@ -108,7 +125,8 @@ object KanaSizeFix {
                 val corrected = apply(
                     lines,
                     score = { wins, bases -> model.logits(wins, bases) },
-                    honourLegacy = isLegacySupportEnabled(ctx))
+                    honourLegacy = isLegacySupportEnabled(ctx),
+                    epsilon = epsilon(ctx))
                 Log.d(TAG, lastSummary)
                 corrected
             }
@@ -130,6 +148,8 @@ object KanaSizeFix {
         score: (IntArray, IntArray) -> FloatArray?,
         /** When true, pre-reform text is protected by the era gate. Off by default. */
         honourLegacy: Boolean = false,
+        /** Certainty required to flip; [epsilon] from the settings, or the measured default. */
+        epsilon: Float = EPSILON,
     ): List<LineResult> {
         data class Cand(val line: Int, val index: Int, val char: Char, val base: Int)
 
@@ -184,20 +204,25 @@ object KanaSizeFix {
         var small = 0
         var big = 0
         var marginal = 0
+        val declined = ArrayList<Pair<Triple<Int, Int, Char>, Float>>()
         for ((k, c) in cands.withIndex()) {
             val p = probBig(logits[k])
             val isSmall = KanaSizeEncoder.isSmall(c.char)
             val target = (if (isSmall) KanaSizeEncoder.bigFormOf(c.char) else SMALL_OF[c.char]) ?: continue
-            val flipsIt = if (isSmall) p > 1f - EPSILON else p < EPSILON
+            val flipsIt = if (isSmall) p > 1f - epsilon else p < epsilon
             if (!flipsIt) {
-                // Count how many positions sit within 10x of the threshold but did not fire: a
-                // large count next to zero flips means the decision boundary, not the model, is
-                // what the user is seeing move between presses.
-                if (if (isSmall) p > 1f - 10f * EPSILON else p < 10f * EPSILON) marginal++
+                // Near-threshold counts how many sat within 10x of the bar; declined records the
+                // closest few by name, which is what tells a threshold problem apart from the
+                // model simply agreeing with the recogniser.
+                if (if (isSmall) p > 1f - 10f * epsilon else p < 10f * epsilon) marginal++
+                declined.add(Triple(c.line, c.index, c.char) to (if (isSmall) 1f - p else p))
                 continue
             }
             if (isSmall) small++ else big++
             flips.getOrPut(c.line) { mutableListOf() }.add(c.index to (target to p))
+        }
+        lastDeclined = declined.sortedBy { it.second }.take(5).joinToString(" / ") {
+            "L%d@%d %s p=%.3f".format(it.first.first, it.first.second, it.first.third, it.second)
         }
 
         if (flips.isEmpty()) {

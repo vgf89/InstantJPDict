@@ -3,6 +3,7 @@ package com.holopengin.instantjpdict
 import com.holopengin.instantjpdict.util.KanaSizeEncoder
 import com.holopengin.instantjpdict.util.KanaSizeFix
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -128,6 +129,29 @@ class KanaSizeFixTest {
         val out = KanaSizeFix.apply(listOf(line(text)), stub.score())
         assertEquals("no pair members in this line", 0, stub.called)
         assertEquals(text, out[0].text)
+    }
+
+    /**
+     * The threshold is tunable, and this pins that it actually acts: p(big) = 0.05 is far above
+     * the 0.01 default and comfortably inside a 0.10 setting.
+     */
+    @Test
+    fun `a looser epsilon flips a marginal position`() {
+        val logit = kotlin.math.ln(0.05f / 0.95f)
+        val tight = KanaSizeFix.apply(listOf(line(bigText)), Stub(logitsFor(bigText) { logit }).score())
+        assertEquals("the 0.01 default declines this", bigText, tight[0].text)
+        val loose = KanaSizeFix.apply(
+            listOf(line(bigText)), Stub(logitsFor(bigText) { logit }).score(), epsilon = 0.10f)
+        assertEquals("a 0.10 setting flips it", "かっき", loose[0].text)
+    }
+
+    @Test
+    fun `declined positions are reported with their confidence`() {
+        KanaSizeFix.apply(listOf(line(bigText)), Stub(logitsFor(bigText) { 0f }).score())
+        val d = KanaSizeFix.lastDeclined
+        assertTrue("should name line and index: $d", d.contains("L0@1"))
+        assertTrue("should give a confidence: $d", d.contains("p=0.500"))
+        assertFalse("must not carry book text: $d", d.contains("か"))
     }
 
     @Test
