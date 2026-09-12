@@ -65,7 +65,7 @@ class KanaSizeNcnn private constructor(private val handle: Long) {
             if (d > worst) { worst = d; worstIdx = i }
         }
         return if (worst <= 1e-4f) {
-            "kana model OK: worst %.2e over %d vectors".format(worst)
+            "kana model OK: worst %.2e over %d vectors".format(worst, n)
         } else {
             "kana model MISMATCH: case %d off by %.3e (got %.6f, want %.6f)".format(
                 worstIdx, worst, out[worstIdx], VECTORS[worstIdx].expected)
@@ -159,7 +159,7 @@ class KanaSizeNcnn private constructor(private val handle: Long) {
                 handle = 0L
                 trace("step 6 ok")
                 return finish(if (worst <= 1e-4f) {
-                    "kana model OK: worst %.2e over %d vectors".format(worst)
+                    "kana model OK: worst %.2e over %d vectors".format(worst, n)
                 } else {
                     "kana model MISMATCH: case %d off by %.3e (got %.6f, want %.6f)".format(
                         worstIdx, worst, out[worstIdx], VECTORS[worstIdx].expected)
