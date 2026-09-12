@@ -42,6 +42,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.isVisible
 import com.google.gson.Gson
 import com.holopengin.instantjpdict.util.BlankGaps
+import com.holopengin.instantjpdict.util.KanaSizeFix
 import com.holopengin.instantjpdict.util.CharLm
 import com.holopengin.instantjpdict.util.InferLog
 import com.holopengin.instantjpdict.util.Deinflector
@@ -848,9 +849,16 @@ class OcrAccessibilityService : AccessibilityService() {
                             finishedLines.addAll(results)
                         }
                     }
-                    for ((index, lineResult) in finishedLines.sortedBy { it.first }) {
+                    // #44 Feature 3: kana size correction. Runs over the whole page before any
+                    // view is built, because the era gate needs every line as evidence — one
+                    // line is never enough to tell pre-reform text. Off by default; a page
+                    // with too little evidence to judge reads as modern and is corrected.
+                    val orderedLines = finishedLines.sortedBy { it.first }
+                    val correctedLines = KanaSizeFix.applyIfEnabled(
+                        this@OcrAccessibilityService, orderedLines.map { it.second })
+                    for ((i, entry) in orderedLines.withIndex()) {
                         if (screenshotOverlay == null) break
-                        addLineToResults(rootLayout, clicksLayer, index, lineResult)
+                        addLineToResults(rootLayout, clicksLayer, entry.first, correctedLines[i])
                     }
                     if (screenshotOverlay != null && controller.currentTappedLineIdx == -1) {
                         updateCursor()

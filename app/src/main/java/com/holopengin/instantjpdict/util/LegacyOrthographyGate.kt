@@ -25,14 +25,23 @@ package com.holopengin.instantjpdict.util
  *
  * Accumulate over whatever the overlay currently has loaded — a page's worth of lines, not a
  * single line, because a legacy line may simply contain no 促音 — and reset when new text
- * arrives. The gate is fail-safe in the direction that matters: suppressing correction only
- * withholds a fix, whereas applying it to legacy text corrupts a correct reading.
+ * arrives.
+ *
+ * **Thin evidence defaults to modern, i.e. correction allowed.** The gate suppresses only on
+ * positive evidence: a decisive kana, or a repeated disagreement pattern above [rateThreshold]
+ * per 100 kana over at least [minKana] kana. A short line, too few kana to judge, a single
+ * disagreement, or no observation at all all read as modern. That is the deliberate posture -
+ * almost all text the overlay sees is modern, and pre-reform text announces itself as a pattern
+ * rather than a single ambiguous hit, so a gate that withheld by default would simply hide the
+ * correction from the text it was built for.
  */
 class LegacyOrthographyGate(
     private val confidentSmall: Float = 0.03f,
-    private val rateThreshold: Float = 0.02f,
+    /** Hits per 100 kana; the measured separation is 25.7-25.9 (legacy) against 0.06-0.29
+     *  (modern), so 2.0 sits ~7x above the worst modern case and ~13x below legacy. */
+    private val rateThreshold: Float = 2.0f,
     private val minHits: Int = 2,
-    private val minKana: Int = 30,
+    private val minKana: Int = MIN_KANA,
 ) {
     /** Characters that cannot occur in modern orthography. */
     private val decisive = setOf('ゐ', 'ゑ', 'ヰ', 'ヱ')
@@ -70,10 +79,11 @@ class LegacyOrthographyGate(
     /**
      * Whether the loaded text looks pre-reform.
      *
-     * Needs a *repeated* disagreement, not one: a single hit on a short page already reads as
-     * 2.9 per 100 kana and would suppress correction on modern text, whereas the legacy signal
-     * is a pattern (legacy lines average 25.8 per 100 with many hits). With too little evidence
-     * to judge at all this also says no - the decisive markers still fire on their own.
+     * Suppresses only on positive evidence: a decisive kana, or a *repeated* disagreement at
+     * more than [rateThreshold] per 100 kana over at least [MIN_KANA] kana. A single hit on a
+     * short page is not evidence — it would suppress correction on modern text — and with too
+     * little text to judge at all this reads as modern, i.e. correction is allowed. The decisive
+     * markers ([decisive]) fire on their own regardless.
      */
     fun isLegacy(): Boolean =
         decisiveSeen || (hits >= minHits && kana >= minKana && rate() > rateThreshold)
@@ -81,7 +91,13 @@ class LegacyOrthographyGate(
     /** Whether the kana size correction may be applied to the currently loaded text. */
     fun allowsCorrection(): Boolean = !isLegacy()
 
-    private companion object {
-        val KANA = ('\u3041'..'\u309f').toSet() + ('\u30a0'..'\u30ff').toSet()
+    companion object {
+        /**
+         * Sample floor. Below this many kana the gate has no opinion, and having no opinion
+         * means modern: correction is allowed.
+         */
+        const val MIN_KANA = 30
+
+        private val KANA = ('\u3041'..'\u309f').toSet() + ('\u30a0'..'\u30ff').toSet()
     }
 }

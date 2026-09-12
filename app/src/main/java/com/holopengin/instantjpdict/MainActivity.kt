@@ -28,6 +28,7 @@ import androidx.lifecycle.lifecycleScope
 import com.holopengin.instantjpdict.data.AppDatabase
 import com.holopengin.instantjpdict.data.DictionaryImporter
 import com.holopengin.instantjpdict.util.BlankGaps
+import com.holopengin.instantjpdict.util.KanaSizeFix
 import com.holopengin.instantjpdict.util.InferLog
 import com.holopengin.instantjpdict.util.OovSuggestions
 import com.holopengin.instantjpdict.util.PitchAccent
@@ -169,6 +170,38 @@ class MainActivity : AppCompatActivity() {
                 Log.d("MainActivity", "blank_gaps_enabled=$checked")
             }
         })
+
+        // #44 Feature 3: kana size correction. The small/large form of っ/つ, ゃ/や, ゅ/ゆ, ょ/よ
+        // is decided by a byte-CNN that reads five characters of context on each side, applied
+        // only where the orthography allows it — pre-reform text keeps its large つ. Off by
+        // default so it can be compared with and without; see KanaSizeFix.
+        layout.addView(CheckBox(this).apply {
+            text = "Correct small/large kana with the size model (っ/つ, ゃ/や …)"
+            isChecked = KanaSizeFix.isEnabled(this@MainActivity)
+            textSize = 14f
+            setPadding(0, 20, 0, 8)
+            setOnCheckedChangeListener { _, checked ->
+                KanaSizeFix.setEnabled(this@MainActivity, checked)
+                Log.d("MainActivity", "kana_size_fix_enabled=$checked")
+            }
+        })
+
+        // One tap, on the device, runs the model author's ten published vectors through this
+        // phone's own encoder + JNI path and copies the result. It proves the asset bytes, the
+        // marshalling and the ARM float behaviour without adb — and it is the same gate that was
+        // passed on the host, so a pass here means the shipped path is the verified one.
+        addButton(layout, "Check kana size model") {
+            val model = KanaSizeNcnn.load(this)
+            val text = if (model == null) {
+                "kana model: NOT LOADED (assets or JNI unavailable)"
+            } else {
+                model.selfCheck()
+            }
+            val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            cm.setPrimaryClip(ClipData.newPlainText("kana-size-check", text))
+            Toast.makeText(this, text, Toast.LENGTH_LONG).show()
+            Log.d("MainActivity", "kana size self-check: $text")
+        }
 
         addButton(layout, "Refresh Status") {
             refreshStatus()
