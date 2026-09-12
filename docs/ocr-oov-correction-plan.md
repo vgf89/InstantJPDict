@@ -282,11 +282,47 @@ Horizontal deletion gaps are sometimes indistinguishable from ordinary spacing (
 (recall 1.00, precision 1.00), horizontal ≥1.8 **and** require additional evidence
 (component agreement) before showing an affordance.
 
+### M3 — LM corpus and pruning: **order/count/Wikipedia buy nothing above a plateau**
+
+Bench: the rendered OOV cases (51 substitutions, 38 deletions), candidates ordered by IDF
+mass shared with the emitted character — the shipped rule — and ranked in the OCR context.
+
+| corpus | order | prune | entries | ≈ size | sub rank-1 | sub top-3 | del rank-1 |
+|---|---|---|---|---|---|---|---|
+| aozora | 3 | ≥1 | 1,314,503 | **6.6 MB** | 12/51 | 12/51 | 7/38 |
+| aozora | 3 | ≥2 | 632,551 | 3.2 MB | 9/51 | 11/51 | 6/38 |
+| aozora | 3 | ≥5 | 354,188 | 1.8 MB | 8/51 | 9/51 | 5/38 |
+| aozora | 4 | ≥5 | 1,437,581 | **7.2 MB** | 12/51 | 12/51 | 7/38 |
+| aozora | 4 | ≥1 | 3,568,707 | 17.8 MB | 12/51 | 12/51 | 7/38 |
+| aozora+wiki | 4 | ≥5 | 3,196,258 | 16.0 MB | 12/51 | 12/51 | 7/38 |
+| aozora+wiki | 4 | ≥1 | 8,023,765 | 40.1 MB | 12/51 | 12/51 | 7/38 |
+
+**Accuracy is flat from ~7 MB to 40 MB** and across corpus choice (6.6 MB order-3 already
+reaches the plateau). Consequences for the asset: ship **order 4 pruned at count ≥5
+(≈7 MB)**, or order 3 at count ≥1 if reviewability matters more than 1 MB — and spend the
+remaining budget on *corpus size*, not on n-gram order or count, because neither buys
+measurable ranking quality on this bench.
+
+**ja Wikipedia does not help this task.** Ranks are identical with and without it, and its
+coverage of the top OOV kanji is far worse than Aozora's in comparable samples: `呟` 7 vs
+74, and **zero** occurrences of `溌` `伜` `俥` `囘` `欝` `燵` `扨` `壜` `尠`. The intended
+benefit — "rare-but-modern" characters — is not where these error classes live: they are
+literary and variant forms, which novels use and encyclopedia prose does not.
+*Caveat:* the sample is the dump's first 400 MB (oldest pages, page-id order), so re-measure
+on a recent slice before writing Wikipedia off entirely. Directionally the corpus should be
+chosen by **where the error classes live**, not by "more data is better".
+
+**Cap caveat (matters for reading any candidate-pool number here).** Ordering candidates by
+shared-component *count* with a cap of 80 put the truth in the pool for only 18/51
+substitutions — so a rank of "10/51" was measuring the cap, not the LM: within the pool the
+LM ranks the truth 1st in 10/18 (56%), consistent with M1. Always rank the candidate pool by
+IDF mass (the shipped rule) and report pool coverage next to any rank.
+
 ### Still to run
 
-**M3** (ja Wikipedia corpus + pruning curve) — corpus extraction in progress.
-**M4** (blank auto-fill operating point), **M6** (reading-side alignment for confident
-blanks).
+**M4** (blank auto-fill operating point) and **M6** (reading-side alignment for confident
+blanks) — both only matter if Feature 2 auto-fill is reopened, which is deferred.
+
 
 
 ---
