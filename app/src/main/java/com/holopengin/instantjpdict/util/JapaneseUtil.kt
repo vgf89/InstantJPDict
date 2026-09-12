@@ -156,13 +156,25 @@ object JapaneseUtil {
      * proposal layer, not a fold.
      *
      * Subset rule — measured, not guessed: a pair ships only if its variant side
-     * actually occurs in real text. 112 of the table's 593 pairs qualify, measured
+     * actually occurs in real text. 112 of the table's 593 pairs qualified, measured
      * over the whole Aozora Bunko corpus as streamed from the HF clean mirror
      * (16,950 works, 230,196,565 characters): 囘 1,493; 欝 1,431; 壜 1,322; 劒 387;
      * 慙 357; 厶 305; 噐 74; 齅 30; the rest tail off to a single occurrence.
      *
+     * **Frequency guard — a fold REPLACES the lookup key, so the direction has to be
+     * earned.** That rule alone is not enough, because Unihan's `kSemanticVariant` is
+     * loose: it also lists pairs whose "canonical" side is the rarer form, and folding
+     * those would rewrite a query that used to resolve into one that does not — not
+     * merely useless, actively harmful. So a pair also ships only when its canonical
+     * side occurs **at least as often as its variant** in that same corpus: 92 of the
+     * 112 qualify, and the 20 that do not are dropped. Worst offenders, with counts —
+     * `壜`→`罈` (1,322 vs **0**), `躱`→`躲` (194 vs 0), `輙`→`輒` (74 vs 44),
+     * `韈`→`襪` (51 vs 25), `覊`→`羈` (196 vs 183), `鬭`→`鬥` (23 vs 0). Dropping them
+     * is not a re-direction of the fold: `壜` is the everyday form for "bottle" and is
+     * a dictionary headword, so it must resolve to itself.
+     *
      * Where Unihan offers several canonical candidates for one variant (15 of the
-     * 112) the fold takes the form that dominates that same corpus rather than an
+     * measured set) the fold takes the form that dominates that same corpus rather than an
      * arbitrary first: 葢→蓋 (蓋 6,811 vs 盖 92), 悋→吝 (760 vs 恡 0), 冫→氷 (10,435
      * vs 冰 88), 秇→藝 (7,036), 穪→稱 (2,032), 﨑→崎 (15,233 vs 埼 431). Every pair
      * here is also present in `variants/kanji_variants.txt` with the same direction —
@@ -176,29 +188,30 @@ object JapaneseUtil {
         '亻' to "人", '冩' to "寫", '冫' to "氷", '凴' to "憑",
         '凾' to "函", '刋' to "刊", '劒' to "劍", '勹' to "包",
         '匳' to "奩", '匵' to "櫝", '卭' to "卬", '厶' to "某",
-        '噐' to "器", '囘' to "回", '堭' to "隍", '壜' to "罈",
-        '娬' to "嫵", '崪' to "崒", '巤' to "鬣", '帋' to "紙",
+        '噐' to "器", '囘' to "回", '堭' to "隍",
+        '娬' to "嫵", '巤' to "鬣", '帋' to "紙",
         '帒' to "袋", '悋' to "吝", '慙' to "慚", '懜' to "懵",
-        '捬' to "撫", '攅' to "攢", '攵' to "攴", '朙' to "明",
-        '槖' to "橐", '樷' to "叢", '欝' to "鬱", '氵' to "水",
+        '捬' to "撫", '朙' to "明",
+        '樷' to "叢", '欝' to "鬱", '氵' to "水",
         '涶' to "唾", '濵' to "濱", '犭' to "犬", '甎' to "磚",
-        '甤' to "蕤", '畄' to "留", '畆' to "畝", '瘂' to "啞",
-        '皃' to "貌", '皡' to "皞", '眎' to "視", '瞹' to "曖",
+        '甤' to "蕤", '畄' to "留", '畆' to "畝",
+        '皃' to "貌", '眎' to "視", '瞹' to "曖",
         '碯' to "瑙", '礟' to "礮", '秇' to "藝", '秌' to "秋",
         '穪' to "稱", '竆' to "窮", '竒' to "奇", '糓' to "穀",
         '纎' to "纖", '缻' to "缶", '羮' to "羹", '耼' to "聃",
         '膓' to "腸", '艪' to "櫓", '苢' to "苡", '葢' to "蓋",
         '蘯' to "蕩", '蚦' to "蚺", '蜹' to "蚋", '襍' to "雜",
-        '覉' to "羇", '覊' to "羈", '覔' to "覓", '覰' to "覷",
+        '覔' to "覓",
         '觧' to "解", '誐' to "哦", '賍' to "贓", '賷' to "齎",
-        '趦' to "趑", '躱' to "躲", '軆' to "体", '輙' to "輒",
+        '軆' to "体",
         '辶' to "辵", '迯' to "逃", '遉' to "偵", '鍫' to "鍬",
         '鏁' to "鎖", '閙' to "鬧", '隂' to "陰", '隖' to "塢",
-        '霡' to "霢", '韈' to "襪", '頣' to "頤", '顖' to "囟",
-        '飃' to "飄", '飇' to "飆", '駞' to "駝", '髗' to "顱",
-        '髠' to "髡", '髩' to "鬢", '鬂' to "鬢", '鬭' to "鬥",
+        '頣' to "頤",
+        '飃' to "飄", '駞' to "駝", '髗' to "顱",
+        '髩' to "鬢", '鬂' to "鬢",
         '鮧' to "鯷", '鵶' to "鴉", '鶽' to "隼", '鸎' to "鶯",
-        '麄' to "粗", '麕' to "麇", '齅' to "嗅", '﨑' to "崎",
+        '麄' to "粗", '齅' to "嗅", '﨑' to "崎",
+
     )
 
     /**

@@ -47,9 +47,9 @@ derived facts or public-domain (Aozora) examples may be committed or posted to t
 |---|---|---|
 | 1 | **Feature 1 = the alternatives list only.** Component-derived candidates (characters the head cannot emit) are appended to the per-character popup the app already has (`LineResult.alternatives` / `AlternativesUiState`). No text change, no threshold, no trigger, no over-correction risk. | ship |
 | 2 | **Substitution auto-apply = PARKED.** Revival test is a single host run of the **word gate**: build an inflected-surface/reading index from JMdict and require the candidate to form a known word with the surrounding kana while the emitted character does not. Expected ceiling stated up front: pool coverage (~35–45% of substitutions) caps it to a narrow auto-apply on ~15–30% of substitutions. If the gate fails, general correction is **#73** (visual verifier / learned corrector). | parked |
-| 3 | **Variants = table-driven.** Lookup folding (shipped) plus offering the obsolete form in the popup; never auto-rewrite displayed text to a variant. | ship |
+| 3 | **Variants = table-driven.** Lookup folding plus offering the obsolete form in the popup; never auto-rewrite displayed text to a variant. A pair folds only if its canonical side occurs **at least as often** as its variant in the corpus — 92 of 112 measured pairs pass, 20 dropped (`壜`→`罈` maps an everyday form onto one the corpus never uses, and a fold *replaces* the key). | ship |
 | 4 | **Feature 2 = clickable blank, vertical-first.** Contest-blank candidates where evidence exists, manual IME entry always available, **no auto-fill**. | ship |
-| 5 | **LM asset = conditional.** Ship Step 1 with IDF-mass ranking only; add the ~7 MB model only if it earns its place (measured delta: top-3 42–49% → 56%). | conditional |
+| 5 | **LM asset = conditional, and the condition differs by step.** Step 1 (substitution list) does **not** need it: shape alone reaches 19/45 top-3 at the loose tier and the shipped tier is a 14-candidate list. Step 3 (deletion list) **does**: the deletion pool is 767 candidates on median with a degenerate shape ordering, so the LM is the only ranker available. Ship the ~7 MB model with Step 3, not with Step 1. | conditional |
 | 6 | Blank auto-fill and substitution auto-apply stay recorded as **open**, with their measured gates (M4/M6 and §3b M1). Neither blocks Steps 1–3. | open |
 
 Sequencing, with the acceptance measure for each step:
@@ -340,6 +340,27 @@ shared-component *count* with a cap of 80 put the truth in the pool for only 18/
 substitutions — so a rank of "10/51" was measuring the cap, not the LM: within the pool the
 LM ranks the truth 1st in 10/18 (56%), consistent with M1. Always rank the candidate pool by
 IDF mass (the shipped rule) and report pool coverage next to any rank.
+
+**Deletion pools: the IDF ordering is degenerate, and that was my error.** A deletion pool
+is *defined* as "carries all of the required components", so every member shares all of
+them: every IDF-mass key is exactly `-1.0` and a cap then truncates an all-tied list. Any
+deletion rank taken from a capped, IDF-ordered pool measured the cap and the tie-break, not
+the LM. Re-measured with the pool uncapped and ranked by the LM alone, coverage beside the
+rank (`scripts/oov_pool_report.py`):
+
+| mode | pool | median size | truth in pool | rank-1 | top-3 |
+|---|---|---|---|---|---|
+| substitutions | IDF mass ≥ 0.9 | 5 | 9/59 | 9/9 | 9/9 |
+| substitutions | **IDF mass ≥ 0.7 (shipped tier)** | **14** | 12/59 | **10/12** | **12/12** |
+| substitutions | IDF mass ≥ 0.5 | 33 | 18/59 | 10/18 | 13/18 |
+| substitutions | any component | 2,455 | 45/59 | 13/45 | 19/45 |
+| deletions | majority-AND, uncapped | **767** | **28/38 (74%)** | 11/28 | 15/28 |
+
+The majority vote collapses to a **single component in 26 of 38** deletion cases, which is
+why those pools run to hundreds of candidates and why shape carries no signal there: for
+deletions the LM is the only available ranker, while for substitutions shape alone already
+reaches 19/45 top-3 and the LM's job is to order a 14-candidate list.
+
 
 ### Still to run
 

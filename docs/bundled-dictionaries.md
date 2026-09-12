@@ -244,7 +244,7 @@ known (nothing to gain) or neither is (the miss just moves) are dropped, as are
 supplementary-plane pairs — the API is `Char`-based, one UTF-16 code unit. That
 rule is verified in the build: `囘 -> 回` and `欝 -> 鬱` are the asserted pairs.
 
-### Which pairs reach the fold, and why 112 of 593
+### Which pairs reach the fold, and why 92 of 593
 
 `JapaneseUtil.foldLookupVariants` carries only pairs whose **variant side actually
 occurs in real Japanese text** — otherwise the entry is a guess with no evidence
@@ -256,7 +256,6 @@ set-then-count pattern):
 |---|---|---|
 | 囘 | 1,493 | 回 |
 | 欝 | 1,431 | 鬱 |
-| 壜 | 1,322 | 罈 |
 | 劒 | 387 | 劍 |
 | 慙 | 357 | 慚 |
 | 厶 | 305 | 某 |
@@ -271,6 +270,33 @@ form that dominates that same corpus rather than an arbitrary first — `葢 →
 `﨑 → 崎` (15,233 vs 埼 431). No canonical is itself a key, so the fold is
 idempotent, and every pair is asserted against this committed file by
 `JapaneseUtilVariantFoldTest`.
+
+### The frequency guard, and why only 92 ship
+
+A fold **replaces** the lookup key, so a pair whose canonical side is the *rarer*
+form does not merely fail to help — it rewrites a query that used to resolve into
+one that does not. Unihan's `kSemanticVariant` is loose enough to contain those, so
+the direction rule is not sufficient on its own. A pair therefore also ships only
+when its canonical side occurs **at least as often as its variant** in the same
+corpus: **92 of the 112 measured pairs** pass, and 20 are dropped.
+
+| dropped pair | variant occurrences | canonical occurrences |
+|---|---|---|
+| 壜 → 罈 | 1,322 | **0** |
+| 覊 → 羈 | 196 | 183 |
+| 躱 → 躲 | 194 | 0 |
+| 輙 → 輒 | 74 | 44 |
+| 韈 → 襪 | 51 | 25 |
+| 鬭 → 鬥 | 23 | 0 |
+| …16 more, all ≤ 30 | | |
+
+`壜` is the everyday form for "bottle" and a dictionary headword — it must resolve
+to itself, not to `罈`, which the corpus never uses. The same reasoning drops
+`覉 → 羇`, `攅 → 攢`, `飇 → 飆`, `槖 → 橐`, `髠 → 髡`, `攵 → 攴`, `覰 → 覷`,
+`麕 → 麇`, `瘂 → 啞`, `崪 → 崒`, `趦 → 趑`, `顖 → 囟`, `皡 → 皞` and `霡 → 霢`.
+They stay in the asset — the *data* is Unihan's and is still offered by
+`obsoleteFormsOf` — but they are not applied to lookups.
+
 
 ### What the fold can and cannot do
 

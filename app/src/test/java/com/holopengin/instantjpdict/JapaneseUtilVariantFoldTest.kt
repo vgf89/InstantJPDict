@@ -108,7 +108,9 @@ class JapaneseUtilVariantFoldTest {
         // frequent variant forms
         assertEquals("回", JapaneseUtil.foldLookupVariants("囘"))
         assertEquals("鬱", JapaneseUtil.foldLookupVariants("欝"))
-        assertEquals("罈", JapaneseUtil.foldLookupVariants("壜"))
+        // frequency guard: 壜 is the *commoner* side (1,322 corpus occurrences against
+        // 罈's 0), so folding it would rewrite a resolvable query into a dead one
+        assertEquals("壜", JapaneseUtil.foldLookupVariants("壜"))
         assertEquals("劍", JapaneseUtil.foldLookupVariants("劒"))
         assertEquals("慚", JapaneseUtil.foldLookupVariants("慙"))
         // and inside a word, which is how the fold is actually reached
@@ -167,7 +169,7 @@ class JapaneseUtilVariantFoldTest {
             if (parts.size != 2 || parts[0].length != 1 || parts[1].length != 1) continue
             asset.getOrPut(parts[0][0]) { mutableSetOf() }.add(parts[1][0])
         }
-        assertEquals(112, JapaneseUtil.MEASURED_VARIANT_FOLD.size)
+        assertEquals(92, JapaneseUtil.MEASURED_VARIANT_FOLD.size)
         assertEquals(523, asset.size)
         for ((variant, canonical) in JapaneseUtil.MEASURED_VARIANT_FOLD) {
             val target = canonical.single()
