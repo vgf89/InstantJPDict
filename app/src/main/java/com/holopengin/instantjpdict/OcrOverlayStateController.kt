@@ -525,9 +525,15 @@ class OcrOverlayStateController {
         }
     }
 
-    fun getAlternativesUiState(): AlternativesUiState? {
-        val line = activeLineResults.getOrNull(currentTappedLineIdx) ?: return null
-        val candidates = alternativeCharsFor(line, currentTappedCharIdxInLine) ?: return null
+    fun getAlternativesUiState(
+        lineIdx: Int = currentTappedLineIdx,
+        charIdx: Int = currentTappedCharIdxInLine,
+    ): AlternativesUiState? {
+        // Indices are parameters, not just the controller's own fields: the neighbour panel
+        // opens the alternatives for a character it was handed, and without a lookup first
+        // those fields are stale — which showed up as a completely blank list (#44).
+        val line = activeLineResults.getOrNull(lineIdx) ?: return null
+        val candidates = alternativeCharsFor(line, charIdx) ?: return null
 
         return AlternativesUiState(candidates, showManualInput = true)
     }

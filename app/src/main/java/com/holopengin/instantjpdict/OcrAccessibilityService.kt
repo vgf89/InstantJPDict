@@ -42,6 +42,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.isVisible
 import com.google.gson.Gson
 import com.holopengin.instantjpdict.util.BlankGaps
+import com.holopengin.instantjpdict.util.InferLog
 import com.holopengin.instantjpdict.util.Deinflector
 import com.holopengin.instantjpdict.util.DeinflectionChain
 import com.holopengin.instantjpdict.util.ComponentTable
@@ -1030,6 +1031,20 @@ class OcrAccessibilityService : AccessibilityService() {
         // into (decision 5: show nothing, stay clickable, because a manual entry mode exists).
         if (controller.isBlankAt(lineIdx, charIdx)) {
             controller.selectBlankPosition(lineIdx, charIdx)
+            // DIAG-ONLY (#44 blank tap): read back whether the tap reached here with the
+            // expected index. If no such line appears in the in-app log, the touch never
+            // resolved to the placeholder — a hit-rect problem, not a panel one.
+            InferLog.add("tap blank line=$lineIdx char=$charIdx " +
+                "len=${controller.activeLineResults.getOrNull(lineIdx)?.text?.length}")
+            // The panel *toggles*, so a list left over from an earlier lookup would make this
+            // tap close it instead of showing the blank's own entry. Clear it first.
+            rootLayout.findViewWithTag<FrameLayout>("alternatives_container")?.let { container ->
+                if (container.childCount > 0) {
+                    recycleCropBitmaps(container)
+                    container.removeAllViews()
+                    controller.isAlternativesVisible = false
+                }
+            }
             toggleAlternativesPanel(rootLayout, lineIdx, charIdx, rootLayout.width > rootLayout.height)
             return
         }
@@ -1452,7 +1467,9 @@ class OcrAccessibilityService : AccessibilityService() {
             return 
         }
         controller.isAlternativesVisible = true
-        val altState = controller.getAlternativesUiState() ?: return
+        // The indices it was handed, not the controller's fields: this call site is reached
+        // from the neighbour panel without a lookup, so the fields may be stale (#44).
+        val altState = controller.getAlternativesUiState(lIdx, cIdx) ?: return
         val rootHeight = rootLayout.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
         val rootWidth = rootLayout.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
         val itemSize = (if (isLandscape) rootHeight else rootWidth) / 11
