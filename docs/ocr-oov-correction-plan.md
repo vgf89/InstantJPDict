@@ -403,10 +403,68 @@ reaches 19/45 top-3 and the LM's job is to order a 14-candidate list.
 
 ### Still to run
 
-**M4** (blank auto-fill operating point) and **M6** (reading-side alignment for confident
-blanks) — both only matter if Feature 2 auto-fill is reopened, which is deferred.
+**M6** (reading-side alignment for confident blanks) — only matters if Feature 2 auto-fill is
+reopened, which is deferred.
+
+**M4 is answered and closed, negatively** — see the next section: there is no auto-fill
+operating point at a detected gap that survives the budget, by table or by language model.
 
 
+
+### Punctuation loss in vertical text, and why a character LM cannot fill a gap — measured
+
+Two runs taken after Feature 2 shipped, closing the question of whether an automatic fill at a
+detected gap can precede the proposal layer. Probes: `scripts/oov_punctuation_probe.py`,
+`scripts/oov_lm_gap_fill.py`, `scripts/oov_lm_gap_argmax.py` (in the OCR-accuracy skill).
+
+**1. Punctuation is dropped in vertical text and nowhere else.** Ground-truth `、。ー「」`:
+
+| bench | marks | emitted | dropped |
+|---|---|---|---|
+| vertical, `vert_large` (10 real lines) | 8 | 0 | 8 |
+| vertical, rendered `呟` bench (13 lines) | 11 | 2 | 9 |
+| horizontal, `trails` x2 (208 lines) | 100 | 100 | 0 |
+| horizontal, 24 constructed sentences (PIL render) | 48 | 48 | 0 |
+
+In the dropped mark's timestep window (strictly between its neighbours') blank sits at
+0.89–1.000 with the best non-blank ≤0.04, usually ≤0.005: **there is no runner-up to surface**,
+so the decode cannot recover it. A minority of sites have no timestep of their own — the window
+holds a real emitted character — i.e. the CTC collapse merged the mark into a neighbour, which
+no per-timestep rule can see at all. Mechanism (hypothesis, not measured): in vertical Japanese
+the mark sits in a different part of its cell, and after the 270° rotation that offset lands
+where the model does not expect punctuation.
+
+**2. An LM fill at a known gap does not survive, at either scope.**
+
+| rule | population | precision | recall |
+|---|---|---|---|
+| insert `、。` where it beats the continuation, δ=−4 | gap sites, vertical only | 0.600 | 1.000 |
+| same, δ=−4 | gap sites, all benches | 0.469 | 0.882 |
+| same δ=0 / δ=+2 | gap sites, all benches | 0.370 / 0.350 | 0.588 / 0.412 |
+| the model's own top-1 filler *is* the truth | 35 gap sites | 7/35 | — |
+
+At the generalised scope — the model's highest-ranking filler for the slot, over its complete
+candidate space — the truth is the argmax 7/35, in the top 3 for 10/35, and **absent from the
+top 10 in 19/35**, while the model's best filler beats the continuation at **32/35** sites: it
+"wants something" almost everywhere. What it picks is a frequency ranking (`、` x9, `の` x5,
+`て` x4, space x3) — the same picks for punctuation gaps and non-punctuation gaps.
+
+**Why (structural, not tuning).** A character n-gram has no representation of *absence*, of
+*kind*, or of the word boundary a comma marks, so the comparison degenerates into "is a comma
+likelier than this specific next character", and the character after a gap is often rare. That is
+the same frequency bias M1 measured for the kanji corrector. A character absent from the ship
+model's unigram inventory (min count 5 — this includes the rare kanji behind `呟`) can never be an
+argmax at all, so that population is unreachable by any rescorer over this model.
+
+**Consequences.** (i) The clickable blank's *list* is the mechanism, never a fill; its class order
+is fixed (punctuation first, then kana) precisely because the LM's cross-class preference is this
+contest. (ii) A gap's real question is *what kind of thing* is missing, which needs variable-length
+output and a notion of the next word — #73's territory, not a character n-gram's; the cheapest
+untested discriminator remains the JMdict word gate. (iii) Protocol these runs needed, worth
+keeping: score a **gated** rule on the **gated** population (the same rule evaluated at every
+position fired on 1,515 of 1,621 ordinary positions — a diagnostic of what the score means, not a
+precision estimate), and report per orientation. (iv) Caveat: 19 vertical punctuation marks and 35
+gap sites are indicative, not a class rate.
 
 ---
 
