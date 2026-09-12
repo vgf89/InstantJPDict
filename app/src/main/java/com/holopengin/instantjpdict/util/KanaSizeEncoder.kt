@@ -13,10 +13,13 @@ package com.holopengin.instantjpdict.util
  *   cells 0..4  left context, leftmost first:  L5 L4 L3 L2 L1
  *   cells 5..9  right context, nearest first:  R1 R2 R3 R4 R5
  *   each cell = the character's UTF-8 bytes, left-aligned, zero-padded to 4
- *   an absent cell (past the start or end of the line) is four zero bytes
+ *   an absent cell (past a boundary, or past the edge of the text) is four zero bytes
  *
- * Verified byte-exact against the model's published validation vectors; see
- * `KanaSizeEncoderTest`.
+ * **Context stops at 。 and newline** (the retrain's line-domain raster). The app recognises per
+ * line, so there is no cross-line text to draw from; the `nb_*` artifacts were trained with this
+ * clip, and the boundary character itself is not part of the window. The earlier `v2` artifact
+ * used a doc-domain raster that crossed 。 — do not mix an encoder with an artifact trained for
+ * the other. Verified byte-exact against the published vectors; see `KanaSizeEncoderTest`.
  */
 object KanaSizeEncoder {
 
@@ -63,22 +66,39 @@ object KanaSizeEncoder {
 
     /**
      * The 40-byte window for the position at [index] in [text]. The character at [index] is
-     * excluded; context runs off the ends as zero padding, which is what the app itself sees,
-     * since it recognises line by line and has no text beyond the line's edges.
+     * excluded; context stops at a [BOUNDARY] character and runs off the ends as zero padding,
+     * which is what the app itself sees, since it recognises line by line.
      */
     fun window(text: CharSequence, index: Int): IntArray {
+        // How far context actually reaches in each direction, stopping at a boundary. The
+        // boundary character terminates the walk without being counted, so it is never in the
+        // window and nothing beyond it is either.
+        var left = 0
+        var j = index - 1
+        while (j >= 0 && left < RADIUS && text[j] !in BOUNDARY) {
+            left++
+            j--
+        }
+        var right = 0
+        j = index + 1
+        while (j < text.length && right < RADIUS && text[j] !in BOUNDARY) {
+            right++
+            j++
+        }
+
         val out = IntArray(WINDOW_BYTES)
         var w = 0
-        for (k in RADIUS downTo 1) {                       // L5..L1, leftmost first
-            val j = index - k
-            val src = if (j in text.indices) cell(text[j]) else EMPTY
+        for (off in RADIUS downTo 1) {                     // L5..L1, leftmost first
+            val src = if (off <= left) cell(text[index - off]) else EMPTY
             src.copyInto(out, w); w += CELL
         }
-        for (k in 1..RADIUS) {                             // R1..R5, nearest first
-            val j = index + k
-            val src = if (j in text.indices) cell(text[j]) else EMPTY
+        for (off in 1..RADIUS) {                           // R1..R5, nearest first
+            val src = if (off <= right) cell(text[index + off]) else EMPTY
             src.copyInto(out, w); w += CELL
         }
         return out
     }
+
+    /** Characters that terminate context. See the class doc: the artifacts are trained on this. */
+    const val BOUNDARY = "。\n"
 }

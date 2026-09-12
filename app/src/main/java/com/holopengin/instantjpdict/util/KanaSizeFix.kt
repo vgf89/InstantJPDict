@@ -18,10 +18,16 @@ import com.holopengin.instantjpdict.OcrEngine
  * - flip big -> small when `p < ε`
  * - leave the middle band alone
  *
- * ε is [EPSILON], and the *gated* measurement behind it (over 7,620 confusable bench positions)
- * is +8 net at ε=0.01 (12 fixed / 4 broken), +10 at 0.03, +5 at 0.10. The ungated rule read
- * -241: the model is modern-trained by design, so on pre-reform text it sees a modern small-kana
- * context and confidently calls a legitimate large つ small. Hence the gate below.
+ * ε is [EPSILON], and the measurement behind it (over 7,620 confusable bench positions, modern
+ * rows only, which is what the gate leaves standing) is +8 net at ε=0.01 (12 fixed / 4 broken),
+ * +10 at 0.03, +5 at 0.10 on the v2 artifact, and +11 at ε=0.01 (16 fixed / 5 broken) on the
+ * current nb_mod one. The ungated rule read -241 on v2 and -128 on nb_mod: the model is
+ * modern-trained by design, so on pre-reform text it sees a modern small-kana context and
+ * confidently calls a legitimate large つ small. Hence the gate below - and hence nb_all, which
+ * reduces that ungated damage to -5 by training on era-diverse text.
+ *
+ * The comment above documents the numbers for the *shipped* artifact; re-derive them with the
+ * bench rather than trusting them if the artifact changes again.
  *
  * ## Why the gate needs the whole page
  *

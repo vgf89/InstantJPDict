@@ -1,40 +1,21 @@
 Kana size model — assets
 ========================
 
-Source      : kanadiff fp32 ONNX, sha256 f321c3cfd777e814…a50b4c72
-              (47,425-param byte-CNN; the model author's interim seed-0 artifact)
+Source      : retrain "nb_mod", kanadiff fp32 ONNX, sha256 23a332be77671581d04c55a56504903ef06a7b6965b02ac24e32b5c566b7b548
+              (47,425-param byte-CNN; modern-only training corpus, line-domain raster)
 Author      : trained by the collaborating agent against Aozora Bunko + Japanese Wikipedia
               (Aozora Bunko is public domain; Wikipedia is CC BY-SA 4.0)
-Licence     : model weights — see the model author's INTERFACE.md for terms; the training
+Licence     : model weights — see the model author's INTERFACE_NB.md for terms; the training
               corpora are public domain (Aozora) and CC BY-SA (Wikipedia)
 
 Files
 -----
-byte_emb.f32  256 x 32 floats — row = a byte value in the 40-byte window
-base_emb.f32   20 x 16 floats — row = the pair index (KanaSizeEncoder.BASE_ORDER)
-pos_block.f32  40 x 16 floats — a graph constant (onnx::Expand_53) broadcast over the batch
-weights.bin   the eight trained tensors, in the order the native code reads them:
-              conv1.weight (64,48,5), conv1.bias (64), conv2.weight (64,64,3), conv2.bias (64),
-              fc1.weight (128,80), fc1.bias (128), fc2.weight (1,128), fc2.bias (1)
-              38,273 floats / 153,092 bytes, fp32 little-endian row-major.
 
-Why the tables are assets
--------------------------
-ncnn's runtime is fp32-only and the model's ONNX takes int64 inputs feeding two Gathers, so a
-conversion cannot express those lookups. They are two array indexes, so the app performs them
-and the network itself stays pure float. The positional block is likewise not a computation:
-it is a constant the graph broadcast, so it ships as data.
+  byte_emb.f32     256 x 32   input byte embedding
+  base_emb.f32      20 x 16   pair index embedding (the BIG form is the base)
+  pos_block.f32     40 x 16   positional constant block added to every window
+  weights.bin     38273 floats   conv1.w, conv1.b, conv2.w, conv2.b, fc1.w, fc1.b, fc2.w, fc2.b
 
-Why there is no ncnn/ONNX graph here
-------------------------------------
-The ONNX->ncnn conversion was attempted and produced degenerate output twice — a degenerate
-`Permute 0=1` that never reordered, then a weight stream shifted by a layer removed from the
-param while its bytes stayed in the bin. Both failed silently, with plausible numbers rather
-than an error. The model is instead implemented directly in kana_size_forward.cpp: twelve
-float operations, no runtime.
-
-Verified    : the direct implementation reproduces the model author's ten published validation
-              vectors to 2.86e-06 (0/10 mismatches). A numpy reference of the same forward pass
-              reproduces ORT to 3.34e-06, and the app runs the same ten vectors through its own
-              encoder + JNI as a self-check (KanaSizeNcnn.selfCheck).
-Regenerate  : /tmp/prep_direct.py extracts the tensors from the graph; do not hand-edit.
+The window encoder stops context at 。 and newline (line-domain raster) and excludes the target
+character. See KanaSizeEncoder; KanaSizeEncoderTest pins the bytes against this artifact's
+validation_vectors.json.

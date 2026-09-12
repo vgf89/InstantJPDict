@@ -265,21 +265,25 @@ class KanaSizeNcnn private constructor(private val handle: Long) {
             handle: Long, win: IntArray, base: IntArray, n: Int): FloatArray?
 
         /**
-         * The model author's ten published vectors (INTERFACE.md + validation_vectors.json),
-         * logits as produced by onnxruntime fp32. Bases are pair indices in
-         * [KanaSizeEncoder.BASE_ORDER]; the last four rows are real held-out corpus lines.
+         * The model author's ten published vectors (INTERFACE_NB.md + validation_vectors.json,
+         * retrain "nb_mod"), logits as produced by onnxruntime fp32. Bases are pair indices in
+         * [KanaSizeEncoder.BASE_ORDER]; the last four rows are real corpus lines.
+         *
+         * These exercise the line-domain clip: four of them carry a full stop or a newline
+         * within reach of the target, so an encoder without the clip fails here rather than in
+         * the field.
          */
         private val VECTORS = listOf(
-            Vector("かれはいっとう。", 4, 5, 0.2103874683380127f),
-            Vector("きょうはいいてんきですね、まつ。", 14, 5, 1.1135261058807373f),
-            Vector("みんなでサッカーをするつもりです。", 5, 15, -5.5936374664f),
-            Vector("シーツをあらう。", 2, 15, 11.8762025833f),
-            Vector("きょうのてんきはいいですね。", 1, 8, -4.6365633011f),
-            Vector("キャンプにいく。", 1, 16, -5.2449283600f),
-            Vector("昌仙も、おもわず床几を立って、\n「あッ」\n\u3000と、櫓", 12, 5, -3.3966207504f),
-            Vector("なろうかと……」\n\u3000おえつは、片手に、腕白を抱きな", 12, 5, 4.4889340401f),
-            Vector("は、変化多き世の中にもちょっと例の少ない並ならぬ三", 12, 8, -7.8713731766f),
-            Vector("。\n\u3000そして、ザッザ、ザッザと、草の波を分けて、押", 12, 15, -2.4389185905f),
+            Vector("かれはいっとう。", 4, 5, 0.704738f),
+            Vector("きょうはいいてんきですね、まつ。", 14, 5, -0.587140f),
+            Vector("みんなでサッカーをするつもりです。", 5, 15, -5.698711f),
+            Vector("シーツをあらう。", 2, 15, 9.495364f),
+            Vector("きょうのてんきはいいですね。", 1, 8, -5.852514f),
+            Vector("キャンプにいく。", 1, 16, -5.604273f),
+            Vector("昌仙も、おもわず床几を立って、\n「あッ」\n　と、櫓", 12, 5, -2.950111f),
+            Vector("なろうかと……」\n　おえつは、片手に、腕白を抱きな", 12, 5, 6.011059f),
+            Vector("は、変化多き世の中にもちょっと例の少ない並ならぬ三", 12, 8, -8.596489f),
+            Vector("。\n　そして、ザッザ、ザッザと、草の波を分けて、押", 12, 15, -0.764093f),
         )
     }
 }
