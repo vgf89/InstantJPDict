@@ -58,6 +58,12 @@ Sequencing, with the acceptance measure for each step:
   list, ranked by IDF mass. Acceptance: on the rendered benches, how often the list contains the
   truth (pool coverage), entries added per character (median), and whether the paired-bench list
   stays clean (no noise).
+  **Implemented** (`9072515`): head ranking first and unchanged, then component neighbours at the
+  measured 0.7 tier, then variant forms; one assembly path shared by the panel and keyboard
+  navigation; generated entries tinted; setting "Suggest similar characters in the alternatives
+  list" (default on). A failing test during wiring caught a real flaw: the IDF fraction is relative
+  to the emitted character, so a **one-component** character made every carrier a full match and
+  the tier admitted hundreds — now gated on ≥2 components (`hasDiscriminatingComponents`).
 - **Step 2 — LM, only if it earns it.** Add `CharLm` (~7 MB), re-measure the same numbers, keep only
   if the top-3 improvement justifies the asset and the load cost. Phase 1's LM half is gated on this.
 - **Step 3 — Feature 2, vertical-first.** Clickable blank on the vertical trigger, populated per the
