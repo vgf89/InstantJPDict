@@ -64,6 +64,17 @@ Sequencing, with the acceptance measure for each step:
   list" (default on). A failing test during wiring caught a real flaw: the IDF fraction is relative
   to the emitted character, so a **one-component** character made every carrier a full match and
   the tier admitted hundreds — now gated on ≥2 components (`hasDiscriminatingComponents`).
+
+  **Tier check against the real table** (`tools/`-scratch `oov_teststring_check.py`, mirrors
+  `neighboursOf`): the truth clears the shipped 0.7 tier for `曇`→`壜` (rank **1**), `発`→`溌`
+  (rank 3), `勘`→`尠` (rank 4), and is *below* it for the `伜` family (`仲` 0.47, `体` 0.45,
+  `件` 0.39), `俥` (`庫` 0.52, `値` 0.26), `燵` (`焼` 0.41) and `壜`-via-`場` (0.42) — so the
+  Aozora substitution set is only partly reachable at 0.7 and the tier is the next tuning target.
+  Second flaw found here: a candidate whose components are a **superset** scores a full 1.0
+  (shared IDF / emitted IDF), so supersets crowd the cap — desirable for `曇`→`壜`, harmful for
+  `仲`, whose cap-5 fills with obscure supersets (`俜` has seven components to `仲`'s three). An
+  agreement metric that penalises the candidate's extra mass (IDF Jaccard) is the obvious next
+  measurement, and it must be re-measured on the bench before shipping, not swapped in blind.
 - **Step 2 — LM, only if it earns it.** Add `CharLm` (~7 MB), re-measure the same numbers, keep only
   if the top-3 improvement justifies the asset and the load cost. Phase 1's LM half is gated on this.
 - **Step 3 — Feature 2, vertical-first.** Clickable blank on the vertical trigger, populated per the
