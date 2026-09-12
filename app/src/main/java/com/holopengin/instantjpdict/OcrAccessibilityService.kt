@@ -43,8 +43,12 @@ import androidx.core.view.isVisible
 import com.google.gson.Gson
 import com.holopengin.instantjpdict.util.Deinflector
 import com.holopengin.instantjpdict.util.DeinflectionChain
+import com.holopengin.instantjpdict.util.ComponentTable
 import com.holopengin.instantjpdict.util.FuriganaAligner
 import com.holopengin.instantjpdict.util.JapaneseUtil
+import com.holopengin.instantjpdict.util.KanjiVariants
+import com.holopengin.instantjpdict.util.OovCandidates
+import com.holopengin.instantjpdict.util.OovSuggestions
 import com.holopengin.instantjpdict.util.PitchAccent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -161,6 +165,21 @@ class OcrAccessibilityService : AccessibilityService() {
             filter,
             ContextCompat.RECEIVER_EXPORTED
         )
+
+        // #44: component-derived popup candidates. Parsing the 266 KB component table is
+        // cheap but not free, so it happens once off the main thread; until it lands (and
+        // if it fails) the popup shows the head's own list, exactly as before.
+        serviceScope.launch {
+            val table = withContext(Dispatchers.IO) {
+                runCatching { ComponentTable.load(this@OcrAccessibilityService) }.getOrNull()
+            } ?: return@launch
+            withContext(Dispatchers.IO) {
+                runCatching { KanjiVariants.install(this@OcrAccessibilityService) }
+            }
+            controller.installOovSuggestions(OovCandidates(table)) {
+                OovSuggestions.isEnabled(this@OcrAccessibilityService)
+            }
+        }
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -1520,7 +1539,14 @@ class OcrAccessibilityService : AccessibilityService() {
                 text = cand.char.toString(); setTextColor(android.graphics.Color.WHITE); textSize = estimatedTextSize; gravity = Gravity.CENTER
                 includeFontPadding = false
                 if (cand.isSelected) { setBackgroundColor(android.graphics.Color.YELLOW); setTextColor(android.graphics.Color.BLACK) }
-                else setBackgroundColor(android.graphics.Color.argb(255, 85, 85, 85))
+                else {
+                    setBackgroundColor(android.graphics.Color.argb(255, 85, 85, 85))
+                    // #44: generated entries (component neighbours, variant forms) are
+                    // tinted so they stay distinguishable from what the model itself ranked.
+                    if (cand.source != OovSuggestions.Source.HEAD) {
+                        setTextColor(android.graphics.Color.argb(255, 150, 205, 255))
+                    }
+                }
                 
                 if (isLandscape) {
                     textLocale = java.util.Locale.JAPANESE

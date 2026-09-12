@@ -28,6 +28,7 @@ import androidx.lifecycle.lifecycleScope
 import com.holopengin.instantjpdict.data.AppDatabase
 import com.holopengin.instantjpdict.data.DictionaryImporter
 import com.holopengin.instantjpdict.util.InferLog
+import com.holopengin.instantjpdict.util.OovSuggestions
 import com.holopengin.instantjpdict.util.PitchAccent
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -137,6 +138,20 @@ class MainActivity : AppCompatActivity() {
             setOnCheckedChangeListener { _, checked ->
                 DoubleTapZoom.setEnabled(this@MainActivity, checked)
                 Log.d("MainActivity", "double_tap_zoom_enabled=$checked")
+            }
+        })
+
+        // #44: component-derived alternatives in the alternatives popup. On by default —
+        // it only adds entries to a list the user already opens, and never changes
+        // recognised text (auto-apply is parked; see docs/ocr-oov-correction-plan.md).
+        layout.addView(CheckBox(this).apply {
+            text = "Suggest similar characters in the alternatives list"
+            isChecked = OovSuggestions.isEnabled(this@MainActivity)
+            textSize = 14f
+            setPadding(0, 20, 0, 8)
+            setOnCheckedChangeListener { _, checked ->
+                OovSuggestions.setEnabled(this@MainActivity, checked)
+                Log.d("MainActivity", "oov_suggestions_enabled=$checked")
             }
         })
 

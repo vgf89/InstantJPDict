@@ -98,6 +98,19 @@ class OovCandidates(private val table: ComponentTable) {
     }
 
     /**
+     * Whether component evidence can discriminate at all for this character.
+     *
+     * The IDF fraction is measured **relative to the emitted character**, so a character
+     * with a single component makes every one of its carriers a full match (fraction 1.0):
+     * the tier then admits hundreds of unrelated characters and a cap picks between them by
+     * codepoint — noise presented as evidence. Two or more components are what the
+     * measurements rely on, because a common one dilutes the fraction below the tier
+     * (`仲` = 化+中 shares only `中` at 0.22, and `中` plus a rare component at 0.41).
+     */
+    fun hasDiscriminatingComponents(emitted: Char): Boolean =
+        table.componentsOf(emitted).size >= 2
+
+    /**
      * The components a top-K of characters **agree on**, by majority vote: a component
      * carried by at least [needFraction] of [topK] (at least one character). Ordered
      * strongest first — by how many of the top-K carry it, then by codepoint.

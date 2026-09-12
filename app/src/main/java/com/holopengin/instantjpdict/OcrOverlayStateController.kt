@@ -4,6 +4,8 @@ import com.holopengin.instantjpdict.util.JapaneseUtil
 import com.holopengin.instantjpdict.util.Deinflector
 import com.holopengin.instantjpdict.util.DeinflectionChain
 import com.holopengin.instantjpdict.util.DictionaryRedirects
+import com.holopengin.instantjpdict.util.OovCandidates
+import com.holopengin.instantjpdict.util.OovSuggestions
 import com.holopengin.instantjpdict.util.PitchAccent
 import com.holopengin.instantjpdict.data.DictionaryEntry
 import com.google.gson.Gson
@@ -106,7 +108,14 @@ data class NeighborLine(
 
 data class AlternativeChar(
     val char: Char,
-    val isSelected: Boolean
+    val isSelected: Boolean,
+    /**
+     * Where this entry came from (#44): the head's own ranking, a component neighbour of
+     * the current character, or one of its variant forms. The panel tints the generated
+     * entries so "what the model saw" stays distinguishable from "what the components
+     * suggest".
+     */
+    val source: OovSuggestions.Source = OovSuggestions.Source.HEAD
 )
 
 data class AlternativesUiState(
@@ -122,6 +131,14 @@ enum class GamepadAction {
 }
 
 class OcrOverlayStateController {
+
+    /**
+     * Component-derived popup candidates (#44). Null until the service finishes loading the
+     * 266 KB component table off the main thread; the panel falls back to the head's own
+     * list meanwhile, which is exactly the previous behaviour.
+     */
+    private var oovCandidates: OovCandidates? = null
+    private var suggestionsEnabled: () -> Boolean = { false }
     var deinflector: Deinflector? = null
     var dictionaryProvider: DictionaryProvider? = null
     var gson: Gson? = null
@@ -489,15 +506,29 @@ class OcrOverlayStateController {
 
     fun getAlternativesUiState(): AlternativesUiState? {
         val line = activeLineResults.getOrNull(currentTappedLineIdx) ?: return null
-        val alts = line.alternatives.getOrNull(currentTappedCharIdxInLine) ?: return null
-        val currentChar = line.text.getOrNull(currentTappedCharIdxInLine)
-        
-        return AlternativesUiState(
-            alts.take(15).map { (char, _) ->
-                AlternativeChar(char, isSelected = char == currentChar)
-            },
-            showManualInput = true
-        )
+        val candidates = alternativeCharsFor(line, currentTappedCharIdxInLine) ?: return null
+
+        return AlternativesUiState(candidates, showManualInput = true)
+    }
+
+    /**
+     * The popup list for one character (#44): the head's own top-15, plus — when the
+     * component table has loaded and the setting is on — component neighbours and variant
+     * forms of that character. Both the panel and keyboard navigation read this, so they
+     * can never disagree about what the list contains.
+     */
+    private fun alternativeCharsFor(line: LineResult, cIdx: Int): List<AlternativeChar>? {
+        val alts = line.alternatives.getOrNull(cIdx) ?: return null
+        val current = line.text.getOrNull(cIdx)
+        val head = alts.take(15).map { it.first }
+        val suggestions = if (suggestionsEnabled() && oovCandidates != null && current != null) {
+            OovSuggestions.assemble(current, head, oovCandidates)
+        } else {
+            head.map { OovSuggestions.Suggestion(it, OovSuggestions.Source.HEAD) }
+        }
+        return suggestions.map {
+            AlternativeChar(it.char, isSelected = it.char == current, source = it.source)
+        }
     }
 
     fun navigateAlternatives(keyCode: Int, isLandscape: Boolean): Char? {
@@ -511,10 +542,9 @@ class OcrOverlayStateController {
         if (diff == 0) return null
 
         val line = activeLineResults.getOrNull(currentTappedLineIdx) ?: return null
-        val alts = line.alternatives.getOrNull(currentTappedCharIdxInLine) ?: return null
         val currentChar = line.text.getOrNull(currentTappedCharIdxInLine) ?: return null
-
-        val candidates = alts.take(15).map { it.first }
+        val candidates = alternativeCharsFor(line, currentTappedCharIdxInLine)?.map { it.char }
+            ?: return null
         val currentIndex = candidates.indexOf(currentChar)
 
         if (currentIndex != -1) {
@@ -524,6 +554,17 @@ class OcrOverlayStateController {
             }
         }
         return null
+    }
+
+    /**
+     * Component-derived suggestions (#44). The service loads the 266 KB component table off
+     * the main thread and calls this once it lands; until then the panel shows the head's
+     * own list, exactly as before. [enabled] is read per call so the setting takes effect
+     * without reinstalling.
+     */
+    fun installOovSuggestions(candidates: OovCandidates, enabled: () -> Boolean) {
+        oovCandidates = candidates
+        suggestionsEnabled = enabled
     }
 
     fun getPanelDimensions(rootWidth: Int, rootHeight: Int): Pair<Float, Float> {
