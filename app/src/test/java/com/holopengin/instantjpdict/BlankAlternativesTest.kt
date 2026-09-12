@@ -92,8 +92,14 @@ class BlankAlternativesTest {
         val lm = CharLm.fromBytes(packed(listOf("私" to 100, "の" to 50, "、" to 20)))!!
         val state = controllerFor(lineWithShortTable(), lm).getAlternativesUiState(0, 1)!!
         val chars = state.candidates.map { it.char }
-        assertEquals("blank list was $chars", 'の', chars[1])
-        assertTrue("、 should beat 。 (unseen): $chars", chars.indexOf('、') < chars.indexOf('。'))
+        // Punctuation leads whatever the model thinks: its preference between the two classes
+        // is a frequency contest (measured), so the class order is ours and only the order
+        // *within* a class is the model's.
+        assertEquals("blank list was $chars", '、', chars[1])
+        assertTrue("punctuation should precede kana: $chars",
+            chars.indexOf('。') < chars.indexOf('の'))
+        assertTrue("kana should still be model-ordered: $chars",
+            chars.indexOf('の') < chars.indexOf('を'))
         assertFalse(chars.contains(gap).not())
     }
 

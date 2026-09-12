@@ -59,17 +59,27 @@ object GapCandidates {
         return ordered.take(limit)
     }
 
-    /**
-     * Punctuation and kana a gap most often holds. Used when the line offered no evidence at
-     * all, because a blank with nothing to choose from is worse than a guess; the model
-     * orders even these by context when it is loaded.
-     */
-    val DEFAULTS = listOf('、', '。', '「', '」', '…', '・', 'ー', 'は', 'の', 'を', 'に', 'と')
+    /** Punctuation a gap most often holds. Class order is fixed; see [fallback]. */
+    val PUNCT_DEFAULTS = listOf('、', '。', '「', '」', '…', 'ー')
 
-    /** The fallback list, best first. Never empty. */
+    /** The kana it most often holds when it is not punctuation. */
+    val KANA_DEFAULTS = listOf('は', 'の', 'を', 'に', 'と')
+
+    /**
+     * The fallback list, punctuation first. Never empty.
+     *
+     * The class order is deliberately *not* the model's. Measured over the vertical benches,
+     * an order-4 character model asked to prefer punctuation over the continuation is
+     * really running a frequency contest — a comma is common and the character that follows
+     * a gap is often rare — so it fires on ~1 in 7 ordinary positions at the strictest
+     * margin and puts kana like の above 、 at a gap. The model orders *within* a class,
+     * where the candidates are the same kind of thing and the comparison means something.
+     */
     fun fallback(text: String, index: Int, lm: CharLm?, limit: Int = MAX): List<Char> {
-        val ordered = lm?.rank(contextBefore(text, index), DEFAULTS) ?: DEFAULTS
-        return ordered.take(limit)
+        val ctx = contextBefore(text, index)
+        val punct = lm?.rank(ctx, PUNCT_DEFAULTS) ?: PUNCT_DEFAULTS
+        val kana = lm?.rank(ctx, KANA_DEFAULTS) ?: KANA_DEFAULTS
+        return (punct + kana).take(limit)
     }
 
     /**
