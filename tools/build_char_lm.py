@@ -177,8 +177,6 @@ WIKI_ATTRIB = ("Contains information from ja.wikipedia.org, which is made "
                "available under CC BY-SA 4.0 "
                "(https://creativecommons.org/licenses/by-sa/4.0/)")
 
-# Packed-asset estimate used consistently in the skill's sizing table. The
-# serialised UTF-8 table is larger; both are printed.
 # The packed record is 10 bytes: four little-endian UTF-16 code units (zero-padded) plus a
 # u16 count. tools/pack_char_lm.py reports this directly ("10.0 B/entry"), so an estimate
 # built on 5 understates the shipped asset by 2x - the shipped model is 14.28 MB packed,

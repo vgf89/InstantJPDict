@@ -346,6 +346,13 @@ Horizontal deletion gaps are sometimes indistinguishable from ordinary spacing (
 
 ### M3 — LM corpus and pruning: **order/count/Wikipedia buy nothing above a plateau**
 
+> **Sizing convention corrected (2026-09-12).** Every packed-size figure in this section and
+> in the sizing table uses the old **5 B/entry** estimate and is therefore **2x low**. The
+> packed record is 10 bytes (four UTF-16 units + a u16 count) and `tools/pack_char_lm.py`
+> reports it directly. The shipped model is **14.28 MB packed** (not 7.14 MB) and 5.03 MB
+> deflated in the APK, still inside the 20 MB budget. No decision in this document changes;
+> `tools/build_char_lm.py` now estimates at 10 B/entry.
+
 Bench: the rendered OOV cases (51 substitutions, 38 deletions), candidates ordered by IDF
 mass shared with the emitted character — the shipped rule — and ranked in the OCR context.
 
