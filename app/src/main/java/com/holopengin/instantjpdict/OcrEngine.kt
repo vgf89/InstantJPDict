@@ -296,6 +296,11 @@ class OcrEngine(private val context: Context) {
                 .toList().toIntArray()
             recNumOutputs = classRemap.size
             Log.d(TAG, "Class remap loaded: ${classRemap.size} entries (head width $recNumOutputs)")
+            // Also into the in-app log: a native/model width disagreement (the #44 re-prune
+            // left a hardcoded 13193 in ncnn_jni.cpp for a while) showed up as plausible-
+            // looking garbage text rather than as an error, so the expected width has to be
+            // visible in the log the user can actually read back.
+            InferLog.add("rec head width=$recNumOutputs (from rec_remap.txt)")
 
         } catch (e: Exception) {
             Log.e(TAG, "Failed to load models", e)
@@ -866,7 +871,19 @@ class OcrEngine(private val context: Context) {
         // seqLen*30 floats instead of seqLen*13193 (up to ~880x smaller).
         // Falls back to full logits + Java top-15 if the native entry is missing.
         val packed = try { recNcnn.inferTopK(inputFloats, modelW, targetH) } catch (_: UnsatisfiedLinkError) { null }
-        if (packed != null && packed.size == seqLen * TOP_K * 2) {
+        // The packed size alone can only catch a *smaller* top-K layout, so also check that
+        // every class id the native reports is inside the head the remap describes: a
+        // native/model width disagreement otherwise decodes into plausible-looking garbage,
+        // one character per timestep (the #44 re-prune did exactly that against a hardcoded
+        // width in ncnn_jni.cpp). Ids sit at even offsets; the odd entries are logits.
+        val packedSized = packed != null && packed.size == seqLen * TOP_K * 2
+        val idsInRange = packedSized && recNumOutputs > 0 &&
+            (0 until seqLen * TOP_K).all { k -> packed!![k * 2].toInt() in 0 until recNumOutputs }
+        if (packedSized && !idsInRange) {
+            Log.w(TAG, "recNcnn w$modelW topK class id outside head width $recNumOutputs — full-logits fallback")
+            InferLog.add("rec w=$modelW topK ID OUT OF RANGE head=${recNumOutputs} — native/model mismatch")
+        }
+        if (packedSized && idsInRange) {
             // Native emits descending top-15 with lowest-id-wins ties; entry 0
             // is the argmax, so decode text is identical to the full-logits path.
             val topPruned = Array(actualSeqLen) { t ->

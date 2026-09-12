@@ -77,6 +77,27 @@ Java_com_holopengin_instantjpdict_RecNcnn_destroy(JNIEnv *, jclass, jlong handle
     }
 }
 
+// Class count of the CTC output, derived from the extracted tensor itself.
+//
+// This used to be the hardcoded constant 13193, which is exactly the kind of thing a head
+// re-prune leaves behind silently: the old guard compared totals with `<`, so a *wider*
+// tensor still "matched", and then every timestep after t=0 was scanned at the wrong row
+// stride. That window straddles two rows, and its max is a confident class out of the
+// neighbouring row's band — never blank — so the decoded string comes out one garbage
+// character per timestep, length equal to the timestep count. It reads like a broken
+// recogniser, not like a stale constant. Derive the width instead; never hardcode it.
+//
+// Layout is [w=numClasses, h=seqLen] with w innermost (one float per class per timestep).
+// Any other shape is refused: no text beats wrong text.
+static int recClassWidth(const ncnn::Mat &out, int seqLen) {
+    if (seqLen <= 0 || out.w <= 0) return 0;
+    if ((out.dims == 2 || (out.dims == 3 && out.c == 1)) && out.h == seqLen &&
+        (int)out.total() == seqLen * out.w) {
+        return out.w;
+    }
+    return 0;
+}
+
 JNIEXPORT jfloatArray JNICALL
 Java_com_holopengin_instantjpdict_RecNcnn_inferNative(JNIEnv *env, jclass, jlong handle, jobject buffer, jint w, jint h) {
     RecNcnn *rec = (RecNcnn *) handle;
@@ -124,45 +145,37 @@ Java_com_holopengin_instantjpdict_RecNcnn_inferNative(JNIEnv *env, jclass, jlong
         return nullptr;
     }
 
-    // out shape: [13193, seqLen] (pruned head #39); pnnx validation said [1, W/8, 18710] pre-prune.
-    // ncnn Mat for that would be w=13193, h=seqLen, c=1 or w=seqLen, h=13193?
-    // Need to handle both. Log dims.
+    // out shape: [w=numClasses, h=seqLen], w innermost. Never assume the width: the head is
+    // re-pruned from the keep list (#44 moved it 13193 -> 13353) and this file is not part of
+    // that regeneration. Log the dims and take the width off the tensor.
     LOGI("ncnn out dims=%d w=%d h=%d c=%d total=%d", out.dims, out.w, out.h, out.c, (int)out.total());
     // Dynamic width (#23): sequence length comes from the ACTUAL input width, not the
     // create-time targetW. Kotlin always passes a multiple of 8 (zero-padded exact width).
     int seqLen = w / 8;
-    int numClasses = 13193; // pruned CTC head (#39); orig id space stays 18710 via Kotlin remap
-    // Allocate output float array
+    int numClasses = recClassWidth(out, seqLen);
+    if (numClasses <= 0) {
+        LOGE("rec out unusable dims=%d w=%d h=%d c=%d total=%d seqLen=%d",
+             out.dims, out.w, out.h, out.c, (int)out.total(), seqLen);
+        return nullptr;   // fail closed: a wrong-stride read renders as garbage text
+    }
     jfloatArray jout = env->NewFloatArray(seqLen * numClasses);
     if (!jout) return nullptr;
 
-    // Copy data - need to handle layout
-    // If out is 2D (w=13193, h=seqLen), data is row-major h * w
-    // If out is 3D, handle accordingly
+    // ncnn stores as c * h * w contiguous with w innermost, so row t starts at
+    // outData + t*numClasses.
     float *outData = (float *) out.data;
-    // out.total() should be seqLen * numClasses
-    if ((int)out.total() != seqLen * numClasses) {
-        LOGE("out total mismatch %d vs %d", (int)out.total(), seqLen * numClasses);
-        // Still try to copy min
-        int n = std::min((int)out.total(), seqLen * numClasses);
-        env->SetFloatArrayRegion(jout, 0, n, outData);
-        return jout;
-    }
-
-    // ncnn stores as c * h * w contiguous, with w innermost
-    // For dims=2, w=13193, h=8 -> data is [h][w]
-    // For dims=3, check
     env->SetFloatArrayRegion(jout, 0, seqLen * numClasses, outData);
     return jout;
 }
 
 // Top-K per CTC timestep, computed natively (#42 leftover: kill the multi-MB
 // logits download). Same input/extract path as inferNative, but instead of
-// copying seqLen×13193 floats to Java it partial-selects the top 15 per
+// copying seqLen×numClasses floats to Java it partial-selects the top 15 per
 // timestep and returns packed pairs: [idx0,val0, idx1,val1, ...] per timestep
 // (idx stored as float; exact for ids < 2^24). Ties keep the lowest class id,
-// matching the Java argmax scan (strict >) and top-15 intent. Layout assumes
-// out row t lives at outData + t*numClasses (w=13193 innermost), same as above.
+// matching the Java argmax scan (strict >) and top-15 intent. Layout: out row t
+// lives at outData + t*numClasses, numClasses taken off the tensor (w innermost),
+// same as above.
 JNIEXPORT jfloatArray JNICALL
 Java_com_holopengin_instantjpdict_RecNcnn_inferTopKNative(JNIEnv *env, jclass, jlong handle, jobject buffer, jint w, jint h) {
     RecNcnn *rec = (RecNcnn *) handle;
@@ -203,10 +216,14 @@ Java_com_holopengin_instantjpdict_RecNcnn_inferTopKNative(JNIEnv *env, jclass, j
     int64_t t1 = (int64_t)(ncnn::get_current_time() * 1000);
 
     int seqLen = w / 8;
-    const int numClasses = 13193; // pruned CTC head (#39)
     const int K = 15;             // must match OcrEngine.TOP_K
-    if ((int)out.total() < seqLen * numClasses) {
-        LOGE("out total too small %d vs %d", (int)out.total(), seqLen * numClasses);
+    // Width comes off the tensor, and the total must match exactly. The old form was a
+    // hardcoded 13193 checked with `<`, so a *wider* head (the #44 re-prune) passed and every
+    // timestep was scanned at the stale stride — the bug this guard now cannot miss.
+    const int numClasses = recClassWidth(out, seqLen);
+    if (numClasses <= 0) {
+        LOGE("recTopK out unusable dims=%d w=%d h=%d c=%d total=%d seqLen=%d",
+             out.dims, out.w, out.h, out.c, (int)out.total(), seqLen);
         return nullptr;
     }
     float *outData = (float *) out.data;

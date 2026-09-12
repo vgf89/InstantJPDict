@@ -176,6 +176,20 @@ list from a freshly built int8 model must reproduce the shipped
 `rec_dyn.param`/`rec_remap.txt` byte-for-byte (the `rec_dyn.bin` reproduced to
 within 1 byte in 4.7 MB). If that fails, something upstream of the prune changed.
 
+**Then check the app's native path, which no host gate covers.** `ncnn_jni.cpp`
+used to hardcode this width (`numClasses = 13193`) and scan each timestep's row at
+that stride. The host bench and the parity gate below use `rec_harness_blob`, which
+takes the width off the extracted Mat — so widening the head left them green while
+the app scanned a 13,353-wide tensor at a 13,193 stride. The window then straddles
+two rows and its max is a confident class from the neighbouring row's band, never
+blank: the app rendered one garbage character per timestep, length equal to the
+timestep count, which reads as a broken recogniser rather than a stale constant.
+The native now derives the width from the tensor (`recClassWidth`) and returns null
+rather than reading at a guessed stride, so there is no constant left to update —
+but after a re-prune, confirm on-device that the in-app log's `rec head width=`
+line matches the model, and that decoded line lengths look like text lengths rather
+than like `seq` (`len` equal to the timestep count in every line is the signature).
+
 
 ## 7. Parity gate (host)
 
