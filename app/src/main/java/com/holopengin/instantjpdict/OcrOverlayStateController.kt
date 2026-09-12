@@ -553,16 +553,13 @@ class OcrOverlayStateController {
      */
     private fun alternativeCharsFor(line: LineResult, cIdx: Int): List<AlternativeChar>? {
         val current = line.text.getOrNull(cIdx)
-        val alts = line.alternatives.getOrNull(cIdx) ?: run {
-            // A placeholder inserted into a line whose `alternatives` did not grow with the
-            // text (the insertion leaves mismatched lists alone on purpose) has no entry at
-            // all, so a blank tap opened nothing. Synthesise one: the placeholder is its own
-            // only candidate until ranked candidates are generated for the gap (#44).
-            if (current == OcrEngine.GAP_CHAR) {
-                return gapCandidates(line, cIdx)
-            }
-            return null
-        }
+        // A blank is not a character to expand by components: its list is the placeholder
+        // plus the evidence-ranked candidates, and it is checked *before* the alternatives
+        // table because the table does have an entry for the placeholder — an earlier version
+        // handled only the case where it did not, so the ranked candidates were unreachable
+        // and the list came back as the dotted circle alone (#44).
+        if (current == OcrEngine.GAP_CHAR) return gapCandidates(line, cIdx)
+        val alts = line.alternatives.getOrNull(cIdx) ?: return null
         val head = alts.take(15).map { it.first }
         val suggestions = if (suggestionsEnabled() && oovCandidates != null && current != null) {
             OovSuggestions.assemble(current, head, oovCandidates)
@@ -581,10 +578,16 @@ class OcrOverlayStateController {
     private fun gapCandidates(line: LineResult, cIdx: Int): List<AlternativeChar> {
         val out = mutableListOf(
             AlternativeChar(OcrEngine.GAP_CHAR, isSelected = true, source = OovSuggestions.Source.HEAD))
-        if (suggestionsEnabled()) {
+        val ranked = if (suggestionsEnabled()) {
             GapCandidates.generate(line.text, line.rawAlternatives, cIdx, charLm)
-                .forEach { out.add(AlternativeChar(it, isSelected = false, source = OovSuggestions.Source.LM)) }
+        } else {
+            emptyList()
         }
+        // Evidence first, then the punctuation and kana a gap most often holds. A blank with
+        // nothing to choose from is worse than a guess, so this list is never just the
+        // placeholder; even the fallback is ordered by context when the model is loaded.
+        val alternatives = ranked.ifEmpty { GapCandidates.fallback(line.text, cIdx, charLm) }
+        alternatives.forEach { out.add(AlternativeChar(it, isSelected = false, source = OovSuggestions.Source.LM)) }
         return out
     }
 

@@ -60,6 +60,19 @@ object GapCandidates {
     }
 
     /**
+     * Punctuation and kana a gap most often holds. Used when the line offered no evidence at
+     * all, because a blank with nothing to choose from is worse than a guess; the model
+     * orders even these by context when it is loaded.
+     */
+    val DEFAULTS = listOf('、', '。', '「', '」', '…', '・', 'ー', 'は', 'の', 'を', 'に', 'と')
+
+    /** The fallback list, best first. Never empty. */
+    fun fallback(text: String, index: Int, lm: CharLm?, limit: Int = MAX): List<Char> {
+        val ordered = lm?.rank(contextBefore(text, index), DEFAULTS) ?: DEFAULTS
+        return ordered.take(limit)
+    }
+
+    /**
      * The characters before the gap, which is the context the back-off chain can use: the
      * model is order 4, so anything longer is ignored and the placeholder itself is dropped
      * rather than read as a real character.
