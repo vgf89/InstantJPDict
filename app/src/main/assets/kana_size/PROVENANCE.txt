@@ -1,0 +1,15 @@
+Kana size model — embedding tables
+==================================
+
+Source      : kanadiff fp32 ONNX, sha256 f321c3cfd777e814… (interim seed-0 artifact)
+Extracted   : /tmp/kanadiff_floatify.py from byte_emb.weight (256x32) and base_emb.weight
+              (20x16), as the model's own initializers, fp32 little-endian row-major.
+Why here   : ncnn's runtime is fp32-only and the model's ONNX takes int64 inputs feeding two
+              Gathers, so the conversion to ncnn cannot express those lookups. They are two
+              array indexes, so the app performs them and the network itself is pure float.
+Layout      : byte_emb.f32  256 rows x 32 floats — row = the byte value in the 40-byte window
+              base_emb.f32   20 rows x 16 floats — row = the pair index (KanaSizeEncoder.BASE_ORDER)
+Verified    : the float-only rewrite reproduces the ORT logits to 3.07e-11 across the model's
+              validation vectors, and the converted ncnn model is checked against them too.
+Regenerate  : rerun /tmp/kanadiff_floatify.py against the model artifact; both tables come out of
+              the graph unchanged. Do not hand-edit.
