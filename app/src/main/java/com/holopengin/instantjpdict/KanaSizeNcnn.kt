@@ -266,7 +266,7 @@ class KanaSizeNcnn private constructor(private val handle: Long) {
 
         /**
          * The model author's ten published vectors (INTERFACE_NB.md + validation_vectors.json,
-         * retrain "nb_mod"), logits as produced by onnxruntime fp32. Bases are pair indices in
+         * retrain "nb_all"), logits as produced by onnxruntime fp32. Bases are pair indices in
          * [KanaSizeEncoder.BASE_ORDER]; the last four rows are real corpus lines.
          *
          * These exercise the line-domain clip: four of them carry a full stop or a newline
@@ -274,16 +274,16 @@ class KanaSizeNcnn private constructor(private val handle: Long) {
          * the field.
          */
         private val VECTORS = listOf(
-            Vector("かれはいっとう。", 4, 5, 0.704738f),
-            Vector("きょうはいいてんきですね、まつ。", 14, 5, -0.587140f),
-            Vector("みんなでサッカーをするつもりです。", 5, 15, -5.698711f),
-            Vector("シーツをあらう。", 2, 15, 9.495364f),
-            Vector("きょうのてんきはいいですね。", 1, 8, -5.852514f),
-            Vector("キャンプにいく。", 1, 16, -5.604273f),
-            Vector("昌仙も、おもわず床几を立って、\n「あッ」\n　と、櫓", 12, 5, -2.950111f),
-            Vector("なろうかと……」\n　おえつは、片手に、腕白を抱きな", 12, 5, 6.011059f),
-            Vector("は、変化多き世の中にもちょっと例の少ない並ならぬ三", 12, 8, -8.596489f),
-            Vector("。\n　そして、ザッザ、ザッザと、草の波を分けて、押", 12, 15, -0.764093f),
+            Vector("かれはいっとう。", 4, 5, -0.863643f),
+            Vector("きょうはいいてんきですね、まつ。", 14, 5, 0.265265f),
+            Vector("みんなでサッカーをするつもりです。", 5, 15, -4.868875f),
+            Vector("シーツをあらう。", 2, 15, 9.617793f),
+            Vector("きょうのてんきはいいですね。", 1, 8, -6.163191f),
+            Vector("キャンプにいく。", 1, 16, -4.094974f),
+            Vector("昌仙も、おもわず床几を立って、\n「あッ」\n　と、櫓", 12, 5, -1.286511f),
+            Vector("なろうかと……」\n　おえつは、片手に、腕白を抱きな", 12, 5, 4.041704f),
+            Vector("は、変化多き世の中にもちょっと例の少ない並ならぬ三", 12, 8, -7.952802f),
+            Vector("。\n　そして、ザッザ、ザッザと、草の波を分けて、押", 12, 15, -1.359567f),
         )
     }
 }

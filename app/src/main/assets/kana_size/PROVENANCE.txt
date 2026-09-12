@@ -1,8 +1,8 @@
 Kana size model — assets
 ========================
 
-Source      : retrain "nb_mod", kanadiff fp32 ONNX, sha256 23a332be77671581d04c55a56504903ef06a7b6965b02ac24e32b5c566b7b548
-              (47,425-param byte-CNN; modern-only training corpus, line-domain raster)
+Source      : retrain "nb_all", kanadiff fp32 ONNX, sha256 132bcc3259354d0016aa3f232db456bb5abc2737415b0941a0ab20dcdfc7dcb3
+              (47,425-param byte-CNN; era-inclusive training corpus, line-domain raster)
 Author      : trained by the collaborating agent against Aozora Bunko + Japanese Wikipedia
               (Aozora Bunko is public domain; Wikipedia is CC BY-SA 4.0)
 Licence     : model weights — see the model author's INTERFACE_NB.md for terms; the training

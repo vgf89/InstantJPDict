@@ -18,29 +18,25 @@ import com.holopengin.instantjpdict.OcrEngine
  * - flip big -> small when `p < ε`
  * - leave the middle band alone
  *
- * ε is [EPSILON], and the measurement behind it (over 7,620 confusable bench positions, modern
- * rows only, which is what the gate leaves standing) is +8 net at ε=0.01 (12 fixed / 4 broken),
- * +10 at 0.03, +5 at 0.10 on the v2 artifact, and +11 at ε=0.01 (16 fixed / 5 broken) on the
- * current nb_mod one. The ungated rule read -241 on v2 and -128 on nb_mod: the model is
- * modern-trained by design, so on pre-reform text it sees a modern small-kana context and
- * confidently calls a legitimate large つ small. Hence the gate below - and hence nb_all, which
- * reduces that ungated damage to -5 by training on era-diverse text.
+ * ε is [EPSILON] = 0.01. The measurement behind it (7,620 confusable bench positions, the
+ * grounded rule applied at three epsilon bands) reproduced the app's original +8/+10/+5 on the
+ * v2 artifact exactly, which is the check that the harness is wired right.
  *
- * The comment above documents the numbers for the *shipped* artifact; re-derive them with the
- * bench rather than trusting them if the artifact changes again.
+ * The shipped artifact is nb_all. Its case is era, not modern accuracy:
  *
- * ## Why the gate needs the whole page
+ * - on modern rows, nb_all sits ~4 restored flips per 6,274 positions (0.06%) behind a
+ *   modern-only model — below the noise of a re-render;
+ * - on pre-reform text a modern-only model is confidently wrong in one direction, calling a
+ *   legitimate large つ small. Measured against JMdict — the headwords a lookup actually has to
+ *   reach, not the book's own orthography — that destroys 29 reachable headwords on the legacy
+ *   slice and restores 2, where nb_all destroys none and restores 2.
  *
- * [LegacyOrthographyGate] detects pre-reform text from a *pattern* — big つ/ツ the model calls
- * small with high confidence, at more than [LegacyOrthographyGate.MIN_KANA]-kana-worth of
- * evidence and above its rate threshold. One line is never enough evidence, and a page's lines
- * arrive together, so this runs over the whole page before any flip is applied.
+ * A pre-reform *gate* was tried and removed. It decided page-wide from a kana ratio, so a small
+ * scroll could flip a whole page's correction off, and with era-inclusive training the pattern it
+ * keyed on no longer occurs. Choosing the artifact replaces it.
  *
- * The gate's default is **modern**: thin evidence, a short page, or a single disagreement all
- * allow correction. It suppresses only on a decisive kana or a repeated pattern. That is
- * deliberate — almost all text the overlay sees is modern, and pre-reform text announces itself
- * as a pattern, so a gate that withheld by default would hide the correction exactly where it
- * is wanted.
+ * The numbers above belong to the artifact that shipped; re-derive them with the bench if that
+ * changes.
  *
  * ## Reversibility
  *
@@ -49,14 +45,6 @@ import com.holopengin.instantjpdict.OcrEngine
  */
 object KanaSizeFix {
     const val PREF_ENABLED = "kana_size_fix_enabled"
-
-    /**
-     * Whether pre-reform orthography is protected. Off by default: the model is trained for
-     * modern Japanese, the overwhelming majority of text, and a gate that can silently withhold
-     * correction for a whole page is worse than one the reader has to ask for. Turning it on
-     * restores the era gate for 旧仮名 texts, which write sokuon as a large つ.
-     */
-    const val PREF_LEGACY = "kana_size_legacy_support"
 
     /**
      * Active by default, tuned for modern Japanese. It rewrites recognised text, so the setting
@@ -104,16 +92,6 @@ object KanaSizeFix {
             .edit().putBoolean(PREF_ENABLED, enabled).apply()
     }
 
-    /** Whether pre-reform texts are protected from the correction. Off by default. */
-    fun isLegacySupportEnabled(ctx: Context): Boolean =
-        ctx.getSharedPreferences(OcrEngine.PREFS_NAME, Context.MODE_PRIVATE)
-            .getBoolean(PREF_LEGACY, false)
-
-    fun setLegacySupportEnabled(ctx: Context, enabled: Boolean) {
-        ctx.getSharedPreferences(OcrEngine.PREFS_NAME, Context.MODE_PRIVATE)
-            .edit().putBoolean(PREF_LEGACY, enabled).apply()
-    }
-
     /** Apply the correction to a whole page when the setting is on, else return it unchanged. */
     fun applyIfEnabled(ctx: Context, lines: List<LineResult>): List<LineResult> {
         if (!isEnabled(ctx)) {
@@ -131,7 +109,6 @@ object KanaSizeFix {
                 val corrected = apply(
                     lines,
                     score = { wins, bases -> model.logits(wins, bases) },
-                    honourLegacy = isLegacySupportEnabled(ctx),
                     epsilon = epsilon(ctx))
                 Log.d(TAG, lastSummary)
                 corrected
@@ -152,8 +129,6 @@ object KanaSizeFix {
     internal fun apply(
         lines: List<LineResult>,
         score: (IntArray, IntArray) -> FloatArray?,
-        /** When true, pre-reform text is protected by the era gate. Off by default. */
-        honourLegacy: Boolean = false,
         /** Certainty required to flip; [epsilon] from the settings, or the measured default. */
         epsilon: Float = EPSILON,
     ): List<LineResult> {
@@ -188,24 +163,6 @@ object KanaSizeFix {
             return lines
         }
 
-        // Era gate. The evidence is always gathered so the diagnostics can report it, but it is
-        // only *honoured* when the reader has asked for pre-reform protection: the model is tuned
-        // for modern Japanese, and a gate that can silently withhold a whole page is worse than
-        // one that has to be switched on.
-        val gate = LegacyOrthographyGate()
-        for (line in lines) gate.observeLine(line.text)
-        for ((k, c) in cands.withIndex()) gate.observePosition(c.char, probBig(logits[k]))
-        val preReform = !gate.allowsCorrection()
-        if (preReform && honourLegacy) {
-            lastSummary = "kana fix: pre-reform, withheld (gate %s)".format(gate.evidence())
-            return lines
-        }
-        val gateNote = when {
-            !honourLegacy -> "%s, not protected".format(gate.evidence())
-            preReform -> "%s, PROTECTED".format(gate.evidence())
-            else -> "%s, modern".format(gate.evidence())
-        }
-
         val flips = HashMap<Int, MutableList<Pair<Int, Pair<Char, Float>>>>()
         var small = 0
         var big = 0
@@ -232,8 +189,8 @@ object KanaSizeFix {
         }
 
         if (flips.isEmpty()) {
-            lastSummary = "kana fix: %d pos, none certain (%d near-threshold) | gate %s"
-                .format(cands.size, marginal, gateNote)
+            lastSummary = "kana fix: %d pos, none certain (%d near-threshold)"
+                .format(cands.size, marginal)
             return lines
         }
 
@@ -251,8 +208,8 @@ object KanaSizeFix {
             }
             out[li] = line.copy(text = String(chars), overrides = overrides)
         }
-        lastSummary = "kana fix: %d pos, %d small->big, %d big->small, %d near on %d lines | gate %s"
-            .format(cands.size, small, big, marginal, flips.size, gateNote)
+        lastSummary = "kana fix: %d pos, %d small->big, %d big->small, %d near on %d lines"
+            .format(cands.size, small, big, marginal, flips.size)
         return out
     }
 

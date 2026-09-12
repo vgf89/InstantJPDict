@@ -850,9 +850,8 @@ class OcrAccessibilityService : AccessibilityService() {
                         }
                     }
                     // #44 Feature 3: kana size correction. Runs over the whole page before any
-                    // view is built, because the era gate needs every line as evidence — one
-                    // line is never enough to tell pre-reform text. Off by default; a page
-                    // with too little evidence to judge reads as modern and is corrected.
+                    // view is built, because the corrected page has to be complete before the
+                    // layout is derived from it.
                     val orderedLines = finishedLines.sortedBy { it.first }
                     val correctedLines = KanaSizeFix.applyIfEnabled(
                         this@OcrAccessibilityService, orderedLines.map { it.second })
