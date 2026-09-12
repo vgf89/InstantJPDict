@@ -127,6 +127,68 @@ candidate is a `〜く` verb and 「と咲いて」「と働いて」「と呟�
 ordinary Japanese. The components are the discriminator; the n-gram is only the
 tie-break.
 
+## Character n-gram language model — not yet vendored
+
+A character n-gram model trained on public-domain Japanese prose, used by the
+correction layer (#44) to rank the component-filtered candidates a dropped or
+substituted rare kanji leaves behind, and as the prior that can overrule a
+*confidently* wrong recogniser. **No asset is committed yet**: the model is
+conditional on a later measurement, so what ships today is the generator, the
+format and the `--measure` mode.
+
+| | |
+|---|---|
+| Source (Aozora) | [globis-university/aozorabunko-clean](https://huggingface.co/datasets/globis-university/aozorabunko-clean) — `aozorabunko-dedupe-clean.jsonl.gz` (~240 MB gzip jsonl, one JSON object per line, `text` field) |
+| Source (ja Wikipedia, optional) | `dumps.wikimedia.org/jawiki/latest/jawiki-latest-pages-articles.xml.bz2` |
+| License (Aozora) | Public domain (Aozora Bunko) |
+| License (ja Wikipedia) | CC BY-SA 4.0 — attribution must travel in the `PROVENANCE.txt` sidecar when the asset is built |
+| Generator | `tools/build_char_lm.py` |
+
+Regenerate:
+
+```sh
+# default = the measured plateau: order 4, min-count >= 5, first 5M Aozora chars
+python3 tools/build_char_lm.py --aozora-chars 5000000 \
+  --out build/char_lm_order4_min5.tsv     # writes the table + .provenance.txt
+
+# reproduce the (order x prune x corpus) size/quality table on a rendered bench
+python3 tools/build_char_lm.py --measure --corpus both \
+  --bench /tmp/oov_bench2/results_epub2.jsonl /tmp/oov_az \
+  --wiki-text /tmp/wiki_ja40m.txt
+```
+
+Output is byte-deterministic: the same input and knobs give an identical
+SHA-256, printed by the tool. Do not edit the table by hand — rerun the tool.
+
+### Format
+
+One `<n-gram><TAB><count>` line per n-gram, LF endings, UTF-8, sorted by
+(order, then codepoint). For a next-character lookup the n-gram's leading
+`n-1` characters are the **context** and its final character is the candidate,
+so the line is literally `context<TAB>count`. Orders 1..`--order` are all
+present; a reader reconstructs `P(c | context) = count(n-gram) / count(context)`
+with stupid backoff. **Only the highest order is count-pruned** (`--min-count`,
+default 5), as in KenLM's typical use; shorter orders keep every observed n-gram
+because the highest order cannot be scored without its context counts.
+
+### Sizing — the measured plateau
+
+Accuracy is flat from ~7 MB to 40 MB across the corpus/order/prune grid, so the
+shipped model is the smallest model on the plateau: **order 4, min-count ≥ 5,
+Aozora** — ~1.44M entries, ~7.2 MB packed (the 5 B/entry convention used in the
+sizing table), ~17 MB as UTF-8 text. Adding ja Wikipedia bought nothing for the
+tested error classes (rare literary and variant kanji live in novels, not
+encyclopedia prose), so the default corpus is Aozora alone.
+
+Two traps are documented in the generator and worth repeating, because both
+produced silent garbage before they were handled: a Wikipedia dump returns
+**HTTP 403** without a descriptive `User-Agent` carrying a contact URL, and it
+must **not** be parsed line by line (a `<text>`/`</text>` toggle over
+`readline()` parsed 84,454 pages and yielded 0 characters) — read ~8 MB
+decompressed chunks and run the regex over a rolling buffer with a ~1 MB tail,
+`html.unescape`-ing **before** stripping tags because the dump escapes its own
+markup.
+
 Scoring the same candidates with an n-gram trained on kanji-only subsequences
 (to rank on content rather than conjugation) was measured and did **not** help:
 rank 3 of 7 against the plain model's 1 of 7. Once the component filter has cut
