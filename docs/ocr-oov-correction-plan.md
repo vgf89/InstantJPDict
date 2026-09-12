@@ -135,13 +135,15 @@ ability to insert a synthetic character position (for a gap) keeping `text`/`cha
 
 | gate | initial value | notes |
 |---|---|---|
-| gap trigger | pitch ratio ≥ 1.8 | between two decoded characters; 1.6 for max recall, 2.0 for max precision |
+| gap trigger, **vertical** | pitch ratio ≥ 1.6 | measured recall 1.00, false 0.00% (M5) |
+| gap trigger, **horizontal** | pitch ratio ≥ 1.8 **and** component agreement | measured recall 0.20 at 1.8 alone; 1.6 gives precision 0.13, so horizontal needs the second signal (M5) |
 | confident blank | blank score ≥ 0.9 | `'\u3000'` entry vs best non-blank |
 | contest blank | blank < 0.9 | use the top-K **kanji-only** majority components |
 | majority components | component in ≥ half the top-K | never a strict intersection (`眩` alone empties it) |
-| substitution candidates | IDF mass shared ≥ 0.5 | ≥0.9 = auto-apply tier |
-| auto-apply | IDF ≥ 0.9 or all emitted components present | marks the character (see §6) |
-| over-correction budget | ≤ 0.2% | M1 gate |
+| substitution candidates | IDF mass shared ≥ 0.5 | ≥0.9 = the auto-apply tier |
+| auto-apply | **OPEN after M1** — see §9 | at ≤0.2% it yields ~1 unique fix per 100 rendered cases; at 0.5% it gives 7 fixes at 71% precision |
+| over-correction budget | 0.2% agreed | M1 measured; budget curve in §3b |
+| alternatives (default path) | candidates where truth ∈ pool | 19/57 wrong rendered positions; zero over-correction risk |
 
 ### 2.4 Assets
 
@@ -199,6 +201,93 @@ word. Test: build a lookup from dictionary **readings** and search entries whose
 matches the surrounding kana with a length permitted by the gap, then LM-rank. This is the
 proposal for §9's open question — measure coverage on the 13 Aozora deletions (currently
 0 candidates for nouns/conjunctions under the one-sided rule).
+
+---
+
+## 3b. Phase 0 results — measured
+
+### M1 — over-correction curve: **auto-apply does not survive the ≤0.2% budget**
+
+1,039 aligned kanji positions over 318 lines (both paired benches + all 100 rendered
+cases). Populations differ enormously, which is the first finding:
+
+| population | positions | wrong | truth inside the component pool | at IDF ≥0.7 | at IDF ≥0.9 |
+|---|---|---|---|---|---|
+| paired game-UI benches | 562 | **10** | 1/10 | 0 | 0 |
+| rendered OOV cases | 477 | 57 | 19/57 | 14 | 11 |
+
+So the corrector's entire opportunity is ~11–19 positions across 100 rendered cases, and
+the paired benches are useless as a test bed for it — **evaluate on the OOV-rich rendered
+benches or not at all.**
+
+| budget (over-correction of correct characters) | best achieved | applied | precision | tier / margin |
+|---|---|---|---|---|
+| 0.05% / 0.1% / **0.2%** | 0.000% | 2 | 100% | 0.3 / 5.0 |
+| 0.5% / 1.0% | 0.412% | 11 | 45% | 0.7 / 2.0 |
+| 2.0% | 1.646% | 24 | 29% | 0.9 / 0.8 |
+| *(rendered only)* 0.5% | 0.476% | 8 | 62% | 0.7 / 2.0 |
+| *(rendered only)* 0.5% | 0.476% | 7 | **71%** | 0.9 / 2.0 |
+
+At the agreed ≤0.2% budget the yield is **2 applied corrections, and they are the same
+position rendered twice (one unique fix)**. At 0.5% — 2.4× the budget — it is 7 applied,
+5 right, i.e. a net −2 to −3 errors per 477 positions.
+
+**The failure mode is the LM's frequency bias, not the components.** Worked examples at
+each budget level (rendered cases):
+
+```
+budget 0.2%  tier 0.9 margin 5.0   2 applied, 100% right, 0 rewritten
+  [RIGHT]  az_58dc_0  曇 -> 壜  (truth 壜, idf 1.00, gain +5.68, comps 二/厶/日/雨)
+budget 0.5%  tier 0.7 margin 2.0   8 applied, 62% right, 2 correct rewritten
+  [OVER-CORRECT] epub_fuk_13  羊 -> 美  (truth 羊, idf 1.00, gain +4.42)
+  [RIGHT]        az_58dc_0    曇 -> 壜  (truth 壜, idf 1.00, gain +5.68)
+  [RIGHT]        az_58dc_1    曇 -> 壜  (truth 壜, idf 1.00, gain +3.78)
+  [wrong-fix]    az_58dc_2    還 -> 環  (truth 壜, idf 0.74, gain +2.06)
+budget 2.0%  tier 0.9 margin 0.8   15 applied, 47% right, 8 correct rewritten
+  [OVER-CORRECT] 羊 -> 美, 雪 -> 鱈, 二 -> 余, 貧 -> 齎
+```
+
+Every over-correction replaces a *rarer* character with a *more frequent* one (`羊`→`美`,
+`雪`→`鱈`, `二`→`余`). That is the n-gram doing exactly what it was trained to do, and it
+is the opposite of what this feature needs. The deletion pipeline escaped this only
+because dictionary ∩ components had already cut the candidate set to ~7; a per-position
+corrector has no equivalent gate, and a character n-gram cannot supply one.
+
+**Consequence:** Feature 1 ships as **alternatives-on-tap** (zero over-correction risk,
+and the truth is present in the pool for 19/57 wrong rendered positions). Auto-apply is
+**open** — see §9; the options are (a) keep ≤0.2% and accept ~1 fix per 100 cases,
+(b) relax to 0.5% for ~7 fixes at 71% precision and ~0.48% over-correction, (c) drop
+auto-apply. A word-level context model is what would make auto-apply defensible (that is
+#73's territory, not a char n-gram's).
+
+### M2 — OCR context vs clean context
+
+Same candidates, ranked in the OCR text (production) versus the clean source text:
+target ranked 1st in **10/67** versus **13/67** (top-3 unchanged at 13/67). So the oracle
+leak in the earlier Aozora numbers is real but modest (~23% relative on rank-1); production
+numbers should use the OCR context, and quoted results above do.
+
+### M5 — trigger per orientation: **vertical is near-perfect, horizontal is not**
+
+| bench | deletions (median ratio) | ordinary | rule | recall | false rate | precision |
+|---|---|---|---|---|---|---|
+| horizontal (trails ×2) | 1.67 (p25 **1.00**) | 1.00 | ≥1.6 | 0.60 | 1.10% | **0.13** |
+| | | | ≥1.8 | 0.20 | 0.66% | 0.08 |
+| vertical (vert_large) | 2.00 (p25 1.92) | 1.00 | **≥1.6** | **1.00** | **0.00%** | **1.00** |
+| | | | ≥1.8 / ≥2.0 | 0.75 | 0.00% | 1.00 |
+
+Horizontal deletion gaps are sometimes indistinguishable from ordinary spacing (p25 = 1.00
+— the character vanished *without* leaving a wider gap), and the false-positive rate makes
+1.6 unusable there on its own. Ship **orientation-specific thresholds**: vertical 1.6
+(recall 1.00, precision 1.00), horizontal ≥1.8 **and** require additional evidence
+(component agreement) before showing an affordance.
+
+### Still to run
+
+**M3** (ja Wikipedia corpus + pruning curve) — corpus extraction in progress.
+**M4** (blank auto-fill operating point), **M6** (reading-side alignment for confident
+blanks).
+
 
 ---
 
@@ -265,6 +354,12 @@ inserted char as un-lookupable (`OcrOverlayStateController.kt:366` behaviour pre
 ---
 
 ## 6. Phase 3 — Feature 1: kanji correction
+
+> **M1 changed this phase.** Auto-apply does not survive the ≤0.2% budget (§3b), so the
+> shipping order is: **candidate generation (3.1) + alternatives UI (3.4) first** — zero
+> over-correction risk, and the truth is in the pool for 19/57 wrong rendered positions.
+> The scorer (3.2) and the apply/mark path (3.3) stay built but **behind the open
+> auto-apply decision** in §9; default them OFF until that decision lands.
 
 **Task 3.1 — `util/OovCandidates.kt`** (pure, no Android): given an emitted character and
 the component table, yield `Candidate(char, sharedIdfFraction, sharesAllComponents)`:
@@ -342,8 +437,10 @@ uniform line shows none, and the manual entry path works.
 
 | risk / question | stance |
 |---|---|
-| The corrector rewrites already-correct text at scale | bounded by M1 (≤0.2%), the keep-prior, and the ≥90% tier; every correction is marked and reversible |
-| Horizontal lines behave much worse than vertical | ship the list either way; auto-apply only where the per-orientation numbers hold; never blend the two in reporting |
+| **Feature 1 auto-apply (OPEN after M1)** | measured trade: ≤0.2% budget → ~1 unique fix per 100 rendered cases; 0.5% → 7 fixes at 71% precision (net −2/−3 errors per 477 positions). A character n-gram cannot separate these cases because its frequency bias prefers the common character (`羊`→`美`). Options: keep the strict budget, relax to 0.5%, or ship alternatives-only. A word-level context model would be needed to do better (#73). |
+| The corrector rewrites already-correct text at scale | bounded by the keep-prior and the tier/margin gates; at ≤0.2% it is 0.000% measured, at 0.5% it is 0.41–0.48% |
+| The paired benches cannot evaluate this feature (10 wrong kanji positions, 1 in pool) | evaluate only on the OOV-rich rendered benches |
+| Horizontal lines behave much worse than vertical | M5: vertical trigger recall 1.00 / precision 1.00; horizontal recall 0.60 / precision 0.13 → orientation-specific thresholds and an extra signal for horizontal; never blend the two in reporting |
 | Confident blanks have no candidate source (nouns/conjunctions) | **open** — M6 (reading-side alignment) is the experiment; auto-fill deferred (decision e/f) |
 | Rare-but-modern kanji that are absent upstream (`vocab.json`) can never be emitted by the head | post-hoc insertion only, unless we retrain the head with extra classes — that is #73's territory; M3's Wikipedia coverage numbers decide whether it is worth raising separately |
 | 20 MB LM load time / RSS on a phone | text format first, measure; packed binary behind the same API if needed; load off the main thread |
