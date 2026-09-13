@@ -2156,6 +2156,16 @@ class OcrOverlayView(
     }
 
     /**
+     * #57: one back press delivered by the host rather than by the key or
+     * dispatcher paths — the share activity's `onBackPressed`. Same
+     * de-duplicated [handleBack], so an activity and the service cannot
+     * diverge on what back closes.
+     */
+    fun handleBackKey() {
+        handleBack(this)
+    }
+
+    /**
      * Close the whole overlay through the one dismissal path. Both the close
      * button and [closeNextLayer]'s last step land here, so there is exactly
      * one way the overlay goes away.

@@ -76,7 +76,6 @@ class OcrAccessibilityService : AccessibilityService() {
     private var overlayView: OcrOverlayView? = null
     private lateinit var ocrEngine: OcrEngine
     private val controller = OcrOverlayStateController()
-    private val gson = Gson()
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     
 
@@ -116,9 +115,7 @@ class OcrAccessibilityService : AccessibilityService() {
     override fun onCreate() {
         super.onCreate()
         ocrEngine = OcrEngine(this)
-        controller.deinflector = Deinflector(java.io.InputStreamReader(assets.open("deinflect.json")))
-        controller.dictionaryProvider = AndroidDictionaryProvider(this)
-        controller.gson = gson
+        OverlayEnvironment.prepare(this, controller, serviceScope)
 
         val filter = IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_OFF)
@@ -134,27 +131,6 @@ class OcrAccessibilityService : AccessibilityService() {
             filter,
             ContextCompat.RECEIVER_EXPORTED
         )
-
-        // #44: component-derived popup candidates. Parsing the 266 KB component table is
-        // cheap but not free, so it happens once off the main thread; until it lands (and
-        // if it fails) the popup shows the head's own list, exactly as before.
-        serviceScope.launch {
-            val table = withContext(Dispatchers.IO) {
-                runCatching { ComponentTable.load(this@OcrAccessibilityService) }.getOrNull()
-            } ?: return@launch
-            withContext(Dispatchers.IO) {
-                runCatching { KanjiVariants.install(this@OcrAccessibilityService) }
-            }
-            controller.installOovSuggestions(OovCandidates(table)) {
-                OovSuggestions.isEnabled(this@OcrAccessibilityService)
-            }
-            // The 14 MB packed model behind the blank's candidate ranking. Mapped the same
-            // way and off the main thread; a failure here only narrows the blank's list.
-            controller.installCharLm(
-                withContext(Dispatchers.IO) {
-                    runCatching { CharLm.load(this@OcrAccessibilityService) }.getOrNull()
-                })
-        }
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {

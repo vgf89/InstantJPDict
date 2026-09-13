@@ -30,6 +30,24 @@
             </intent-filter>
         </activity>
 
+        <!-- #57 (Feat — image share intent): a single shared image goes through
+             the same OCR/lookup surface as the accessibility overlay. Only
+             ACTION_SEND is handled; ACTION_SEND_MULTIPLE is a later follow-up. -->
+        <activity
+            android:name=".ShareImageActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:label="@string/app_name"
+            android:theme="@style/Theme.InstantJPDict.Share">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+
+                <data android:mimeType="image/*" />
+            </intent-filter>
+        </activity>
+
         <service
             android:name=".OcrAccessibilityService"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
