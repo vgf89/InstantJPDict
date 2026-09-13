@@ -1,5 +1,5 @@
-EDRDG-derived data — KRADFILE components and JMdict kanji forms
-==============================================================
+EDRDG-derived data — KRADFILE components, JMdict kanji forms and kana variants
+=============================================================================
 
 Bundled as : app/src/main/assets/components/krad_components.txt
 
@@ -13,6 +13,14 @@ Bundled as : app/src/main/assets/components/krad_components.txt
     licenses/notices/unihan-variants.txt), the other half from JMdict's
     out-dated/rarely-used kanji tags (oK/rK) intersected with Unihan's
     simplified/traditional axis, built by tools/build_kanji_variants.py.
+
+    app/src/main/assets/variants/kana_variants.txt
+
+    16 variant→canonical kana pairs (historical kana orthography → modern), built
+    from JMdict's own kana cross-references — readings of one entry that differ at
+    a single position on a historical-kana row (かつかざん/かっかざん, あはれ/あわれ,
+    あづま/あずま) — by tools/build_kana_variants.py (issue #75). Used to normalise a
+    lookup query only; displayed text is never rewritten.
 
 Copyright : Copyright over the KRADFILE/RADKFILE and JMdict files is held by
             James William BREEN and The Electronic Dictionary Research and
