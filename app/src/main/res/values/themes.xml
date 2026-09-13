@@ -2,4 +2,14 @@
 <resources>
 
     <style name="Theme.InstantJPDict" parent="Theme.MaterialComponents.DayNight.NoActionBar" />
+
+    <!-- #57: the share activity draws the same full-screen overlay surface, so
+         it wants the same full-bleed, dark, chrome-free window the accessibility
+         overlay uses. -->
+    <style name="Theme.InstantJPDict.Share" parent="Theme.InstantJPDict">
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
 </resources>
