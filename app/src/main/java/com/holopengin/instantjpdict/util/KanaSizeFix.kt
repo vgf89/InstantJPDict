@@ -143,7 +143,7 @@ object KanaSizeFix {
             }
         }
         if (cands.isEmpty()) {
-            lastSummary = "kana fix: no confusable positions"
+            lastSummary = "kana fix: no candidates"
             return lines
         }
 
@@ -164,9 +164,7 @@ object KanaSizeFix {
         }
 
         val flips = HashMap<Int, MutableList<Pair<Int, Pair<Char, Float>>>>()
-        var small = 0
-        var big = 0
-        var marginal = 0
+        var flipped = 0
         val declined = ArrayList<Pair<Triple<Int, Int, Char>, Float>>()
         for ((k, c) in cands.withIndex()) {
             val p = probBig(logits[k])
@@ -174,14 +172,13 @@ object KanaSizeFix {
             val target = (if (isSmall) KanaSizeEncoder.bigFormOf(c.char) else SMALL_OF[c.char]) ?: continue
             val flipsIt = if (isSmall) p > 1f - epsilon else p < epsilon
             if (!flipsIt) {
-                // Near-threshold counts how many sat within 10x of the bar; declined records the
-                // closest few by name, which is what tells a threshold problem apart from the
-                // model simply agreeing with the recogniser.
-                if (if (isSmall) p > 1f - 10f * epsilon else p < 10f * epsilon) marginal++
+                // The closest few by name: this tells a threshold problem apart from the model
+                // simply agreeing with the recogniser. No near-threshold count any more - the
+                // p values here say it better, and the status line stays short.
                 declined.add(Triple(c.line, c.index, c.char) to (if (isSmall) 1f - p else p))
                 continue
             }
-            if (isSmall) small++ else big++
+            flipped++
             flips.getOrPut(c.line) { mutableListOf() }.add(c.index to (target to p))
         }
         lastDeclined = declined.sortedBy { it.second }.take(5).joinToString(" / ") {
@@ -189,8 +186,7 @@ object KanaSizeFix {
         }
 
         if (flips.isEmpty()) {
-            lastSummary = "kana fix: %d pos, none certain (%d near-threshold)"
-                .format(cands.size, marginal)
+            lastSummary = "kana fix: 0 of %d flipped".format(cands.size)
             return lines
         }
 
@@ -208,8 +204,7 @@ object KanaSizeFix {
             }
             out[li] = line.copy(text = String(chars), overrides = overrides)
         }
-        lastSummary = "kana fix: %d pos, %d small->big, %d big->small, %d near on %d lines"
-            .format(cands.size, small, big, marginal, flips.size)
+        lastSummary = "kana fix: %d of %d flipped".format(flipped, cands.size)
         return out
     }
 
