@@ -10,13 +10,27 @@ import java.io.File
  * is worse than no test.
  */
 object TestAssets {
-    fun variantsFile(): File {
+    fun variantsFile(): File = assetsFile("variants/kanji_variants.txt")
+
+    /** A file under `app/src/main/assets/`, by its asset-relative path. */
+    fun assetsFile(rel: String): File {
         val candidates = listOf(
-            File("src/main/assets/variants/kanji_variants.txt"),
-            File("app/src/main/assets/variants/kanji_variants.txt"),
+            File("src/main/assets/$rel"),
+            File("app/src/main/assets/$rel"),
         )
         return candidates.firstOrNull { it.isFile }
-            ?: error("kanji_variants.txt not found; tried ${candidates.joinToString { it.path }} " +
+            ?: error("$rel not found; tried ${candidates.joinToString { it.path }} " +
+                "(working dir ${File(".").absolutePath})")
+    }
+
+    /** A file under `app/licenses/` (generation inputs), by its relative path. */
+    fun licensesDirFile(rel: String): File {
+        val candidates = listOf(
+            File("licenses/$rel"),
+            File("app/licenses/$rel"),
+        )
+        return candidates.firstOrNull { it.isFile }
+            ?: error("licenses/$rel not found; tried ${candidates.joinToString { it.path }} " +
                 "(working dir ${File(".").absolutePath})")
     }
 }
