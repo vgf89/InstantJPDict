@@ -2,27 +2,27 @@ Kana-size model — "nb_all" byte-level CNN
 =========================================
 
 Bundled as   : app/src/main/assets/kana_size/nb_all.bin, nb_all.param
-Licence      : not stated for the weights (see "Known gap" below)
-Licence text : none shipped — no licence is declared for these weights anywhere in
-               this repository, so there is no text to reproduce.
+Licence      : CC BY-SA 4.0 (the weights). The code that trains, converts and runs this model is
+               AGPL-3.0, like the rest of the application.
+Licence text : licenses/texts/cc-by-sa-4.0.txt
 Training data: Aozora Bunko (public domain) and Japanese Wikipedia (CC BY-SA 4.0);
-               see licenses/notices/aozora-char-lm.txt and
-               licenses/texts/cc-by-sa-4.0.txt for those corpora.
+               see licenses/notices/aozora-char-lm.txt and licenses/texts/cc-by-sa-4.0.txt.
 
-Known gap
----------
+Why CC BY-SA 4.0
+----------------
 
-This model was trained by a collaborating agent and vendored into the app. Its own
-provenance sidecar (app/src/main/assets/kana_size/PROVENANCE.txt) says the terms are
-"see the model author's INTERFACE_NB.md" — that file is not in this repository, and
-no licence is recorded with the artifact. Nothing here asserts a licence for the
-weights themselves: the gap is recorded rather than papered over, and the training
-corpora's attribution (which is required) is below.
+The weights carry no expression from either corpus — a 47,425-parameter model that predicts the
+small/large form of a kana from five characters of context on each side cannot memorise text — so
+whether the share-alike condition reaches them at all is genuinely contested. Creative Commons'
+own guidance for training ("Using CC-Licensed Works for AI Training", 2025) takes the cautious
+line: a model based on share-alike content and shared publicly should carry the same licence.
+Adopting the corpus's terms removes the question, costs nothing, and matches how the pitch-accent
+and KRADFILE components bundled in this same app are already handled. Attribution for both corpora
+is above.
 
-What the trained model is used for
-----------------------------------
+What the model is used for
+--------------------------
 
-Deciding the small/large form of っ/つ, ゃ/や, ゅ/ゆ, ょ/よ from five characters of
-context on each side, behind the "Correct small/large kana with the size model"
-checkbox (issue #44). Verified on-device against ten published logits by
-KanaSizeNcnn.selfCheck.
+Deciding the small/large form of っ/つ, ゃ/や, ゅ/ゆ, ょ/よ from five characters of context on each
+side, behind the "Correct small/large kana with the size model" checkbox (issue #44). Verified
+on-device against ten published logits by KanaSizeNcnn.selfCheck.

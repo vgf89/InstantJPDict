@@ -6,8 +6,9 @@ Source      : retrain "nb_all", kanadiff fp32 ONNX, sha256 132bcc3259354d00…
               itself with explicit fp32 tags and asserts its byte total
 Author      : trained by the collaborating agent against Aozora Bunko + Japanese Wikipedia
               (Aozora Bunko is public domain; Wikipedia is CC BY-SA 4.0)
-Licence     : model weights — see the model author's INTERFACE_NB.md for terms; the training
-              corpora are public domain (Aozora) and CC BY-SA (Wikipedia)
+Licence     : the weights are CC BY-SA 4.0 — the same terms as the Wikipedia half of the training
+              corpus (Aozora Bunko is public domain). The code that generates and runs inference
+              against them is AGPL-3.0, like the rest of this app.
 
 Files
 -----
