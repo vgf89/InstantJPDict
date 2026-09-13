@@ -1,0 +1,28 @@
+Java Native Access (JNA)
+========================
+
+Bundled as   : net.java.dev.jna:jna:5.14.0@aar (declared with an explicit `@aar`
+               classifier in app/build.gradle.kts). Ships the native library
+               lib/arm64-v8a/libjnidispatch.so (168 KB) and the Java classes.
+Licence      : dual-licensed — GNU Lesser General Public License 2.1 or later, OR
+               Apache License 2.0. The recipient may choose either; this app
+               relies on the Apache-2.0 option.
+Licence text : licenses/texts/apache-2.0.txt (the option this app uses)
+               licenses/texts/lgpl-2.1.txt  (the alternative, shipped for
+                                             completeness since JNA's own license
+                                             files are not inside the AAR)
+Upstream     : https://github.com/java-native-access/jna
+
+Where the licence was verified
+------------------------------
+
+  The published POM for the exact artifact, retrieved 2026-09-13:
+    https://repo1.maven.org/maven2/net/java/dev/jna/jna/5.14.0/jna-5.14.0.pom
+  Its <licenses> block declares both "LGPL-2.1-or-later" and "Apache-2.0" with the
+  comment: "Java Native Access (JNA) is licensed under the LGPL, version 2.1 or
+  later, or the Apache License, version 2.0. You can freely decide which license
+  you want to apply to the project."
+  The AAR itself (jna-5.14.0.aar) contains classes.jar, the per-ABI
+  libjnidispatch.so files and an AndroidManifest.xml — no licence files, which is
+  why the texts above are the canonical texts rather than copies out of the
+  artifact.

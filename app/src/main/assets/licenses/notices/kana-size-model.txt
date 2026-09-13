@@ -1,0 +1,28 @@
+Kana-size model — "nb_all" byte-level CNN
+=========================================
+
+Bundled as   : app/src/main/assets/kana_size/nb_all.bin, nb_all.param
+Licence      : not stated for the weights (see "Known gap" below)
+Licence text : none shipped — no licence is declared for these weights anywhere in
+               this repository, so there is no text to reproduce.
+Training data: Aozora Bunko (public domain) and Japanese Wikipedia (CC BY-SA 4.0);
+               see licenses/notices/aozora-char-lm.txt and
+               licenses/texts/cc-by-sa-4.0.txt for those corpora.
+
+Known gap
+---------
+
+This model was trained by a collaborating agent and vendored into the app. Its own
+provenance sidecar (app/src/main/assets/kana_size/PROVENANCE.txt) says the terms are
+"see the model author's INTERFACE_NB.md" — that file is not in this repository, and
+no licence is recorded with the artifact. Nothing here asserts a licence for the
+weights themselves: the gap is recorded rather than papered over, and the training
+corpora's attribution (which is required) is below.
+
+What the trained model is used for
+----------------------------------
+
+Deciding the small/large form of っ/つ, ゃ/や, ゅ/ゆ, ょ/よ from five characters of
+context on each side, behind the "Correct small/large kana with the size model"
+checkbox (issue #44). Verified on-device against ten published logits by
+KanaSizeNcnn.selfCheck.

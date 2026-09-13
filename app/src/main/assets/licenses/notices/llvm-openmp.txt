@@ -1,0 +1,17 @@
+LLVM OpenMP runtime (libomp)
+============================
+
+Bundled as   : lib/arm64-v8a/libomp.so (1.2 MB), packaged by the Android Gradle
+               Plugin because the app's CMake build links OpenMP
+               (app/src/main/cpp/CMakeLists.txt: find_package(OpenMP) →
+               OpenMP::OpenMP_CXX). ncnn's own parallel-for runs on this runtime.
+Origin       : the Android NDK's clang runtime —
+               $ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/lib/clang/19/lib/linux/aarch64/libomp.so
+               with NDK 28.2.13676358, the version pinned in app/build.gradle.kts.
+Upstream     : https://github.com/llvm/llvm-project (compiler-rt / openmp runtimes)
+Licence      : Apache License v2.0 WITH LLVM Exceptions
+Licence text : licenses/texts/apache-2.0-with-llvm-exception.txt
+               (LLVM's own LICENSE.TXT as published upstream, retrieved from
+               https://raw.githubusercontent.com/llvm/llvm-project/main/LICENSE.TXT
+               on 2026-09-13; it contains the full Apache-2.0 text followed by the
+               LLVM exception).

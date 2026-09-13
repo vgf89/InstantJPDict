@@ -1,0 +1,32 @@
+# Maven dependency → licence notice, for the app's runtime classpath.
+#
+# Consumed by :app:generateLicenseIndex / :app:verifyLicenseIndex. Every module on
+# the resolved runtime classpath must match a row here or the build fails — that is
+# the guard that keeps a new dependency from shipping without a notice. See
+# docs/licenses.md.
+#
+# One row per module, TAB-separated. '#' starts a comment; blank lines ignored.
+#
+#   1  group:artifact        exact match on the resolved module (version-independent,
+#                            so a version bump needs no edit), or a prefix rule ending
+#                            in '*' — e.g. `androidx.*` covers every `androidx.<x>:<y>`
+#   2  licence label         shown in the in-app viewer
+#   3  licence text file(s)  comma-separated, relative to app/src/main/assets/
+#   4  notice file           asset path, or '-'
+#   5  provenance            where the licence was verified from
+#
+# Every row below was checked on 2026-09-13 against the <licenses> block of that
+# module's own published POM — not against a group's reputation. 76 of the 78
+# resolved modules declare Apache-2.0 in exactly those words (four spellings of it
+# occur), jna declares a dual licence, and com.google.guava:listenablefuture
+# declares nothing at all in its own POM, which is why its row cites its parent.
+androidx.*	Apache-2.0	licenses/texts/apache-2.0.txt	-	POM <licenses> of each resolved androidx module on Google Maven (dl.google.com/dl/android/maven2/.../*.pom) — "The Apache Software License, Version 2.0", checked 2026-09-13
+com.google.android.material:*	Apache-2.0	licenses/texts/apache-2.0.txt	-	POM <licenses> on Google Maven — "The Apache Software License, Version 2.0", checked 2026-09-13
+com.google.code.gson:gson	Apache-2.0	licenses/texts/apache-2.0.txt	-	POM <licenses> on Maven Central — "Apache-2.0", checked 2026-09-13
+com.google.errorprone:error_prone_annotations	Apache-2.0	licenses/texts/apache-2.0.txt	-	POM <licenses> on Maven Central — "Apache 2.0", checked 2026-09-13
+com.google.guava:listenablefuture	Apache-2.0	licenses/texts/apache-2.0.txt	-	Its own POM declares no licence; its parent guava-parent:26.0-android declares "The Apache Software License, Version 2.0" (Maven Central), checked 2026-09-13
+net.java.dev.jna:jna	LGPL-2.1-or-later OR Apache-2.0 (Apache-2.0 elected)	licenses/texts/apache-2.0.txt,licenses/texts/lgpl-2.1.txt	licenses/notices/jna.txt	POM <licenses> on Maven Central declares both; the app uses the Apache-2.0 option — see the notice
+org.jetbrains.kotlin:*	Apache-2.0	licenses/texts/apache-2.0.txt	-	POM <licenses> on Maven Central — "The Apache License, Version 2.0" (kotlin-bom and kotlin-stdlib), checked 2026-09-13
+org.jetbrains.kotlinx:*	Apache-2.0	licenses/texts/apache-2.0.txt	-	POM <licenses> on Maven Central — "The Apache Software License, Version 2.0", checked 2026-09-13
+org.jetbrains:annotations	Apache-2.0	licenses/texts/apache-2.0.txt	-	POM <licenses> on Maven Central — "The Apache Software License, Version 2.0", checked 2026-09-13
+org.jspecify:jspecify	Apache-2.0	licenses/texts/apache-2.0.txt	-	POM <licenses> on Maven Central — "The Apache License, Version 2.0", checked 2026-09-13

@@ -1,0 +1,20 @@
+Character n-gram language model — Aozora Bunko attribution
+=========================================================
+
+Bundled as   : app/src/main/assets/lm/char_lm.bin (1,427,755 n-grams, order 4)
+Source       : Aozora Bunko — the `globis-university/aozorabunko-clean` mirror of
+               Aozora Bunko texts (aozorabunko-dedupe-clean.jsonl.gz)
+Copyright    : the individual authors of the Aozora Bunko works; Aozora Bunko
+               texts are public domain or free to redistribute
+Licence      : public domain / free redistribution — no licence text to reproduce.
+               The attribution below is the condition recorded upstream at
+               https://www.aozora.gr.jp/guide/kijyunn.html
+Attribution  : works used are the ones listed in the text-table provenance written
+               by tools/build_char_lm.py; the shipped table is derived from the
+               first 5,000,000 characters of that corpus.
+
+Provenance in-repo
+------------------
+
+  app/src/main/assets/lm/PROVENANCE.txt (written by the same run as the artifact)
+  generator: tools/build_char_lm.py

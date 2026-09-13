@@ -7,6 +7,10 @@ source, revision, license and SHA-256 of the artifact.
 Everything here is a generated file. Do not edit by hand — regenerate from the
 script named below and commit the result.
 
+The licences and attribution these datasets require are shipped in the APK too —
+see [licenses.md](licenses.md) and the **Licenses** button on the main screen
+(#70). Each `PROVENANCE.txt` below is the source of the corresponding entry there.
+
 ## Pitch accents — `pitch/kanjium_pitch_accents.zip`
 
 Yomitan term-meta-bank v3 dictionary of Tokyo pitch accents, in-app behind the

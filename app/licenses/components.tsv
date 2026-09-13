@@ -1,0 +1,29 @@
+# Hand-maintained components for the bundled-licence index.
+#
+# Consumed by the :app:generateLicenseIndex Gradle task, which writes
+# app/src/main/assets/licenses/INDEX.txt. Read docs/licenses.md before editing.
+#
+# One line per component, TAB-separated. '#' starts a comment; blank lines are
+# ignored. Columns:
+#
+#   1  display name            shown in the in-app viewer
+#   2  licence label           short human label, e.g. "Apache-2.0"
+#   3  version                 version/revision, or "-" when not applicable
+#   4  text files              comma-separated asset paths (relative to assets/),
+#                              e.g. licenses/texts/apache-2.0.txt
+#   5  notice file             asset path, or "-" for none
+#   6  provenance              where the licence was verified from (one line)
+#
+# The task fails if any of these files does not exist, which is what keeps a
+# hand-edited line from pointing at nothing.
+InstantJPDict (the app itself)	AGPL-3.0-only	-	licenses/texts/agpl-3.0.txt	-	repo LICENSE at the root of InstantJPDict (copied verbatim by the task, so it cannot drift)
+ncnn	BSD-3-Clause	vgf89-ncnn@a2b8507f	licenses/texts/bsd-3-clause-ncnn.txt	licenses/notices/ncnn.txt	LICENSE.txt at the pinned fork commit (raw.githubusercontent.com)
+PP-OCRv6 small (PaddleOCR det+rec)	Apache-2.0	PP-OCRv6_small	licenses/texts/apache-2.0.txt	licenses/notices/paddleocr-pp-ocrv6.txt	Hugging Face model cards PaddlePaddle/PP-OCRv6_small_{det_onnx,rec_safetensors}: license apache-2.0
+kana-size model (nb_all)	Unstated in-repo	-	-	licenses/notices/kana-size-model.txt	weights have no licence file in or out of repo; gap recorded in the notice
+char n-gram language model (char_lm.bin)	Public domain (Aozora Bunko)	-	-	licenses/notices/aozora-char-lm.txt	assets/lm/PROVENANCE.txt (Aozora Bunko is public domain / free to redistribute)
+KRADFILE kanji components (EDRDG)	CC-BY-SA-4.0	-	licenses/texts/cc-by-sa-4.0.txt,licenses/texts/edrdg-licence.txt	licenses/notices/edrdg-kradfile-jmdict.txt	https://www.edrdg.org/edrdg/licence.html (KRADFILE named; CC BY-SA 4.0)
+Kanjium pitch accents	CC-BY-SA-4.0	685d4d723d6d	licenses/texts/cc-by-sa-4.0.txt	licenses/notices/kanjium-pitch-accents.txt	upstream LICENSE.txt at the pinned commit (raw.githubusercontent.com)
+Unihan kanji variants (Unicode)	Unicode-License-V3	Unicode-17.0.0	licenses/texts/unicode-licence-v3.txt	licenses/notices/unihan-variants.txt	https://www.unicode.org/license.txt (Unihan_Variants.txt in UCD 17.0.0)
+Yomichan/Yomitan deinflection rules	GPL-3.0-only	FooSoft/yomichan@master	licenses/texts/gpl-3.0.txt	licenses/notices/yomichan-deinflect.txt	deinflect.json is JSON-identical to upstream ext/data/deinflect.json; repo API reports yomidevs/yomitan as GPL-3.0
+nav_graph_core (Rust library in the APK)	MPL-2.0+MIT+Apache-2.0	see crate entries	licenses/texts/mpl-2.0.txt,licenses/texts/apache-2.0.txt	licenses/notices/nav-graph-core.txt	Cargo.lock closure; per-crate entries below carry each crate's own licence text
+LLVM OpenMP runtime (libomp.so)	Apache-2.0 WITH LLVM-exception	NDK-28.2.13676358	licenses/texts/apache-2.0-with-llvm-exception.txt	licenses/notices/llvm-openmp.txt	LLVM LICENSE.TXT upstream; libomp.so packaged from the pinned NDK clang runtime

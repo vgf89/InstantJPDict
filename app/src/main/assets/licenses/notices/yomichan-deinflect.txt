@@ -1,0 +1,27 @@
+Deinflection rule table — Yomichan / Yomitan (GPL-3.0)
+=====================================================
+
+Bundled as   : app/src/main/assets/deinflect.json
+               569 rules in 36 groups, consumed by util/Deinflector.kt to resolve
+               inflected forms (食べた → 食べる · past).
+Upstream     : the file is byte-for-byte equivalent (JSON-equal, all 36 groups and
+               569 rules identical) to Yomichan's `ext/data/deinflect.json`:
+                 https://github.com/FooSoft/yomichan  (master, retrieved 2026-09-13)
+                 https://raw.githubusercontent.com/FooSoft/yomichan/master/ext/data/deinflect.json
+Project      : Yomitan — https://github.com/yomidevs/yomitan — is the maintained
+               successor; this repository's README credits Yomitan and states that
+               the project "uses its rule files".
+Licence      : GNU General Public License v3.0 (Yomichan and Yomitan are both
+               GPL-3.0; verified from the GitHub repository API for
+               yomidevs/yomitan on 2026-09-13).
+Licence text : licenses/texts/gpl-3.0.txt
+               (https://www.gnu.org/licenses/gpl-3.0.txt)
+
+GPL-3.0 compatibility
+---------------------
+
+This app is licensed AGPL-3.0 (see licenses/texts/agpl-3.0.txt). AGPL-3.0 §13
+explicitly permits combining an AGPL-3.0 work with GPL-3.0 code, so the bundled
+GPL-3.0 table is compatible with the app's own licence; the table, like the rest of
+the app, is redistributed under AGPL-3.0 and its upstream GPL-3.0 terms remain
+available to recipients.
