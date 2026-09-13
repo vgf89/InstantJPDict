@@ -2,6 +2,7 @@ package com.holopengin.instantjpdict
 
 import com.holopengin.instantjpdict.util.JapaneseUtil
 import com.holopengin.instantjpdict.util.Deinflector
+import com.holopengin.instantjpdict.util.KanaOrthography
 import com.holopengin.instantjpdict.util.DeinflectionChain
 import com.holopengin.instantjpdict.util.DictionaryRedirects
 import com.holopengin.instantjpdict.util.OovCandidates
@@ -742,6 +743,12 @@ class OcrOverlayStateController {
             val queryTextRaw = followingText.substring(0, len)
             val queryText = JapaneseUtil.normalize(queryTextRaw)
 
+            // #75: pre-reform orthography. The modern form of the prefix is searched
+            // as one more variant — the raw prefix is still in the list, so this can
+            // only add a reachable headword, never take one away. Displayed text is
+            // untouched: only this query string is rewritten.
+            val modernised = KanaOrthography.modernise(queryText)
+
             // The RAW prefix is searched alongside its folded form. The fold is a
             // substitution, so folding alone replaced the queried form outright: an old
             // form the head can emit (摑) resolved to the modern headword and the old
@@ -752,14 +759,27 @@ class OcrOverlayStateController {
                 queryTextRaw,
                 queryText,
                 JapaneseUtil.katakanaToHiragana(queryText),
-                JapaneseUtil.collapseEmphatic(queryText)
+                JapaneseUtil.collapseEmphatic(queryText),
+                modernised,
+                JapaneseUtil.katakanaToHiragana(modernised)
             ).distinct()
 
             val deinflections = deinflector.deinflect(queryText)
+            // The deinflection rules are modern orthography (ちゃう, った, かった). A
+            // legacy surface has to be normalised before they can fire at all, so the
+            // modern form is deinflected as well — additive, like the variant above.
+            val modernisedDeinflections =
+                if (modernised != queryText) deinflector.deinflect(modernised) else emptyList()
             val lengthCandidates = mutableListOf<SearchCandidate>()
             variants.forEach { lengthCandidates.add(SearchCandidate(it, null, null)); allTermsToSearch.add(it) }
             deinflections.forEach {
                 if (it.term != queryText && it.reasons.isNotEmpty()) {
+                    lengthCandidates.add(SearchCandidate(it.term, it.type, DeinflectionChain(queryTextRaw, it.reasons)))
+                    allTermsToSearch.add(it.term)
+                }
+            }
+            modernisedDeinflections.forEach {
+                if (it.term != modernised && it.reasons.isNotEmpty()) {
                     lengthCandidates.add(SearchCandidate(it.term, it.type, DeinflectionChain(queryTextRaw, it.reasons)))
                     allTermsToSearch.add(it.term)
                 }

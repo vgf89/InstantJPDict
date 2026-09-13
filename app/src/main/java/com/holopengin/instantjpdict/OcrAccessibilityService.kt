@@ -51,6 +51,7 @@ import com.holopengin.instantjpdict.util.ComponentTable
 import com.holopengin.instantjpdict.util.FuriganaAligner
 import com.holopengin.instantjpdict.util.JapaneseUtil
 import com.holopengin.instantjpdict.util.KanjiVariants
+import com.holopengin.instantjpdict.util.KanaOrthography
 import com.holopengin.instantjpdict.util.OovCandidates
 import com.holopengin.instantjpdict.util.OovSuggestions
 import com.holopengin.instantjpdict.util.PitchAccent
@@ -179,6 +180,7 @@ class OcrAccessibilityService : AccessibilityService() {
             } ?: return@launch
             withContext(Dispatchers.IO) {
                 runCatching { KanjiVariants.install(this@OcrAccessibilityService) }
+                runCatching { KanaOrthography.install(this@OcrAccessibilityService) }
             }
             controller.installOovSuggestions(OovCandidates(table)) {
                 OovSuggestions.isEnabled(this@OcrAccessibilityService)
