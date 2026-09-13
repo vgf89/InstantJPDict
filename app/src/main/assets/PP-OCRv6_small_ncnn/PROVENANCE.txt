@@ -1,0 +1,18 @@
+PP-OCRv6 small (PaddleOCR det + rec) — vendored, do not edit by hand.
+
+Licence    : Apache-2.0 (see licenses/texts/apache-2.0.txt)
+Copyright  : PaddlePaddle Authors
+
+Sources (Hugging Face, both declaring license: apache-2.0):
+  det  : https://huggingface.co/PaddlePaddle/PP-OCRv6_small_det_onnx
+         revision 28fe5895c24fd108c19eb3e8479f4ab385fbfc62  (license=apache-2.0)
+  rec  : https://huggingface.co/PaddlePaddle/PP-OCRv6_small_rec_safetensors
+         revision fe049fb103f57443fe8840c54ed06b702f3c1de5  (license=apache-2.0)
+
+Files (SHA-256):
+  det.bin           4929604 B  b989916dd073fc233a82943865eeeb0de7d09f1c3fbd4a5dea350c12214d0bde
+  det.param           19352 B  3685cfb21ad05399cce41b666c523ce929e049a5a0da4b29b34512b6ec532300
+  rec_dyn.bin       4723112 B  fe129a98b2ed44e2bff8876349c9c0bba823c6fc84b45e91b321f150c98eb944
+  rec_dyn.param        7925 B  8fdbaa773347696c298e53dd1705c21799866c4375ab4dfbe13b6360efdbd178
+  rec_remap.txt       71978 B  7282547d4ff9fef9c4b4295b92019b5baae786ba7cdeb685660ebe2a6b54cd2e
+  vocab.json         131073 B  46f800890c516f8a4e9e9d690f1ef9dc8d36782333463363d80307d572acb8be

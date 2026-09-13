@@ -1,0 +1,38 @@
+ncnn — vendored neural-network inference library (OCR engine)
+============================================================
+
+Bundled as   : lib/arm64-v8a/libncnn_jni.so — ncnn is statically linked into the
+               app's JNI library (app/src/main/cpp/CMakeLists.txt), together with
+               the app's own C++ wrappers (DetNcnn / RecNcnn / KanaSizeNcnn).
+Vendored at  : app/src/main/cpp/ncnn/include (headers) and
+               app/src/main/cpp/ncnn/lib/arm64-v8a/libncnn.a (Git LFS)
+Licence      : BSD 3-Clause — Copyright (C) 2017 Tencent. All rights reserved.
+Licence text : licenses/texts/bsd-3-clause-ncnn.txt
+               (LICENSE.txt exactly as published at the pinned commit below; it
+               also reproduces the notices for the third-party components ncnn
+               itself contains — e.g. the zlib-licensed neon/sse/avx mathfun
+               headers — so nothing further is needed for those.)
+
+Upstream     : https://github.com/Tencent/ncnn
+Built from   : https://github.com/vgf89/ncnn
+Pinned ref   : a2b8507f6a3449e80f1c2585a127e3c08e3a9f3f (fork master, FORK_PIN in
+               tools/build_ncnn.sh). Upstream commit 2130e00 is documented as the
+               base in docs/ncnn-conversion.md.
+Build script : tools/build_ncnn.sh — clones the fork at the pin, enforces the
+               required patches by marker grep and enforces the resulting blob
+               (libncnn.a must contain the fused-GELU code) before it may ship.
+
+Where the licence text came from
+--------------------------------
+
+  https://raw.githubusercontent.com/vgf89/ncnn/a2b8507f6a3449e80f1c2585a127e3c08e3a9f3f/LICENSE.txt
+
+Modifications
+-------------
+
+The vendored library is the fork above, not upstream ncnn: three local fixes are
+merged into it (int8 1x1 convolution on flattened 1D blobs, ConvolutionDepthWise
+int8 scale terms 201/202, and fused GELU activation type 7). The `git format-patch`
+mboxes are kept as a record in third_party/ncnn-patches/; they are modifications to
+BSD-3-Clause source and are distributed under the same licence. Copyright over the
+unmodified parts remains with Tencent and ncnn's other contributors.

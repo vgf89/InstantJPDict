@@ -1,0 +1,56 @@
+EDRDG-derived data — KRADFILE components and JMdict kanji forms
+==============================================================
+
+Bundled as : app/src/main/assets/components/krad_components.txt
+
+    Kanji decomposition table (12,156 kanji), built from EDRDG KRADFILE and
+    KRADFILE2 by tools/build_component_table.py. Used to propose characters the
+    recogniser cannot emit (issue #44).
+
+    app/src/main/assets/variants/kanji_variants.txt
+
+    669 variant→canonical pairs; one half from Unihan (see
+    licenses/notices/unihan-variants.txt), the other half from JMdict's
+    out-dated/rarely-used kanji tags (oK/rK) intersected with Unihan's
+    simplified/traditional axis, built by tools/build_kanji_variants.py.
+
+Copyright : Copyright over the KRADFILE/RADKFILE and JMdict files is held by
+            James William BREEN and The Electronic Dictionary Research and
+            Development Group (EDRDG).
+
+Licence   : Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0).
+            Licence text: licenses/texts/cc-by-sa-4.0.txt
+            The licence statement itself is reproduced as
+            licenses/texts/edrdg-licence.txt.
+
+Required acknowledgement (EDRDG General Dictionary Licence Statement)
+---------------------------------------------------------------------
+
+  "This app uses the KRADFILE/RADKFILE and JMdict dictionary files. These files
+   are the property of the Electronic Dictionary Research and Development Group,
+   and are used in conformance with the Group's licence."
+
+  Sources:
+    https://www.edrdg.org/wiki/index.php/JMdict-EDICT_Dictionary_Project
+    https://www.edrdg.org/edrdg/licence.html
+    http://ftp.edrdg.org/pub/Nihongo/kradzip.zip  (kradfile, kradfile2)
+    http://ftp.edrdg.org/pub/Nihongo/JMdict_e.gz  (kanji-form tags)
+
+  Retrieved: 2026-09-12 (both archives; per-file SHA-256 in the PROVENANCE.txt
+  sidecars beside each asset).
+
+Where the licence was verified
+------------------------------
+
+  https://www.edrdg.org/edrdg/licence.html — retrieved 2026-09-13 and shipped in
+  full as licenses/texts/edrdg-licence.txt. It names JMdict, KANJIDIC/KANJIDIC2,
+  EDICT and RADKFILE/KRADFILE as covered, states the files are made available
+  under CC BY-SA 4.0, and requires attribution on a separate screen reached from a
+  menu (not on a launch page) for smartphone apps — which is what this viewer is.
+
+Note on KANJIDIC
+----------------
+
+The app bundles no KANJIDIC data. KANJIDIC entries reach the popup only through a
+dictionary the user imports themselves, and those notices travel with the import;
+they are deliberately not part of this bundle.

@@ -1,0 +1,31 @@
+Kanjium pitch accents — CC BY-SA 4.0 attribution
+================================================
+
+Bundled as   : app/src/main/assets/pitch/kanjium_pitch_accents.zip
+               124,134 entries, Yomitan term-meta-bank v3 format, used for the
+               "Show pitch accent in dictionary popup" feature (issue #43).
+Source       : Kanjium Pitch Accents — https://github.com/mifunetoshiro/kanjium
+               file `data/source_files/raw/accents.txt`
+Pinned ref   : 685d4d723d6d20bf9beb169103aeac188eb067ad
+Author       : mifunetoshiro and contributors
+Licence      : Creative Commons Attribution-ShareAlike 4.0 International
+               (CC BY-SA 4.0) — licence text: licenses/texts/cc-by-sa-4.0.txt
+Attribution  : "Pitch accent data from the Kanjium Pitch Accents project
+               (github.com/mifunetoshiro/kanjium), used under CC BY-SA 4.0."
+
+Share-alike: the dictionary built from that data is itself distributed under
+CC BY-SA 4.0; the conversion is by tools/build_pitch_dict.py and its provenance
+sidecar (app/src/main/assets/pitch/PROVENANCE.txt) records the source, pinned
+revision, licence and the artifact's SHA-256.
+
+Where the licence was verified
+------------------------------
+
+  The upstream repository's own licence file at the pinned commit, retrieved
+  2026-09-13:
+    https://raw.githubusercontent.com/mifunetoshiro/kanjium/685d4d723d6d20bf9beb169103aeac188eb067ad/LICENSE.txt
+  It is the CC BY-SA 4.0 legal code (18,131 bytes, sha256
+  638cc6f2d958b1add3883e8d5d73e32ae999ecdc0a4b4d1a83994b3d5b8e69e9). The GitHub
+  repository API reported no SPDX licence ("Other"/NOASSERTION) for this repo,
+  which is why the file itself — not the API metadata — is the source of this
+  notice.

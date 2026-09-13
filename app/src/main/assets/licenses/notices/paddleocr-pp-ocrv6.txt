@@ -1,0 +1,34 @@
+PP-OCRv6 small — text detection and recognition models (PaddleOCR)
+=================================================================
+
+Bundled as   : app/src/main/assets/PP-OCRv6_small_ncnn/
+                 det.bin, det.param          (DB text-line detector, 960x960)
+                 rec_dyn.bin, rec_dyn.param  (dynamic-width CTC line recogniser)
+                 vocab.json                  (18,710 output classes)
+                 rec_remap.txt               (output-permutation/remap table)
+Licence      : Apache License 2.0 — Copyright the PaddleOCR authors (PaddlePaddle).
+Licence text : licenses/texts/apache-2.0.txt
+
+Provenance
+----------
+
+  det : PaddlePaddle/PP-OCRv6_small_det_onnx     (inference.onnx)
+  rec : PaddlePaddle/PP-OCRv6_small_rec_safetensors (model.safetensors + config.json)
+  both on Hugging Face, model card `license: apache-2.0`
+  upstream project: https://github.com/PaddlePaddle/PaddleOCR (Apache-2.0)
+
+The shipped `.param`/`.bin` files are not the upstream artifacts: they were
+converted to ncnn with pnnx (see docs/ncnn-conversion.md) and the rec graph was
+further reworked into one dynamic-width model by tools/make_rec_dyn.py. Conversion
+of Apache-2.0 weights is permitted by the licence; the model weights and these
+derived files remain under Apache-2.0, and this notice travels with them.
+
+Where the licence was verified
+------------------------------
+
+  Hugging Face model metadata, 2026-09-13:
+    https://huggingface.co/api/models/PaddlePaddle/PP-OCRv6_small_rec_safetensors
+    https://huggingface.co/api/models/PaddlePaddle/PP-OCRv6_small_det_onnx
+  both reported `"license": "apache-2.0"` (tag `license:apache-2.0`). The licence
+  text is the canonical Apache-2.0 text from
+  https://www.apache.org/licenses/LICENSE-2.0.txt.

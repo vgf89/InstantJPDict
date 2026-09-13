@@ -11,7 +11,7 @@ File       : kanji_variants.txt
 Size       : 5352 bytes
 SHA-256    : 20fc831dedf53e884a91e6fd20b791198afc53a19768e3d38aa89b5b17b824b8
 
-Source 1   : https://www.unicode.org/Public/UCD/latest/ucd/Unihan.zip
+Source 1   : https://www.unicode.org/Public/17.0.0/ucd/Unihan.zip
 Files      : Unihan_Variants.txt (8 files in the bundle)
 Revision   : Unicode 17.0.0, data of 2025-07-24 00:00:00 GMT [KL]
 Source 2   : http://ftp.edrdg.org/pub/Nihongo/JMdict_e.gz
