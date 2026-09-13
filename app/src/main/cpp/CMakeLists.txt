@@ -11,7 +11,7 @@ set(NCNN_LIB ${CMAKE_SOURCE_DIR}/ncnn/lib/arm64-v8a/libncnn.a)
 add_library(ncnn STATIC IMPORTED)
 set_target_properties(ncnn PROPERTIES IMPORTED_LOCATION ${NCNN_LIB})
 
-add_library(ncnn_jni SHARED ncnn_jni.cpp kana_size_ncnn.cpp)
+add_library(ncnn_jni SHARED ncnn_jni.cpp kana_size_ncnn.cpp ppocr_ncnn_core.cpp)
 
 target_include_directories(ncnn_jni PRIVATE ${NCNN_INCLUDE_DIR})
 
