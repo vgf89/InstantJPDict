@@ -5,6 +5,7 @@ import com.google.gson.Gson
 import com.holopengin.instantjpdict.util.CharLm
 import com.holopengin.instantjpdict.util.ComponentTable
 import com.holopengin.instantjpdict.util.Deinflector
+import com.holopengin.instantjpdict.util.KanaOrthography
 import com.holopengin.instantjpdict.util.KanjiVariants
 import com.holopengin.instantjpdict.util.OovCandidates
 import com.holopengin.instantjpdict.util.OovSuggestions
@@ -44,6 +45,9 @@ object OverlayEnvironment {
             } ?: return@launch
             withContext(Dispatchers.IO) {
                 runCatching { KanjiVariants.install(context) }
+                // #75: pre-reform orthography for the lookup query. Loaded here rather than
+                // in either host so the share activity normalises exactly like the overlay.
+                runCatching { KanaOrthography.install(context) }
             }
             controller.installOovSuggestions(OovCandidates(table)) {
                 OovSuggestions.isEnabled(context)
