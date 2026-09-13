@@ -199,15 +199,15 @@ class LicenseIndexTest {
     }
 
     @Test
-    fun the_kana_model_records_its_missing_licence_instead_of_guessing_one() {
+    fun the_kana_model_states_its_licence_and_corpus_attribution() {
         val model = entry("kana-size")
-        assertTrue("no licence text is expected for these weights", model.textFiles.isEmpty())
-        assertNotNull("the gap must still be noticed", model.noticeFile)
+        assertEquals("the weights carry the corpus licence",
+            listOf("licenses/texts/cc-by-sa-4.0.txt"), model.textFiles)
+        assertNotNull("the notice must explain the terms", model.noticeFile)
         val notice = text(model.noticeFile!!)
-        assertTrue("the notice does not say the licence is unstated",
-            notice.contains("not stated") || notice.contains("Known gap"))
-        // The training corpora are named, because their attribution is required even
-        // where the weights' own terms are not recorded.
+        assertTrue("the notice does not state CC BY-SA 4.0", notice.contains("CC BY-SA 4.0"))
+        assertTrue("the notice still flags a gap", !notice.contains("Known gap"))
+        // The training corpora stay named: their attribution is required whatever the weights terms.
         assertTrue("the training corpora are not attributed",
             notice.contains("Aozora") && notice.contains("Wikipedia"))
     }
